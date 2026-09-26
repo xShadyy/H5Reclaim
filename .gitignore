@@ -7,3 +7,4 @@ dist/
 build/
 fixtures/*.h5
 fixtures/*.json
+work/

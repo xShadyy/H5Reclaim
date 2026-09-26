@@ -1,1 +1,1 @@
-"""Experimental HDF5 recovery project. No recovery API exists yet."""
+"""Experimental, evidence-based recovery for a narrow HDF5 v1 index case."""
