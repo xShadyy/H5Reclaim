@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "h5reclaim"
+version = "0.0.0"
+description = "Experimental HDF5 structural recovery research"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["h5py>=3.10", "numpy>=1.26"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
