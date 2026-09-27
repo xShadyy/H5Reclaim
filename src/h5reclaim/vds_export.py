@@ -143,7 +143,8 @@ def _manifest_entries(manifest: Mapping[str, Any] | str | Path) -> dict[str, dic
 
 def export_vds(source: str | Path, dataset_path: str, output: str | Path,
                report_path: str | Path,
-               manifest: Mapping[str, Any] | str | Path) -> dict[str, Any]:
+               manifest: Mapping[str, Any] | str | Path, *,
+               published_output: str | Path | None = None) -> dict[str, Any]:
     """Materialize a selected bounded VDS using only explicitly pinned files.
 
     The output's 0/1 ``/_h5reclaim/validity`` dataset is authoritative:
@@ -300,7 +301,7 @@ def export_vds(source: str | Path, dataset_path: str, output: str | Path,
                     "validity_map": "/_h5reclaim/validity",
                     "validity_codes": {"0": "unknown; output cell is not a measurement",
                                        "1": "mapped to allocated native-readable pinned source"},
-                    "output_path": str(output),
+                    "output_path": str(published_output if published_output is not None else output),
                     "verification": "accepted native values read back bitwise from separate output",
                     "limits": "Pinned hashes establish the supplied current files, not historical scientific truth. "
                               "Missing or unreadable values remain unknown. Attributes, links and virtual "
