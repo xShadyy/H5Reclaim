@@ -23,7 +23,7 @@ KEY_SIZE = 32  # 4-byte size, 4-byte mask, three 8-byte offsets (rank 2 + 1).
 DEFAULT_ISTORE_K = 32
 MAX_TREE_NODES = 100_000
 MAX_HEADER_BYTES = 1 << 20
-MAX_CONTINUATIONS = 1
+MAX_CONTINUATIONS = 8
 MAX_READ_BYTES = 16 << 20
 MAX_CHUNK_BYTES = MAX_READ_BYTES
 
@@ -219,7 +219,7 @@ class H5File:
         """Read the selected object's own v1 header, never scan for a layout.
 
         The object address must come from an independent trusted dataset-name
-        lookup. One directly addressed v1 continuation is accepted; nested,
+        lookup. Bounded, nonoverlapping v1 continuations are accepted;
         shared, cyclic, or duplicate layout messages are refused.
         """
         if rank not in (1, 2, 3, 4):
@@ -238,6 +238,9 @@ class H5File:
         blocks = [(object_address + 16, size)]
         header_start = self.absolute(object_address)
         header_end = header_start + 16 + size
+        allocated = [(header_start, header_end)]
+        total_header_bytes = 16 + size
+        seen_continuations: set[int] = {object_address}
         continuation_count = 0
         while blocks:
             block_address, block_size = blocks.pop(0)
@@ -262,18 +265,24 @@ class H5File:
                 if kind == 0x0010:
                     continuation_count += 1
                     if continuation_count > MAX_CONTINUATIONS:
-                        raise UnsupportedFormat("multiple or nested object header continuations")
+                        raise UnsupportedFormat("object header continuation limit exceeded")
                     offset_size = self.superblock.offset_size
                     length_size = self.superblock.length_size
                     if message_size != offset_size + length_size or flags & 0x02:
                         raise UnsupportedFormat("unsupported v1 object header continuation")
                     target = _uint(data[:offset_size])
                     length = _uint(data[offset_size:])
-                    if length < 8 or length > MAX_HEADER_BYTES - size or length % 8:
+                    if length < 8 or length > MAX_HEADER_BYTES - total_header_bytes or length % 8:
                         raise UnsupportedFormat("object header continuation exceeds parser limits")
+                    if target in seen_continuations:
+                        raise FormatError("cyclic or repeated object header continuation")
+                    seen_continuations.add(target)
                     absolute = self.absolute(target)
-                    if absolute < header_end and header_start < absolute + length:
-                        raise FormatError("object header continuation overlaps the primary header")
+                    if any(absolute < end and start < absolute + length
+                           for start, end in allocated):
+                        raise FormatError("object header continuation overlaps another header block")
+                    allocated.append((absolute, absolute + length))
+                    total_header_bytes += length
                     blocks.append((target, length))
                     self.metadata_ranges.append((absolute, absolute + length, "object header continuation"))
                 if kind == 0x0008:

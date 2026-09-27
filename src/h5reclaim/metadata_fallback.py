@@ -496,8 +496,8 @@ def _dataspace(raw: bytes, lsize: int, *, older_padding: bool = False,
     if len(raw) < 4:
         raise FormatError("truncated dataspace")
     version, rank, flags, space_type = raw[:4]
-    if rank not in (1, 2) or flags & ~1:
-        raise UnsupportedFormat("fallback requires rank one or two, simple dataspace")
+    if rank not in (1, 2, 3, 4) or flags & ~1:
+        raise UnsupportedFormat("fallback requires rank one through four, simple dataspace")
     if version == 1:
         if len(raw) < 8 or any(raw[3:8]):
             raise FormatError("invalid version-one dataspace prefix")
@@ -617,7 +617,7 @@ def _filters(raw: bytes | None, element_size: int) -> tuple[FilterDescriptor, ..
     return tuple(result)
 
 
-def _old_filters(raw: bytes | None) -> tuple[FilterDescriptor, ...]:
+def _old_filters(raw: bytes | None, element_size: int) -> tuple[FilterDescriptor, ...]:
     if raw is None:
         return ()
     if len(raw) < 8 or raw[0] != 1 or not 1 <= raw[1] <= MAX_FILTERS or any(raw[2:8]):
@@ -630,7 +630,7 @@ def _old_filters(raw: bytes | None) -> tuple[FilterDescriptor, ...]:
         identifier, name_length = _uint(raw[pos:pos+2]), _uint(raw[pos+2:pos+4])
         flags, count = _uint(raw[pos+4:pos+6]), _uint(raw[pos+6:pos+8])
         pos += 8
-        if identifier not in (1, 3) or name_length > 128 or name_length % 8 or count > 16:
+        if identifier not in (1, 2, 3) or name_length > 128 or name_length % 8 or count > 16:
             raise UnsupportedFormat("unsupported older filter metadata")
         if flags & ~1 or len(raw) - pos < name_length + 4*count:
             raise FormatError("invalid older filter flags, name, or values")
@@ -647,6 +647,10 @@ def _old_filters(raw: bytes | None) -> tuple[FilterDescriptor, ...]:
             raise UnsupportedFormat("unsupported older Fletcher32 parameters")
         if identifier == 1 and not (flags == 1 and len(values) == 1 and 0 <= values[0] <= 9):
             raise UnsupportedFormat("unsupported older DEFLATE parameters")
+        if identifier == 2 and not (flags == 1 and values == (element_size,)):
+            raise UnsupportedFormat("older shuffle width contradicts selected datatype")
+        if any(item.id == identifier for item in filters):
+            raise FormatError("duplicate filter in selected older pipeline")
         filters.append(FilterDescriptor(identifier, flags, values))
     if any(raw[pos:]):
         raise FormatError("older filter-pipeline trailing bytes")
@@ -713,22 +717,24 @@ def _old_fallback(snapshot: Path, dataset_path: str, parts: list[str], source_ha
         space, dtype, layout = (_unique(selected, k) for k in (1, 3, 8))
         if space is None or dtype is None or layout is None:
             raise UnsupportedFormat("selected older object lacks required dataset metadata")
-        shape, maximum = _dataspace(space.data, reader.superblock.length_size, older_padding=True)
-        itemsize = 4 if len(shape) == 2 else 8
-        dt_len = 12 if itemsize == 4 else 20
-        if len(dtype.data) != (dt_len+7)//8*8 or any(dtype.data[dt_len:]):
+        shape, maximum = _dataspace(space.data, reader.superblock.length_size,
+                                    older_padding=True, allow_growing=True)
+        if len(dtype.data) < 8:
+            raise FormatError("older dataset datatype message is truncated")
+        dtype_class = dtype.data[0] & 15
+        if dtype_class not in (0, 1):
+            raise UnsupportedFormat("older fallback requires a primitive numeric datatype")
+        dt_len = 12 if dtype_class == 0 else 20
+        if len(dtype.data) != (dt_len + 7) // 8 * 8 or any(dtype.data[dt_len:]):
             raise FormatError("older dataset datatype message padding invalid")
-        dtype_name = _dtype(dtype.data[:dt_len], len(shape))
+        dtype_name = _numeric_dtype(dtype.data[:dt_len])
+        itemsize = int(dtype_name[-1])
         pipeline_message = _unique(selected, 11)
-        pipeline = _old_filters(pipeline_message.data if pipeline_message else None)
+        pipeline = _old_filters(pipeline_message.data if pipeline_message else None, itemsize)
         filters = tuple(item.id for item in pipeline)
-        if len(shape) == 2 and pipeline:
-            raise UnsupportedFormat("rank-two older fallback requires unfiltered chunks")
-        if len(shape) == 1 and filters != (3, 1):
-            raise UnsupportedFormat("rank-one older fallback requires Fletcher32 then DEFLATE")
         dataset_layout = reader.read_dataset_layout(address, rank=len(shape))
-        if dataset_layout.chunk_shape == () or any(s % c for s, c in zip(shape, dataset_layout.chunk_shape)):
-            raise UnsupportedFormat("older fallback requires fully aligned chunk extents")
+        if dataset_layout.chunk_shape == () or any(c <= 0 for c in dataset_layout.chunk_shape):
+            raise UnsupportedFormat("older fallback requires bounded nonzero chunk extents")
         if dataset_layout.element_size != itemsize or prod(dataset_layout.chunk_shape)*itemsize > 1_048_576:
             raise FormatError("older layout contradicts datatype or chunk limit")
         omitted_attributes = (("all attribute metadata (raw fallback cannot safely decode it)",)
