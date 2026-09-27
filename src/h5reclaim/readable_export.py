@@ -1,8 +1,9 @@
-"""Copy a fully native-readable numeric dataset without claiming damage recovery.
+"""Copy bounded native-readable data without claiming damage recovery.
 
 This route is intentionally separate from structural recovery. The HDF5 library
-must resolve every selected value and every chunk must be allocated. A successful
-round trip establishes what the current input reads as, not what was measured
+must resolve every accepted value. An unwritten or unreachable chunk is marked
+unknown rather than being scored as a measurement. A successful round trip
+establishes what the current input reads as, not what was measured
 before a possible corruption. A private bounded snapshot keeps source reads
 consistent and the caller's file remains untouched.
 """
@@ -14,6 +15,7 @@ import itertools
 import json
 import os
 import tempfile
+from dataclasses import dataclass
 from math import prod
 from pathlib import Path
 from typing import Any, Iterator
@@ -22,7 +24,7 @@ import h5py
 import numpy as np
 
 from .hints import DatasetHints, HintsError, compare_hints, require_no_conflicts
-from .metadata import UnsupportedCase, _safe_scalar_attributes
+from .metadata import UnsupportedCase
 from .recovery import (
     RecoveryError,
     VERSION,
@@ -33,12 +35,15 @@ from .recovery import (
 )
 
 
-MAX_DATA_BYTES = 128 * 1024 * 1024
+MAX_DATA_BYTES = 512 * 1024 * 1024
 MAX_BLOCK_BYTES = 1024 * 1024
 MAX_STORED_CHUNK_BYTES = 2 * 1024 * 1024
 MAX_CHUNKS = 8192
 MAX_RANK = 4
 MAX_PATH_BYTES = 4096
+MAX_TYPE_DEPTH = 4
+MAX_TYPE_MEMBERS = 64
+MAX_FIXED_FIELD_BYTES = 4096
 # These filters ship with HDF5. Unknown filters may load third-party plugins.
 NATIVE_FILTERS = frozenset((h5py.h5z.FILTER_DEFLATE, h5py.h5z.FILTER_SHUFFLE,
                             h5py.h5z.FILTER_FLETCHER32))
@@ -71,12 +76,10 @@ def _selected_dataset(handle: h5py.File, path: str) -> h5py.Dataset:
     return current
 
 
-def _canonical_numeric(dataset: h5py.Dataset) -> np.dtype:
+def _canonical_numeric(datatype: h5py.h5t.TypeID, dtype: np.dtype) -> None:
     """Accept ordinary full-width fixed numeric HDF5 representations only."""
-    dtype = dataset.dtype
     if dtype.kind not in "iuf" or dtype.subdtype is not None or dtype.itemsize not in (1, 2, 4, 8):
         raise UnsupportedCase("readable export requires a primitive fixed-width integer or IEEE float")
-    datatype = dataset.id.get_type()
     klass = datatype.get_class()
     if datatype.get_size() != dtype.itemsize or datatype.get_precision() != dtype.itemsize * 8:
         raise UnsupportedCase("numeric datatype has noncanonical storage or bit precision")
@@ -101,10 +104,117 @@ def _canonical_numeric(dataset: h5py.Dataset) -> np.dtype:
                 or datatype.get_ebias() != bias or datatype.get_norm() != h5py.h5t.NORM_IMPLIED
                 or datatype.get_inpad() != h5py.h5t.PAD_ZERO):
             raise UnsupportedCase("floating-point representation is not IEEE binary32 or binary64")
-    return dtype
 
 
-def _check_storage(dataset: h5py.Dataset, snapshot_size: int) -> tuple[str, int]:
+def _safe_fixed_type(datatype: h5py.h5t.TypeID, dtype: np.dtype, depth: int = 0) -> None:
+    """Bound native representations before reading them, including nested fields.
+
+    The original HDF5 type is copied verbatim into the output. These checks
+    exclude heap allocations and references; readback verifies the native
+    representation visible through h5py, including NaN bits and record fields.
+    """
+    if depth > MAX_TYPE_DEPTH or dtype.itemsize > MAX_BLOCK_BYTES or dtype.hasobject:
+        raise UnsupportedCase("datatype is variable length, too deep, or exceeds the block limit")
+    klass = datatype.get_class()
+    if klass in (h5py.h5t.INTEGER, h5py.h5t.FLOAT):
+        _canonical_numeric(datatype, dtype)
+        return
+    if klass == h5py.h5t.ENUM:
+        base = datatype.get_super()
+        if datatype.get_nmembers() > MAX_TYPE_MEMBERS or datatype.get_size() != dtype.itemsize:
+            raise UnsupportedCase("enum type is too large or has incompatible storage")
+        # h5py represents its boolean enum as bool; the base is a byte integer.
+        base_dtype = (np.dtype("i1" if base.get_sign() == h5py.h5t.SGN_2 else "u1")
+                      if dtype.kind == "b" and dtype.itemsize == 1 else np.dtype(dtype.str))
+        if base_dtype.kind not in "iu":
+            raise UnsupportedCase("enum has no fixed-size integer base")
+        _safe_fixed_type(base, base_dtype, depth + 1)
+        return
+    if klass == h5py.h5t.STRING:
+        if (datatype.is_variable_str() or dtype.kind != "S"
+                or not 0 < dtype.itemsize <= MAX_FIXED_FIELD_BYTES
+                or datatype.get_size() != dtype.itemsize):
+            raise UnsupportedCase("only bounded fixed-size strings can be exported")
+        return
+    if klass == h5py.h5t.OPAQUE:
+        if dtype.kind != "V" or not 0 < dtype.itemsize <= MAX_FIXED_FIELD_BYTES:
+            raise UnsupportedCase("opaque field has incompatible fixed-size storage")
+        return
+    if klass == h5py.h5t.ARRAY:
+        if dtype.subdtype is None:
+            raise UnsupportedCase("array datatype has no fixed-size element description")
+        base_dtype, dimensions = dtype.subdtype
+        if (tuple(datatype.get_array_dims()) != tuple(dimensions)
+                or datatype.get_size() != dtype.itemsize):
+            raise UnsupportedCase("array datatype dimensions disagree with native dtype")
+        _safe_fixed_type(datatype.get_super(), base_dtype, depth + 1)
+        return
+    if klass == h5py.h5t.COMPOUND:
+        count = datatype.get_nmembers()
+        if count > MAX_TYPE_MEMBERS or datatype.get_size() != dtype.itemsize:
+            raise UnsupportedCase("record datatype exceeds the bounded representation")
+        if dtype.kind == "c":
+            if count != 2 or dtype.itemsize not in (8, 16):
+                raise UnsupportedCase("complex datatype is not two canonical floats")
+            half = dtype.itemsize // 2
+            for index, (name, position) in enumerate(((b"r", 0), (b"i", half))):
+                if datatype.get_member_name(index) != name or datatype.get_member_offset(index) != position:
+                    raise UnsupportedCase("complex field layout differs from the native convention")
+                _safe_fixed_type(datatype.get_member_type(index),
+                                 np.dtype(dtype.byteorder + ("f4" if half == 4 else "f8")), depth + 1)
+            return
+        if dtype.names is None or len(dtype.names) != count:
+            raise UnsupportedCase("record fields disagree with native dtype")
+        for index, name in enumerate(dtype.names):
+            member_dtype, offset = dtype.fields[name][:2]
+            if (datatype.get_member_name(index).decode("utf-8", "surrogateescape") != name
+                    or datatype.get_member_offset(index) != offset):
+                raise UnsupportedCase("record field name or offset disagrees with native dtype")
+            _safe_fixed_type(datatype.get_member_type(index), member_dtype, depth + 1)
+        return
+    raise UnsupportedCase("references, variable-length values, and this datatype class are not safely exportable")
+
+
+@dataclass(frozen=True)
+class StorageInspection:
+    layout: str
+    grid: tuple[int, ...]
+    records: tuple[tuple[tuple[int, ...], int, int, int], ...]
+    unknown: tuple[tuple[int, ...], ...]
+
+
+def _safe_export_attributes(dataset: h5py.Dataset) -> tuple[tuple[tuple[str, Any], ...], tuple[str, ...]]:
+    """Read only bounded inline, fixed-size attributes; enumerate omissions."""
+    if len(dataset.attrs) > 64:
+        return (), ("all source attributes (more than 64)",)
+    copied: list[tuple[str, Any]] = []
+    omitted: list[str] = []
+    for name in dataset.attrs:
+        if not isinstance(name, str) or len(name.encode("utf-8")) > 128:
+            omitted.append(str(name)[:128])
+            continue
+        try:
+            attr = dataset.attrs.get_id(name)
+            typ = attr.get_type()
+            space = attr.get_space()
+            dtype = typ.dtype
+            points = space.get_simple_extent_npoints()
+            if (space.get_simple_extent_type() != h5py.h5s.SIMPLE
+                    and space.get_simple_extent_type() != h5py.h5s.SCALAR):
+                omitted.append(name)
+                continue
+            if (space.get_simple_extent_ndims() > 4 or points * dtype.itemsize > 4096
+                    or attr.get_storage_size() > 4096):
+                omitted.append(name)
+                continue
+            _safe_fixed_type(typ, dtype)
+            copied.append((name, dataset.attrs[name]))
+        except (OSError, RuntimeError, ValueError, TypeError, UnicodeError):
+            omitted.append(name)
+    return tuple(copied), tuple(omitted)
+
+
+def _check_storage(dataset: h5py.Dataset, snapshot_size: int) -> StorageInspection:
     creation = dataset.id.get_create_plist()
     if creation.get_external_count() or dataset.is_virtual:
         raise UnsupportedCase("external and virtual dataset storage is not supported")
@@ -124,12 +234,15 @@ def _check_storage(dataset: h5py.Dataset, snapshot_size: int) -> tuple[str, int]
         if grid > MAX_CHUNKS:
             raise UnsupportedCase(f"dataset exceeds the {MAX_CHUNKS}-chunk limit")
         # Native reads may silently substitute fill values for missing index
-        # entries. Demand an allocated record at every coordinate instead.
-        if dataset.id.get_num_chunks() != grid:
-            raise UnsupportedCase("some chunks are unallocated or unreachable; native reads could substitute fill values")
+        # entries. Mark these unknown, never count them as measurement values.
         ranges: list[tuple[int, int]] = []
+        records: list[tuple[tuple[int, ...], int, int, int]] = []
+        unknown: list[tuple[int, ...]] = []
         for indices in itertools.product(*(range(0, length, width) for length, width in zip(dataset.shape, chunks))):
             chunk = dataset.id.get_chunk_info_by_coord(indices)
+            if chunk.byte_offset is None or int(chunk.size) == 0:
+                unknown.append(tuple(indices))
+                continue
             address, length = int(chunk.byte_offset), int(chunk.size)
             if tuple(int(position) for position in chunk.chunk_offset) != tuple(indices):
                 raise UnsupportedCase("a chunk record disagrees with its requested coordinate")
@@ -140,10 +253,15 @@ def _check_storage(dataset: h5py.Dataset, snapshot_size: int) -> tuple[str, int]
             if length > MAX_STORED_CHUNK_BYTES:
                 raise UnsupportedCase("a stored chunk exceeds the 2 MiB limit")
             ranges.append((address, address + length))
+            records.append((tuple(indices), address, length, int(chunk.filter_mask)))
         ranges.sort()
         if any(first[1] > second[0] for first, second in zip(ranges, ranges[1:])):
             raise UnsupportedCase("different chunk records claim overlapping source bytes")
-        return "chunked", grid
+        if dataset.id.get_num_chunks() != len(records):
+            raise UnsupportedCase("chunk count disagrees with reachable allocation records")
+        return StorageInspection("chunked", tuple((length + width - 1) // width
+                                                 for length, width in zip(dataset.shape, chunks)),
+                                 tuple(records), tuple(unknown))
     if filters:
         raise UnsupportedCase("filters require chunked storage")
     if layout in (h5py.h5d.CONTIGUOUS, h5py.h5d.COMPACT):
@@ -155,7 +273,8 @@ def _check_storage(dataset: h5py.Dataset, snapshot_size: int) -> tuple[str, int]
             address = dataset.id.get_offset()
             if address is None or address < 0 or address + dataset.id.get_storage_size() > snapshot_size:
                 raise UnsupportedCase("contiguous payload address lies outside the source file")
-        return ("compact" if layout == h5py.h5d.COMPACT else "contiguous"), 0
+        return StorageInspection("compact" if layout == h5py.h5d.COMPACT else "contiguous",
+                                 (), (), ())
     raise UnsupportedCase("dataset layout is not a local compact, contiguous, or chunked layout")
 
 
@@ -169,9 +288,73 @@ def _blocks(shape: tuple[int, ...], itemsize: int) -> Iterator[tuple[slice, ...]
         yield tuple(slice(start, min(start + step, size)) for start, step, size in zip(starts, dimensions, shape))
 
 
+def _allocated_selections(storage: StorageInspection, shape: tuple[int, ...],
+                          chunks: tuple[int, ...] | None, itemsize: int) -> Iterator[tuple[slice, ...]]:
+    if storage.layout != "chunked":
+        yield from _blocks(shape, itemsize)
+        return
+    assert chunks is not None
+    for origin, _, _, _ in storage.records:
+        yield tuple(slice(start, min(start + step, length))
+                    for start, step, length in zip(origin, chunks, shape))
+
+
+def _create_matching_dataset(target: h5py.File, source: h5py.Dataset, path: str) -> h5py.Dataset:
+    """Keep the selected type, extent limits, fill rules, layout and filter order."""
+    parts = path[1:].split("/")
+    parent = target["/"]
+    for part in parts[:-1]:
+        parent = parent.create_group(part)
+    created = h5py.h5d.create(parent.id, parts[-1].encode("utf-8"),
+                              source.id.get_type().copy(), source.id.get_space().copy(),
+                              dcpl=source.id.get_create_plist().copy())
+    created.close()
+    result = target[path]
+    source_creation = source.id.get_create_plist()
+    output_creation = result.id.get_create_plist()
+    if (result.dtype != source.dtype or result.shape != source.shape
+            or result.maxshape != source.maxshape or result.chunks != source.chunks
+            or not result.id.get_type().equal(source.id.get_type())
+            or output_creation.get_layout() != source_creation.get_layout()
+            or output_creation.get_nfilters() != source_creation.get_nfilters()
+            or any(output_creation.get_filter(i) != source_creation.get_filter(i)
+                   for i in range(source_creation.get_nfilters()))):
+        raise RecoveryError("output dataset schema differs from selected source metadata")
+    return result
+
+
+def _source_records(snapshot: Path, storage: StorageInspection) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    with snapshot.open("rb") as handle:
+        for origin, address, length, mask in storage.records:
+            handle.seek(address)
+            raw = handle.read(length)
+            if len(raw) != length:
+                raise RecoveryError("a source chunk could not be read at its reported address")
+            records.append({
+                "origin": list(origin), "address": address, "stored_bytes": length,
+                "filter_mask": mask, "raw_sha256": hashlib.sha256(raw).hexdigest(),
+            })
+    return records
+
+
+def _range_sha256(snapshot: Path, offset: int, size: int) -> str:
+    digest = hashlib.sha256()
+    with snapshot.open("rb") as handle:
+        handle.seek(offset)
+        remaining = size
+        while remaining:
+            block = handle.read(min(remaining, MAX_BLOCK_BYTES))
+            if not block:
+                raise RecoveryError("contiguous source payload ended before its declared length")
+            digest.update(block)
+            remaining -= len(block)
+    return digest.hexdigest()
+
+
 def export_readable(source: str | Path, dataset_path: str, output: str | Path,
                     report_path: str | Path, *, hints: DatasetHints | None = None) -> dict[str, Any]:
-    """Export one entirely readable, allocated numeric dataset to a new file.
+    """Export one bounded local dataset, marking missing chunk values unknown.
 
     This uses only the damaged/current file as input. It never reconstructs an
     index or verifies earlier scientific truth. Destinations must not exist.
@@ -182,14 +365,15 @@ def export_readable(source: str | Path, dataset_path: str, output: str | Path,
         try:
             with h5py.File(snapshot, "r") as original:
                 selected = _selected_dataset(original, dataset_path)
-                dtype = _canonical_numeric(selected)
+                dtype = selected.dtype
+                _safe_fixed_type(selected.id.get_type(), dtype)
                 shape = tuple(int(value) for value in selected.shape)
                 if not 1 <= len(shape) <= MAX_RANK or any(length <= 0 for length in shape):
                     raise UnsupportedCase("expected a nonempty dataset with rank one through four")
                 logical_bytes = prod(shape) * dtype.itemsize
                 if logical_bytes > MAX_DATA_BYTES:
-                    raise UnsupportedCase("selected logical data exceeds the 128 MiB limit")
-                layout, allocated_chunks = _check_storage(selected, source_size)
+                    raise UnsupportedCase("selected logical data exceeds the 512 MiB limit")
+                storage = _check_storage(selected, source_size)
                 creation = selected.id.get_create_plist()
                 observed_filters = tuple(int(creation.get_filter(index)[0])
                                          for index in range(creation.get_nfilters()))
@@ -207,36 +391,57 @@ def export_readable(source: str | Path, dataset_path: str, output: str | Path,
                     input_sha256=digest,
                 ) if hints is not None else ()
                 require_no_conflicts(comparisons)
-                attributes, omitted = _safe_scalar_attributes(selected)
+                attributes, initially_omitted = _safe_export_attributes(selected)
+                omitted = list(initially_omitted)
+                chunk_records = _source_records(snapshot, storage)
+                object_address = int(h5py.h5o.get_info(selected.id).addr)
+                contiguous_address = selected.id.get_offset() if storage.layout == "contiguous" else None
+                contiguous_raw_sha256 = (_range_sha256(snapshot, int(contiguous_address), logical_bytes)
+                                         if contiguous_address is not None else None)
                 source_values = hashlib.sha256()
                 block_count = 0
+                accepted_elements = 0
                 with tempfile.TemporaryDirectory(prefix=".h5reclaim-", dir=output.parent) as out_dir:
                     with tempfile.TemporaryDirectory(prefix=".h5reclaim-", dir=report_path.parent) as rep_dir:
                         output_temp = Path(out_dir) / "output.h5"
                         report_temp = Path(rep_dir) / "report.json"
                         with h5py.File(output_temp, "x") as target:
-                            exported = target.create_dataset(dataset_path, shape=shape, dtype=dtype)
-                            for selection in _blocks(shape, dtype.itemsize):
-                                block = selected[selection]
+                            exported = _create_matching_dataset(target, selected, dataset_path)
+                            for selection in _allocated_selections(storage, shape, selected.chunks, dtype.itemsize):
+                                block = np.asarray(selected[selection])
                                 if block.dtype != dtype or block.nbytes > MAX_BLOCK_BYTES:
-                                    raise RecoveryError("native read returned an unexpected numeric block")
+                                    raise RecoveryError("native read returned an unexpected bounded block")
                                 exported[selection] = block
                                 source_values.update(block.tobytes(order="C"))
                                 block_count += 1
+                                accepted_elements += block.size
+                            copied_attributes: list[str] = []
                             for name, value in attributes:
                                 exported.attrs[name] = value
-                            exported.attrs["h5reclaim_mode"] = "readable_export"
-                            exported.attrs["h5reclaim_warning"] = (
-                                "Native HDF5 read and bitwise output round trip only; "
-                                "historical scientific values are not established."
-                            )
+                                old = np.asarray(value)
+                                new = np.asarray(exported.attrs[name])
+                                if (old.dtype != new.dtype or old.shape != new.shape
+                                        or old.tobytes() != new.tobytes()
+                                        or not exported.attrs.get_id(name).get_type().equal(
+                                            selected.attrs.get_id(name).get_type())):
+                                    del exported.attrs[name]
+                                    omitted.append(name)
+                                else:
+                                    copied_attributes.append(name)
+                            if storage.layout == "chunked":
+                                validity = np.zeros(storage.grid, dtype="u1")
+                                assert selected.chunks is not None
+                                for origin, _, _, _ in storage.records:
+                                    validity[tuple(start // width for start, width in zip(origin, selected.chunks))] = 1
+                                target.require_group("/_h5reclaim").create_dataset(
+                                    "validity", data=validity, dtype="u1")
                             target.flush()
 
                         output_values = hashlib.sha256()
                         with h5py.File(output_temp, "r") as target:
                             exported = target[dataset_path]
-                            for selection in _blocks(shape, dtype.itemsize):
-                                output_values.update(exported[selection].tobytes(order="C"))
+                            for selection in _allocated_selections(storage, shape, selected.chunks, dtype.itemsize):
+                                output_values.update(np.asarray(exported[selection]).tobytes(order="C"))
                         if output_values.digest() != source_values.digest():
                             raise RecoveryError("output values differ from native reads of the source snapshot")
 
@@ -245,17 +450,35 @@ def export_readable(source: str | Path, dataset_path: str, output: str | Path,
                             "tool": "h5reclaim",
                             "tool_version": VERSION,
                             "mode": "readable_export",
-                            "outcome": "complete",
+                            "outcome": "partial" if storage.unknown else "complete",
                             "source": {
                                 "path": str(source), "size_bytes": source_size,
                                 "sha256_before": digest, "sha256_after": digest,
                             },
                             "dataset": {
-                                "path": dataset_path, "shape": list(shape), "dtype": dtype.str,
-                                "layout": layout, "allocated_chunks_checked": allocated_chunks,
-                                "logical_bytes": logical_bytes, "attributes_copied": [name for name, _ in attributes],
-                                "attributes_omitted": list(omitted),
+                                "path": dataset_path, "shape": list(shape), "dtype": dtype.descr if dtype.fields else dtype.str,
+                                "maxshape": [item for item in selected.maxshape],
+                                "chunks": list(selected.chunks) if selected.chunks else None,
+                                "filters_in_order": list(observed_filters),
+                                "layout": storage.layout,
+                                "source_object_header_address": object_address,
+                                "source_contiguous_byte_range": {
+                                    "start": int(contiguous_address),
+                                    "end_exclusive": int(contiguous_address) + logical_bytes,
+                                } if contiguous_address is not None else None,
+                                "source_contiguous_raw_sha256": contiguous_raw_sha256,
+                                "allocated_chunks_checked": len(storage.records),
+                                "unknown_chunk_origins": [list(origin) for origin in storage.unknown],
+                                "source_chunk_records": chunk_records,
+                                "logical_bytes": logical_bytes, "attributes_copied": copied_attributes,
+                                "attributes_omitted": omitted,
                             },
+                            "accepted_elements": accepted_elements,
+                            "unknown_elements": prod(shape) - accepted_elements,
+                            "validity_map": "/_h5reclaim/validity" if storage.layout == "chunked" else None,
+                            "validity_codes": {"0": "unknown source chunk; ignore output values at these coordinates",
+                                               "1": "allocated chunk with native read and bitwise output readback"}
+                            if storage.layout == "chunked" else None,
                             "output_path": str(output),
                             "blocks_verified": block_count,
                             "native_value_sha256": source_values.hexdigest(),
@@ -265,16 +488,17 @@ def export_readable(source: str | Path, dataset_path: str, output: str | Path,
                                 "comparisons": [vars(comparison) for comparison in comparisons],
                                 "warning": "Matching hints do not prove the origin or historical value of measurements.",
                             } if hints is not None else None,
-                            "verification": "all allocated values read through native HDF5 and output read back bitwise equal",
+                            "verification": "all accepted values read through native HDF5 and output read back bitwise equal",
                             "limits": (
                                 "This copies current native-readable values, not structurally recovered bytes. "
+                                "Values at unknown chunks are not accepted measurements and must be ignored. "
                                 "Allocation and round-trip checks cannot establish earlier scientific truth. "
-                                "Other objects, links, dimension scales, and non-scalar attributes are not copied."
+                                "Other objects, links, dimension scales, and omitted attributes are not copied."
                             ),
                         }
                         report_text = json.dumps(report, indent=2, sort_keys=True) + "\n"
                         with h5py.File(output_temp, "r+") as target:
-                            meta = target.create_group("/_h5reclaim")
+                            meta = target.require_group("/_h5reclaim")
                             meta.create_dataset(
                                 "report_json", data=report_text,
                                 dtype=h5py.string_dtype(encoding="utf-8"),
