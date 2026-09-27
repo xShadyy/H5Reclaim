@@ -17,6 +17,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Sequence
 
+from .worker_limits import run_worker
+
 MAX_AUDIT_SOURCE_BYTES = 4 * 1024**3
 MAX_AUDIT_RESPONSE_BYTES = 256 * 1024
 MAX_GROUP_DEPTH = 32
@@ -191,10 +193,9 @@ def audit_context(source: str | Path, selected_path: str, expected_sha256: str,
         environment.pop("HDF5_PLUGIN_PATH", None)
         environment.pop("HDF5_EXTFILE_PREFIX", None)
         try:
-            result = subprocess.run(
+            result = run_worker(
                 [sys.executable, "-m", "h5reclaim.scientific_context", str(request), str(response)],
-                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                env=environment, timeout=AUDIT_TIMEOUT_SECONDS, check=False,
+                env=environment, timeout_seconds=AUDIT_TIMEOUT_SECONDS, memory_bytes=1024**3,
             )
             if not response.is_file() or response.stat().st_size > MAX_AUDIT_RESPONSE_BYTES:
                 raise ValueError("audit worker produced no bounded response")

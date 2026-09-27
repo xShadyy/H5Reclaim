@@ -86,7 +86,7 @@ class ScientificContextTests(unittest.TestCase):
         self.assertTrue(any("selected attribute names exceed" in item for item in result["omissions"]))
 
     def test_native_child_crash_keeps_recovery_context_unknown(self):
-        with patch("h5reclaim.scientific_context.subprocess.run",
+        with patch("h5reclaim.scientific_context.run_worker",
                    return_value=subprocess.CompletedProcess([], -11)):
             result = audit_context(self.source, "/lab/readings", self.digest)
         self.assertEqual(result["status"], "uninspected")
