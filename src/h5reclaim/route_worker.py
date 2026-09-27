@@ -17,7 +17,7 @@ from typing import Any
 
 MAX_REQUEST = 65536
 MAX_REPORT = 32 * 1024 * 1024
-ROUTES = frozenset({"family", "vds", "external_raw", "nonchunked", "replicas"})
+ROUTES = frozenset({"family", "split", "vds", "external_raw", "nonchunked", "replicas"})
 
 
 def _child(request_path: Path, response_path: Path) -> int:
@@ -39,6 +39,9 @@ def _child(request_path: Path, response_path: Path) -> int:
         if route == "family":
             from .family_bundle import export_family
             export_family(args["manifest"], args["dataset"], output, report)
+        elif route == "split":
+            from .split_bundle import export_split
+            export_split(args["manifest"], args["dataset"], output, report)
         elif route == "vds":
             from .vds_export import export_vds
             export_vds(args["source"], args["dataset"], output, report, args["manifest"],

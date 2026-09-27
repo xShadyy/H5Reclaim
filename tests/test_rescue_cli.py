@@ -93,3 +93,20 @@ class RescueCliTests(unittest.TestCase):
         self.assertEqual(report["mode"], "readable_export")
         with h5py.File(self.out) as file:
             self.assertEqual(file["science"][:].tobytes(), rows.tobytes())
+
+    def test_split_driver_checks_metadata_member_and_exports_raw_member(self) -> None:
+        stem = self.base / "run"
+        with h5py.File(stem, "w", driver="split", meta_ext=b"-m.h5", raw_ext=b"-r.h5") as file:
+            file.create_dataset("science", data=np.arange(14, dtype="<u4"), chunks=(7,))
+        metadata, raw = self.base / "run-m.h5", self.base / "run-r.h5"
+        manifest = self.base / "split.json"
+        manifest.write_text(json.dumps({"schema_version": 1, "driver": "split", "members": [
+            {"role": role, "path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+            for role, path in (("metadata", metadata), ("raw", raw))
+        ]}), encoding="utf-8")
+        self.assertNotEqual(self._run(raw, "--split-members", str(manifest)).returncode, 0)
+        self.assertFalse(self.out.exists())
+        result = self._run(metadata, "--split-members", str(manifest))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        with h5py.File(self.out) as file:
+            np.testing.assert_array_equal(file["science"][:], np.arange(14, dtype="<u4"))

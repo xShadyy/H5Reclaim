@@ -298,6 +298,7 @@ def main(argv: list[str] | None = None) -> int:
     choices = rescue_cmd.add_mutually_exclusive_group()
     choices.add_argument("--related-files", type=Path, help="pinned manifest for external raw or virtual datasets")
     choices.add_argument("--family-members", type=Path, help="pinned HDF5 Family member manifest")
+    choices.add_argument("--split-members", type=Path, help="pinned HDF5 Split metadata and raw member manifest")
     choices.add_argument("--replicas", type=Path, help="pinned replica manifest and prospective baseline")
     args = parser.parse_args(argv)
 
@@ -326,6 +327,13 @@ def main(argv: list[str] | None = None) -> int:
                     raise RecoveryError("Family source argument must be manifest member zero")
                 report = run_route("family", args.output, args.report,
                                    dataset=args.dataset, manifest=str(args.family_members.absolute()))
+            elif args.split_members is not None:
+                from .split_bundle import _load_manifest
+                metadata, _, _, _ = _load_manifest(args.split_members)
+                if args.source.resolve(strict=True) != metadata.resolve(strict=True):
+                    raise RecoveryError("Split source argument must be the metadata member")
+                report = run_route("split", args.output, args.report,
+                                   dataset=args.dataset, manifest=str(args.split_members.absolute()))
             elif args.related_files is not None:
                 inventory = inspect_dependencies(args.source, args.dataset)
                 kinds = {item["kind"] for item in inventory["dependencies"]}
