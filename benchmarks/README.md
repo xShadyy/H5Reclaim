@@ -1,5 +1,21 @@
 # Independent broken-link benchmark
 
+## Authentic native-readable scientific representatives
+
+Run `python benchmarks/run_real_readable_corpus.py` to evaluate the public
+`export-readable` route on the two intact Zenodo representative datasets.
+The quantum file contributes a contiguous 1,000 by 2 `uint8` dataset; the
+aircraft file contributes 2,088 contiguous records with a 37-field compound
+datatype. The evaluator verifies all four original corpus hashes, supplies
+only disposable current-file copies to the subprocess, and independently
+checks exact current value bits, HDF5 datatype, shape, contiguous physical
+range and raw hash, and the embedded/external report. In the observed run,
+both exports passed: 2,000 quantum elements and 2,088 aircraft records matched
+the intact originals bit for bit. The scorer's tamper test changes an output
+value and detects the mismatch. `--json` prints details, and `--work-dir
+NEW-OR-EMPTY-DIR` retains evidence. Native-readable export does not repair
+damaged metadata and cannot certify an earlier, unrecorded measurement.
+
 ## Intact authentic candidate exports
 
 Run `python benchmarks/run_real_candidate_exports.py` to verify all pinned

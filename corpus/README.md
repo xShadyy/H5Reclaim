@@ -38,6 +38,12 @@ On Windows PowerShell, run `py -3 -m venv .venv`, then `./.venv/Scripts/python.e
 
 The current survey classifies 245 datasets as unsupported and six GWOSC datasets as structural candidates: the strain dataset and the two `/quality/...` mask datasets in each GWOSC file. That is a useful finding about **real input coverage**. The files have different storage layouts, ranks, types, and filters. The 4 kHz strain has an intact level-zero chunk-tree root. It can be exported from its directly indexed chunks when metadata remains readable, but there is no safe detached-link reconstruction for a broken pointer in that root. Do not count `candidate` as recovered data: the inventory does not read measurement values or attempt repair. A separate candidate-export evaluator compared all six healthy originals against disposable exports: 196/196 chunks at exact coordinates and physical source extents, with zero wrong output chunks. These were intact-index exports, not damage repair in the four newly classified quality datasets.
 
+Both Zenodo representative datasets were also copied exactly through the
+separate native-readable route. The quantum dataset has 2,000 contiguous
+`uint8` elements; the Pallas dataset has 2,088 contiguous records with 37
+compound fields. Those results do not turn them into structural candidates:
+native HDF5 already reads their intact files, and no damaged index is repaired.
+
 Run `python benchmarks/run_gwosc_recovery.py` for the separate controlled recovery trial on the authentic 16 kHz file. It changes one verified pointer in a copy, confirms 57 native-reader failures or wrong chunks, and compares all 128 recovered chunks against original float64 bits at the same coordinates. It checks bounded scalar attributes that are safe to copy, reports omitted attributes, and verifies unchanged source hashes. The output omits the original `/meta` and `/quality` datasets; it is a recovery artifact rather than a replacement research file.
 
 Run `python benchmarks/run_damage_catalog.py` for controlled trials on both GWOSC layouts and safe-refusal checks on the two other scientific layouts. The authentic 4 kHz file has an intact direct chunk index; it yields 64 exact chunks in the baseline trial and 63 exact chunks plus one explicitly failed payload in a corruption trial. A missing direct payload pointer is refused because there is no justified chunk location to reconstruct.
