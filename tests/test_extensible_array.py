@@ -295,6 +295,23 @@ class ExtensibleArrayTests(unittest.TestCase):
         self.assertEqual(result["counts"]["allocation_unknown"], 3397)
         self.assertEqual(result["outcome"], "partial")
 
+    def test_paged_bitmap_address_changes_across_data_blocks(self):
+        # Different fixed maxima put the same selected coordinate in another
+        # page or the next data block of the same secondary block.
+        for maximum, page, bit in ((1_000_000, 0, 464), (1_001_024, 1, 465),
+                                   (1_003_072, 3, 467), (1_004_096, 0, 468)):
+            with self.subTest(maximum=maximum):
+                _created(self.path, (2, 2), (1, 1), (maximum, None))
+                index, _ = _parse(self.path)
+                chosen = next(item for item in index.chunks if item.coordinate == (0, 1))
+                self.assertEqual((chosen.evidence["index_chain"][-1]["page_index"],
+                                  chosen.evidence["index_chain"][-1]["bitmap_bit"]),
+                                 (page, bit))
+                with h5py.File(self.path, "r") as file, ModernH5File(self.path) as reader:
+                    mask, raw = file["data"].id.read_direct_chunk(chosen.coordinate)
+                    self.assertEqual((mask, raw),
+                                     (chosen.filter_mask, reader.read_at(chosen.address, chosen.size)))
+
 
 if __name__ == "__main__":
     unittest.main()
