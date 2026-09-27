@@ -91,23 +91,37 @@ def _selected_coordinates(space: h5py.h5s.SpaceID, shape: tuple[int, ...]) -> tu
 def _raw_mapping(creation: h5py.h5p.PropDCID, index: int,
                  virtual_shape: tuple[int, ...]) -> dict[str, Any]:
     name = _exact_string(creation.get_virtual_filename(index), label="VDS source name")
-    object_path = _exact_string(creation.get_virtual_dsetname(index), label="VDS source dataset path")
+    declared_path = _exact_string(creation.get_virtual_dsetname(index), label="VDS source dataset path")
     if name == "." or "%" in name or "$" in name:
         raise UnsupportedCase("self-references, filename patterns, and environment substitutions are unsupported")
+    if "%" in declared_path or "$" in declared_path:
+        raise UnsupportedCase("dynamic VDS source dataset names are unsupported")
+    # HDF5 also accepts a path relative to the source file's root group.
+    # Canonical traversal still rejects soft/external links and dot segments.
+    object_path = declared_path if declared_path.startswith("/") else "/" + declared_path
     virtual_space = creation.get_virtual_vspace(index)
     virtual = _selected_coordinates(virtual_space, virtual_shape)
     source_space = creation.get_virtual_srcspace(index)
-    if any(dimension == h5py.h5s.UNLIMITED for dimension in source_space.get_simple_extent_dims(True)):
+    source_all = (source_space.get_simple_extent_ndims() == 0
+                  and source_space.get_select_type() == h5py.h5s.SEL_ALL
+                  and source_space.get_select_npoints() == 1)
+    if not source_all and any(dimension == h5py.h5s.UNLIMITED
+                              for dimension in source_space.get_simple_extent_dims(True)):
         raise UnsupportedCase("unlimited VDS source selections are unsupported")
-    # The current source extent is checked against the actual pinned dataset
-    # after it is opened; the declared selection's extent can differ from it.
-    source = _selected_coordinates(source_space, tuple(source_space.get_simple_extent_dims()))
-    if len(virtual) != len(source):
+    # HDF5 represents an unsliced VirtualSource as a rank-zero H5S_ALL
+    # placeholder. Its coordinates must be derived from the *pinned source
+    # dataset's* current dataspace, never guessed from the virtual extent.
+    # Explicit selections retain the ordinary declared source dataspace.
+    source = (None if source_all else _selected_coordinates(
+        source_space, tuple(source_space.get_simple_extent_dims())))
+    if source is not None and len(virtual) != len(source):
         raise UnsupportedCase("virtual and source selections have unequal point counts")
     return {"index": index, "declared_name": name, "object_path": object_path,
+            "declared_object_path": declared_path,
             "virtual": virtual, "source": source,
             "virtual_selection": _selection_description(virtual_space),
-            "source_selection": _selection_description(source_space)}
+            "source_selection": ({"type": "all_current_pinned_source_extent"}
+                                 if source_all else _selection_description(source_space))}
 
 
 def _selection_description(space: h5py.h5s.SpaceID) -> dict[str, Any]:
@@ -214,7 +228,9 @@ def export_vds(source: str | Path, dataset_path: str, output: str | Path,
                     name = mapping["declared_name"]
                     item = related[name]
                     record = {"mapping_index": mapping["index"], "declared_name": name,
-                              "object_path": mapping["object_path"], "mapped_elements": len(mapping["virtual"]),
+                              "object_path": mapping["object_path"],
+                              "declared_object_path": mapping["declared_object_path"],
+                              "mapped_elements": len(mapping["virtual"]),
                               "virtual_selection": mapping["virtual_selection"],
                               "source_selection": mapping["source_selection"],
                               "coordinate_pairing": "C-order selection iteration",
@@ -231,8 +247,16 @@ def export_vds(source: str | Path, dataset_path: str, output: str | Path,
                         if not data.id.get_type().equal(selected.id.get_type()):
                             raise UnsupportedCase("VDS source datatype differs from the virtual dataset")
                         actual_shape = tuple(int(length) for length in data.shape)
+                        if not 1 <= len(actual_shape) <= 4 or any(length <= 0 for length in actual_shape):
+                            raise UnsupportedCase("source dataset must have nonempty rank one through four")
+                        source_coords = mapping["source"]
+                        if source_coords is None:
+                            if prod(actual_shape) != len(mapping["virtual"]):
+                                raise UnsupportedCase("full source extent does not match the mapped point count")
+                            source_coords = _selected_coordinates(data.id.get_space(), actual_shape)
+                            record["source_selection"]["resolved_extent"] = list(actual_shape)
                         if any(any(point[axis] >= extent for axis, extent in enumerate(actual_shape))
-                               for point in mapping["source"]):
+                               for point in source_coords):
                             raise UnsupportedCase("source selection exceeds the pinned dataset's current extent")
                         storage = _check_storage(data, item["size"])
                         record["source_object_header_address"] = int(h5py.h5o.get_info(data.id).addr)
@@ -242,7 +266,7 @@ def export_vds(source: str | Path, dataset_path: str, output: str | Path,
                         # The storage inspector checks every reachable allocation
                         # record. Only selected allocated coordinates are read.
                         unknown = set(storage.unknown)
-                        for virtual_coord, source_coord in zip(mapping["virtual"], mapping["source"]):
+                        for virtual_coord, source_coord in zip(mapping["virtual"], source_coords):
                             if storage.layout == "chunked":
                                 assert data.chunks is not None
                                 origin = tuple((index // width) * width

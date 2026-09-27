@@ -35,6 +35,50 @@ def _vds(path: Path, maps: list[tuple[str, str, tuple, tuple]], shape: tuple[int
 
 
 class VDSExportTests(unittest.TestCase):
+    def test_unsliced_source_uses_pinned_extent_and_relative_root_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, vds = root / "source.h5", root / "virtual.h5"
+            expected = (np.arange(10, dtype="<u4") * 19).reshape(10)
+            with h5py.File(source, "w") as handle:
+                handle["science"] = expected
+            layout = h5py.VirtualLayout(shape=(10,), dtype="<u4")
+            layout[:] = h5py.VirtualSource("source.h5", "science", shape=(10,))
+            with h5py.File(vds, "w") as handle:
+                handle.create_virtual_dataset("science", layout, fillvalue=9999)
+            output, report = root / "out.h5", root / "report.json"
+            result = export_vds(vds, "/science", output, report,
+                                _manifest(("source.h5", source)))
+            self.assertEqual(result["accepted_elements"], 10)
+            self.assertEqual(result["mappings"][0]["source_selection"],
+                             {"type": "all_current_pinned_source_extent", "resolved_extent": [10]})
+            self.assertEqual(result["mappings"][0]["declared_object_path"], "science")
+            with h5py.File(output) as handle:
+                np.testing.assert_array_equal(handle["/science"][...], expected)
+                np.testing.assert_array_equal(handle["/_h5reclaim/validity"][...], [1] * 10)
+
+            output.unlink()
+            report.unlink()
+            result = export_vds(vds, "/science", output, report, {"schema_version": 1, "files": []})
+            self.assertEqual(result["accepted_elements"], 0)
+            with h5py.File(output) as handle:
+                np.testing.assert_array_equal(handle["/_h5reclaim/validity"][...], [0] * 10)
+
+    def test_unsliced_source_extent_mismatch_refuses(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, vds = root / "source.h5", root / "virtual.h5"
+            with h5py.File(source, "w") as handle:
+                handle["science"] = np.arange(9, dtype="<u4")
+            layout = h5py.VirtualLayout(shape=(10,), dtype="<u4")
+            layout[:] = h5py.VirtualSource("source.h5", "science", shape=(10,))
+            with h5py.File(vds, "w") as handle:
+                handle.create_virtual_dataset("science", layout)
+            with self.assertRaisesRegex(UnsupportedCase, "full source extent"):
+                export_vds(vds, "/science", root / "out.h5", root / "report.json",
+                           _manifest(("source.h5", source)))
+            self.assertFalse((root / "out.h5").exists())
+
     def test_multiaxis_blocks_use_c_coordinate_order(self) -> None:
         space = h5py.h5s.create_simple((4, 6))
         space.select_hyperslab(start=(0, 0), stride=(2, 3), count=(2, 2), block=(2, 2))
