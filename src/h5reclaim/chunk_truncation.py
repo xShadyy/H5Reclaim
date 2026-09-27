@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import tempfile
 from dataclasses import replace
 from math import prod
@@ -239,6 +240,8 @@ def analyze_truncated(source: Path, dataset_path: str, *,
     source = Path(source)
     with source_snapshot(source) as (snapshot, original_hash, identity, physical_size):
         declared, version = _declared_end(snapshot, physical_size, max_missing_tail_bytes)
+        if shutil.disk_usage(snapshot.parent).free < declared - physical_size + 32 * 1024 * 1024:
+            raise UnsupportedCase("insufficient free space for bounded private tail extension")
         with snapshot.open("r+b") as stream:
             stream.truncate(declared)
         # The rooted raw parser checks the entire selected hard-link path,
