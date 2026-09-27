@@ -23,9 +23,49 @@ Select one dataset from the damaged file and choose new destinations:
 python -m h5reclaim rescue damaged.h5 --dataset /experiment/readings --output rescued.h5 --report evidence.json
 ```
 
-Without additional files, `rescue` first attempts rooted chunked structural recovery. If its schema is unsupported, it tries rooted compact/contiguous numeric recovery; if that cannot justify output, it tries the separate bounded native-readable copy route. An actual structural contradiction is never silently reinterpreted as another layout. The printed route and JSON report distinguish recovery from copying values HDF5 could already read. The original is read-only; output and report must be new paths. Examine `/_h5reclaim/chunk_status`, `/_h5reclaim/element_status`, or `/_h5reclaim/validity`, whichever the report names. Fill at an unknown position is not a measurement.
+Without additional files, `rescue` first attempts rooted chunked structural recovery. If its schema is unsupported, it tries rooted compact/contiguous numeric recovery; if that cannot justify output, it tries the separate bounded native-readable copy route. An actual structural contradiction is never silently reinterpreted as another layout. The printed route and JSON report distinguish recovery from copying values HDF5 could already read. The original is read-only; output and report must be new paths. Examine `/_h5reclaim/chunk_status`, `/_h5reclaim/element_status`, or `/_h5reclaim/validity`, whichever the report names. Fill at an unknown position is not a measurement. Explicit `rescue` options below choose separate routes and cannot be combined with one another.
 
 The compact/contiguous structural route can retain fully present elements at their justified offsets after physical tail truncation, and leaves incomplete elements unknown. It currently supports a rooted local numeric dataset of rank zero through four, canonical fixed-width integers or IEEE floats, and selected layout messages v3–v5. It does not restore missing bytes or claim historical authenticity for unchecksummed values. The readable fallback preserves bounded fixed-size local schema when native HDF5 can already read it; its report says `readable_export`.
+
+### Salvage complete chunks before a physical tail cut
+
+When a chunked file was physically shortened, select the tail route explicitly:
+
+```powershell
+python -m h5reclaim rescue shortened.h5 --dataset /experiment/readings --truncated-chunks --output partial.h5 --report tail-evidence.json
+```
+
+The file's declared EOF must exceed its physical length by at most 256 MiB.
+The rooted selected path, schema, and complete older or newer chunk index must
+fit physically inside the shortened source. The route extends only a private
+snapshot for parsing. Every accepted stored chunk must end before the actual
+EOF; cut chunks are marked unavailable in `/_h5reclaim/chunk_status`, and
+unallocated positions stay unknown. The derived dataset's zero fill at those
+positions is not recovered science. Missing metadata or index bytes, an
+overlap with a known sibling owner, contradictory structure, or a larger tail
+cut causes refusal. The ordinary source-size, chunk and grid bounds apply.
+
+### Trial one checked metadata pointer
+
+If the observed fault is a single byte in a modern superblock root pointer,
+or a selected modern object header's chunk-index pointer, try one declared
+kind on a disposable private copy:
+
+```powershell
+python -m h5reclaim rescue damaged.h5 --dataset /experiment/readings --metadata-trial root --output root-trial.h5 --report root-trial.json
+python -m h5reclaim rescue damaged.h5 --dataset /readings --metadata-trial layout --output layout-trial.h5 --report layout-trial.json
+```
+
+`root` requires a modern version-2/3 superblock whose other fields are
+valid. `layout` requires a valid superblock, a direct local hard link under
+a checksummed compact root, and a selected checksummed first-chunk v2 header
+with a supported modern index-pointer field. The command searches only one
+byte in that pointer, keeps the **original** checksum, rejects multiple
+checksum-matching substitutions, and validates rooted ownership and a
+native-readable selected dataset. The input limit is 512 MiB. It publishes
+only a new selected dataset and evidence report. A checksum match does not
+establish the historical value of the measurements or make the corrected
+trial copy suitable for continued acquisition.
 
 Structural routes refuse a selected physical range when another observed rooted local dataset claims those bytes. Reports state when bounded sibling enumeration was incomplete; a complete native inventory is still not a historical ownership certificate. A manifest rejects duplicate keys and a related raw file that aliases the main HDF5 container.
 Native-readable, VDS source, Family, and Split value exports also reject observed competing sibling allocations; they refuse if their bounded native sibling inventory cannot complete.
@@ -140,6 +180,73 @@ python -m h5reclaim rescue damaged.h5 --dataset /experiment/readings --parity pa
 ```
 
 Two damaged chunks in the same stripe remain unknown. Parity also needs surviving selected metadata and coordinate ownership; it cannot repair arbitrary index loss. The capture, baseline, and sidecar must be independently trustworthy.
+
+### Capture the selected schema and physical map before damage
+
+For a complete, locally stored chunked dataset that is still intact, an
+independent capsule records exact schema, allocated chunk offsets, stored
+raw and decoded hashes, and per-block hashes for unfiltered chunks. It does
+**not** contain a copy of the measurement bytes:
+
+```powershell
+python -m h5reclaim capture-capsule healthy.h5 --dataset /experiment/readings --output capsule.zip
+```
+
+Keep both `capsule.zip` and its printed SHA-256 independently of the HDF5
+acquisition. In a future incident, supply the damaged file, selected path,
+and the **pre-incident** digest:
+
+```powershell
+$priorCapsuleSha = '<paste the lowercase SHA-256 retained before damage>'
+python -m h5reclaim rescue damaged.h5 --dataset /experiment/readings --capsule capsule.zip --capsule-sha256 $priorCapsuleSha --output capsule-values.h5 --report capsule-evidence.json
+```
+
+The route reads raw bytes at the captured offsets even when the damaged file
+cannot open its root, selected header, or chunk index. It checks each
+complete stored chunk against the prior raw hash. For unfiltered chunks,
+matching smaller blocks can be accepted as complete elements while altered
+blocks are unknown. Filtered chunks need the entire stored stream to match;
+the capsule has no replacement payload. Check
+`/_h5reclaim/chunk_status` and, where the report provides it,
+`/_h5reclaim/element_status`. A capsule for another acquisition, one captured
+after damage, a tampered archive, moved chunk bytes, or overwritten unique
+bytes cannot justify exact historical recovery. The current route limits
+selected logical data to 512 MiB, the grid to 8,192 chunks, and the capsule
+archive to 48 MiB.
+
+### Retain multiple parity shards before damage
+
+For an intact, complete, supported **primitive numeric** chunked dataset,
+first capture the coordinate baseline above. Then make two to four GF(256)
+parity shards for each stripe of two to sixteen chunks:
+
+```powershell
+python -m h5reclaim capture-erasure healthy.h5 --dataset /experiment/readings --baseline baseline.json --stripe-width 8 --parity-shards 3 --output erasure.zip
+```
+
+Keep the baseline, parity archive, and their separate SHA-256 digests before
+an incident. A recovery manifest pins the current damaged file and both
+sidecars:
+
+```json
+{
+  "schema_version": 1,
+  "damaged_sha256": "<SHA-256 of the current damaged HDF5 file>",
+  "baseline": {"path": "C:\\Lab\\baseline.json", "sha256": "<pre-incident SHA-256 of baseline>"},
+  "erasure": {"path": "C:\\Lab\\erasure.zip", "sha256": "<pre-incident SHA-256 of erasure ZIP>"}
+}
+```
+
+```powershell
+python -m h5reclaim rescue damaged.h5 --dataset /experiment/readings --erasure erasure_manifest.json --output parity-values.h5 --report parity-evidence.json
+```
+
+At most the number of retained parity shards can replace unknown chunks in
+each stripe. Every accepted survivor and reconstructed chunk must match its
+prior coordinate hash. This needs a surviving selected schema and rooted
+index; the separate capsule can bypass lost metadata under its own limits.
+Nominal chunks are capped at 1 MiB and the parity archive at 256 MiB. A
+hash captured after an incident or a stale sidecar is not prior evidence.
 
 ### Open a Family driver bundle
 
@@ -274,7 +381,7 @@ An optional `source_sha256` refers to the **damaged input**. Observed conflicts 
 python -m h5reclaim recover damaged.h5 --dataset /experiment/readings --output result.h5 --report result.json
 ```
 
-The destinations must not exist. Recovery reads only the damaged input through a private snapshot. Native HDF5 normally locates the selected local dataset and schema; when native metadata lookup fails, a narrower rooted parser can resolve surviving old symbol-table or modern compact/dense-group links and required messages. It refuses unsupported paths and records this route in `metadata_resolution`. A bounded independent parser validates raw indexes and decodes chunks. Version-1 trees can bridge one lost **leaf** pointer only through a unique matching parent interval and reciprocal left/right sibling links. One modern fixed-array header to data-block pointer can be reconstructed only when a unique candidate restores the **original header checksum**, has a checked back-pointer, and passes bounded coordinate and range checks. Other broken modern links remain unsupported. The report's `evidence_ledger` records index chains, physical ranges, checksums or their absence, decoding checks, contradictions, and per-region decisions.
+The destinations must not exist. Recovery reads only the damaged input through a private snapshot. Native HDF5 normally locates the selected local dataset and schema; when native metadata lookup fails, a narrower rooted parser can resolve surviving old symbol-table or modern compact/dense-group links and required messages. It refuses unsupported paths and records this route in `metadata_resolution`. A bounded independent parser validates raw indexes and decodes chunks. Version-1 trees can bridge one lost **leaf** pointer only through a unique matching parent interval and reciprocal left/right sibling links. Modern damage repair applies only to documented, bounded pointer positions when the unique substitution restores an original metadata checksum and the child and full traversal agree; see the [damage taxonomy](damage-taxonomy.md) for the implemented links. Other broken links remain unsupported. The report's `evidence_ledger` records index chains, physical ranges, checksums or their absence, decoding checks, contradictions, and per-region decisions.
 
 | Structural condition | Supported behavior |
 | --- | --- |
@@ -314,7 +421,34 @@ python -m h5reclaim export-readable damaged.h5 --dataset /experiment/readings --
 
 This distinct route needs native HDF5 to read the selected local dataset. Bounded compact, contiguous, and chunked layouts of rank one through four can include canonical fixed-width numeric, boolean/enum, complex, fixed strings/opaque bytes, and fixed-size compound/array fields. The selected HDF5 datatype, shape/maxshape, fill rules, chunking, and built-in filter order are copied. Native output readback checks bytes. Sparse chunked input is `partial`, with `/_h5reclaim/validity`: 1 accepted current value, 0 unknown element whose output fill must be ignored. The report records physical extents, masks, and raw hashes when available.
 
+For **structural** chunked recovery, bounded self-contained fixed-size
+compound records, fixed strings, enums, arrays and opaque values can retain
+their encoded HDF5 file type and exact raw record bytes. The recursive type
+check limits nesting to four, compound and enum members to 64, and a record
+to 1 MiB; selected chunks remain bounded by the ordinary decoder and grid
+quotas. Nested reference or variable-length/heap-backed members are refused.
+The broad native-readable route above and the structural route provide
+different evidence; check the report `mode` and per-region integrity.
+
 Logical data is limited to 512 MiB in 1 MiB blocks, with 2 MiB stored chunks and at most 8,192 grid entries. Supported compiled-in filters include DEFLATE, shuffle, Fletcher32, NBIT, SCALEOFFSET and SZIP when the linked HDF5 library provides both SZIP directions. SCALEOFFSET can be lossy at acquisition. Bounded top-level object and region references to the selected dataset are remapped and checked by logical target and selection. Outside or dangling references, nested reference graphs, variable-length heap values, plugin filters, and arbitrary bit representations are refused. External/VDS values use the separate pinned-bundle routes above. Native reads run in a child process with a 900-second deadline and disabled dynamic filter plugin loading. POSIX applies a 3 GiB address-space cap and disables core dumps; Windows has the deadline but no enforced worker memory cap. This is process isolation for crashes and resource bounds, not a security sandbox for hostile native code. This route cannot repair an inaccessible index or verify values before damage.
+
+For a larger, **currently native-readable** one-dimensional primitive numeric
+dataset, use the separate streaming route:
+
+```powershell
+python -m h5reclaim rescue large.h5 --dataset /experiment/readings --large-readable --output large-values.h5 --report large-evidence.json
+```
+
+This route accepts chunked or contiguous storage, streams through bounded
+blocks, keeps sparse positions unknown, and stores physical evidence and
+validity arrays inside the output HDF5 file. The report points to those
+datasets instead of embedding a huge per-chunk list. Default limits include
+64 GiB physical source, 8 GiB copied snapshot data, 16 GiB logical data,
+18 GiB output, 65,536 allocated chunks, a 1,048,576-position grid,
+8 MiB decoded chunks, and a deadline. Disk preflight and available space
+still determine whether a particular file can run. The source may be larger
+than 4 GiB, but no lost index, old value, compound record, other rank, or
+nonlocal dependency is reconstructed by this route.
 
 ## Interpreting results
 

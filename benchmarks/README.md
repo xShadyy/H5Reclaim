@@ -1,5 +1,26 @@
 # Recovery benchmarks
 
+## Version 0.9 focused regression coverage
+
+The following generated tests exercise distinct new routes and deliberately
+contradictory inputs. They are **development tests**, not an independent
+population sample:
+
+```sh
+python -m unittest tests.test_chunk_truncation tests.test_metadata_correction tests.test_recovery_capsule tests.test_erasure_sidecar tests.test_fixed_schemas tests.test_large_streaming tests.test_modern_link_repair_cli -q
+```
+
+The capsule tests include a pre-incident capture of the pinned authentic
+GWOSC strain file, a broken-root disposable copy, and evaluator-only exact
+comparison. The restoration receives the damaged bytes and independent
+capsule, not the pristine reference. Other cases check physically cut chunks,
+one-byte checked metadata trials, changed or forged prospective sidecars,
+more than the retained parity shard count, exact HDF5 fixed-record schema,
+and sparse current-value streaming. A selected successful trial does not
+measure the prevalence of its failure family in scientific practice. See the
+[damage taxonomy](../docs/damage-taxonomy.md) for route eligibility and
+remaining gaps.
+
 ## Independently supplied held-out panel
 
 `python benchmarks/run_heldout_trials.py --manifest PANEL.json --work-dir NEW-DIRECTORY`

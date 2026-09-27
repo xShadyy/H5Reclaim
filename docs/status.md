@@ -2,6 +2,89 @@
 
 Updated: 2026-09-27
 
+## Version 0.9.0: tail salvage, checked metadata trials, prospective capsules, and broader fixed records
+
+The `rescue --truncated-chunks` route handles a physical tail cut when the
+declared HDF5 end is at most 256 MiB beyond physical EOF. It temporarily
+extends a **private snapshot** so bounded metadata parsing can inspect the
+surviving selected path and intact older or newer chunk index. Only metadata
+and complete stored chunks physically inside the original length can support
+an accepted measurement. An indexed chunk cut by EOF becomes unavailable;
+private zero padding is never accepted as recovered data. Missing schema or
+index bytes refuse. This route retains the prior 4 GiB source and selected
+chunk-grid limits.
+
+`rescue --metadata-trial root` and `--metadata-trial layout` offer two narrow
+checked pointer corrections on a disposable copy. Each tests one changed byte
+within a declared modern pointer field against its **original stored
+checksum**, requires a unique matching substitution, then checks rooted
+metadata, selected index, native open and bounded ownership before publishing
+only a selected native-readable output. Root trials require a version-2 or
+version-3 superblock with valid other fields. Layout trials need an intact
+modern superblock and one direct checked compact-root hard link to a selected
+first-chunk v2 object header with a modern fixed-array, extensible-array or
+version-2 B-tree layout pointer. The original checksum is not rewritten and
+no corrected container is published. These trials do not repair arbitrary
+metadata or authenticate historical payload bytes. Inputs are capped at
+512 MiB for the correction trial.
+
+`capture-capsule` can prospectively retain a selected chunked dataset's
+exact HDF5 datatype/schema template, physical chunk offsets, raw and decoded
+hashes, and unfiltered block hashes, without copying its measurements into
+the capsule. `rescue --capsule` verifies the separately retained capsule
+SHA-256 and reads matching raw bytes from the damaged file at the captured
+physical offsets. This can work when the damaged file's root, selected
+header or index is no longer openable. Unchanged unfiltered blocks can be
+kept at element granularity inside an otherwise altered chunk; a filtered
+stored stream needs a whole-chunk hash match. The capsule route is bounded to
+512 MiB logical data, at most 8,192 selected chunks and a 48 MiB capsule.
+It needs a trustworthy independent pre-incident capture. It cannot infer
+new bytes, recognize a relocated payload, or prove that capture preceded an
+incident merely from its digest.
+
+`capture-erasure` extends prospective chunk redundancy with two to four
+GF(256) parity shards per stripe of two to sixteen nominal chunks. A later
+`rescue --erasure` can restore no more damaged or missing chunks in a stripe
+than retained parity shards, and only when every surviving companion and
+reconstructed chunk matches a separately pinned prior coordinate hash. It
+requires the damaged file's selected metadata and index to remain parseable.
+Capture accepts complete nominal chunks of at most 1 MiB and an archive bound
+of 256 MiB; it neither replaces the exact-schema capsule nor helps if no
+baseline and sidecar were retained before damage.
+
+Chunked structural recovery now retains exact HDF5 file type encoding for
+bounded self-contained fixed-size compound, enum, array, fixed string and
+opaque records, including nested combinations within declared size, member
+and depth limits. The original field offsets, enum names, string padding,
+opaque tags and record bytes are preserved, including under selected damaged
+index or optional metadata paths. Variable-length, heap-backed and reference
+graphs still refuse structural reconstruction. Numeric-only baseline, replica
+and parity routes continue to reject these broader schemas; the capsule
+route is the prospective evidence path for selected fixed records.
+
+`rescue --large-readable` streams one-dimensional, currently native-readable
+primitive numeric chunked or contiguous values through bounded blocks. It
+raises the physical-source ceiling to 64 GiB, copied bytes to 8 GiB and
+logical selected values to 16 GiB under disk, time, output and index quotas.
+Its sparse validity and evidence records are stored as HDF5 datasets instead
+of an enormous JSON array. This is a current-value export. It cannot repair
+an inaccessible chunk index or establish the values before damage. Regular
+structural routes retain their smaller limits.
+
+Selected modern index repairs also extend beyond the prior FAHD-to-FADB
+link. An extensible-array header to index block, index block to a data or
+secondary block, version-2 B-tree header to root, or internal node to child
+can be tried when the **original** parent checksum uniquely determines one
+pointer substitution within the bounded scan. A checked child, complete
+traversal, coordinate and physical-range checks, and ownership checks must
+agree. These are specific one-link damage paths. Rewritten checksums,
+multiple broken nodes, ambiguous candidates and unsupported layouts do not
+become generally recoverable.
+
+The section below records the prior v0.8.0 release and its historical test
+totals. New-route regression and benchmark results for v0.9.0 must be read
+from the release verification record once the complete test run finishes.
+
 ## Version 0.8.0: additional damage routes and independent integrity gates
 
 This release adds narrow, evidence-gated routes for several different failure
