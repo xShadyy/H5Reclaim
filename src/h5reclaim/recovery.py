@@ -569,6 +569,7 @@ def _record_fallback(report: dict[str, Any], fallback: Any) -> None:
             for step in fallback.link_chain
         ],
         "omitted_auxiliary_metadata": list(fallback.omitted_auxiliary_metadata),
+        "resolved_shared_messages": list(getattr(fallback, "resolved_shared_messages", ())),
         "warning": (
             "Older metadata lacks checksums; rooted links can be internally plausible "
             "without establishing historical ownership."

@@ -23,6 +23,7 @@ from .metadata import DatasetSpec
 from .modern_indexes import ModernH5File, lookup3
 from .dense_group_links import read_dense_group_links
 from .schema_codec import FilterDescriptor
+from .shared_messages import resolve_shared_schema
 
 
 MAX_PATH_BYTES = 2048
@@ -65,6 +66,7 @@ class FallbackMetadata:
     metadata_ranges: tuple[tuple[int, int, str], ...]
     omitted_auxiliary_metadata: tuple[str, ...] = ()
     route: str = "checksummed_modern_compact_hard_links"
+    resolved_shared_messages: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -815,14 +817,32 @@ def read_dataset_spec_fallback(
         selected = _messages(reader, address)
         if _unique(selected, 7) is not None:
             raise UnsupportedFormat("selected dataset uses external raw storage")
-        space, dtype, layout = (_unique(selected, k) for k in (1, 3, 8))
+        shared_routes: list[str] = []
+
+        def selected_message(kind: int) -> HeaderMessage | None:
+            matching = [message for message in selected if message.kind == kind]
+            if len(matching) > 1:
+                raise FormatError(f"duplicate object-header message type {kind}")
+            if not matching:
+                return None
+            message = matching[0]
+            if not message.flags & 2:
+                return message
+            resolved = resolve_shared_schema(reader, selected_address=address,
+                                             kind=kind, encoded=message.data,
+                                             messages=_messages)
+            shared_routes.append(f"type {kind}: {resolved.route}")
+            return HeaderMessage(kind, message.flags & ~2, resolved.data,
+                                 resolved.absolute_offset)
+
+        space, dtype, layout = (selected_message(k) for k in (1, 3, 8))
         if space is None or dtype is None or layout is None:
             raise UnsupportedFormat("selected object lacks required dataset metadata")
         shape, maximum = _dataspace(space.data, reader.superblock.length_size,
                                     allow_growing=True)
         dtype_name = _numeric_dtype(dtype.data)
         itemsize = int(dtype_name[-1])
-        pipeline_message = _unique(selected, 11)
+        pipeline_message = selected_message(11)
         pipeline = _filters(pipeline_message.data if pipeline_message else None, itemsize)
         filters = tuple(item.id for item in pipeline)
         chunks = _chunk_shape(layout.data, shape, itemsize)
@@ -846,8 +866,11 @@ def read_dataset_spec_fallback(
         route = ("checksummed_modern_dense_hard_links"
                  if any(step.index_record_offset is not None for step in chain)
                  else "checksummed_modern_compact_hard_links")
+        if shared_routes:
+            route += "_with_shared_schema"
         result = FallbackMetadata(spec, source_hash, root, tuple(chain),
-                                  tuple(reader.metadata_ranges), omitted, route=route)
+                                  tuple(reader.metadata_ranges), omitted, route=route,
+                                  resolved_shared_messages=tuple(shared_routes))
     after = snapshot.stat()
     if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
         after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns
