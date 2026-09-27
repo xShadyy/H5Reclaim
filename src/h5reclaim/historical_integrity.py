@@ -154,13 +154,15 @@ def finalize_staged_history(output: str | Path, report_path: str | Path, *,
     with h5py.File(output, "r+") as handle:
         if dataset_path not in handle or not isinstance(handle[dataset_path], h5py.Dataset):
             raise RecoveryError("staged output does not contain the reported dataset")
-        if "/_h5reclaim" not in handle or STATUS_PATH in handle:
-            raise RecoveryError("staged output has no available status namespace")
+        if STATUS_PATH in handle:
+            raise RecoveryError("staged output already has a historical status map")
+        handle.require_group("/_h5reclaim")
         selected = handle[dataset_path]
         status_path, granularity = _source_map(report, handle, selected)
         current_status_path = status_path
         accepted = 0
         total: int | None = None
+        map_omission: str | None = None
         if status_path is not None:
             source = handle[status_path]
             assert granularity is not None
@@ -169,6 +171,7 @@ def finalize_staged_history(output: str | Path, report_path: str | Path, *,
             # must not allocate another huge dataset merely to say unknown.
             if total > MAX_STATUS_UNITS and digest is None:
                 status_path = None
+                map_omission = "unprotected current-value map exceeds 64 million units; historical equality is unknown"
             else:
                 _validate_map(source, selected, granularity)
                 target = handle.create_dataset(STATUS_PATH, shape=source.shape, dtype="u1",
@@ -180,6 +183,10 @@ def finalize_staged_history(output: str | Path, report_path: str | Path, *,
                 target.attrs["granularity"] = granularity
         elif strict:
             raise RecoveryError("prior-capture route has no selected-unit status map")
+        else:
+            total = int(prod(selected.shape))
+            granularity = "element"
+            map_omission = "this output has no per-unit current-value map; every element lacks prior-capture verification"
         if digest is not None:
             if status_path is None:
                 raise RecoveryError("prior-capture route has no selected-unit status map")
@@ -198,6 +205,7 @@ def finalize_staged_history(output: str | Path, report_path: str | Path, *,
         report["historical_integrity"] = {
             "policy": "require_prior_capture_match" if strict else "report_only",
             "prior_capture_match_status_dataset": STATUS_PATH if status_path is not None else None,
+            "status_map_omission": map_omission,
             "codes": STATUS_CODES,
             "granularity": granularity,
             "matching_units": accepted,
@@ -208,8 +216,8 @@ def finalize_staged_history(output: str | Path, report_path: str | Path, *,
             "scientific_correctness_established": False,
             "note": (
                 "Code 1 means equality to an operator-supplied, independently pinned capture, "
-                "not proof of its date or scientific correctness. Code 0 is unknown; "
-                "current readable values at those coordinates are not historical evidence."
+                "not proof of its date or scientific correctness. Code 0 means unknown "
+                "where a historical status map exists; a missing map means no prior equality was established."
             ),
         }
         serialized = json.dumps(report, indent=2, sort_keys=True) + "\n"
