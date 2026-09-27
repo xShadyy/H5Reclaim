@@ -2,6 +2,65 @@
 
 Updated: 2026-09-27
 
+## Version 0.10.0: additional bounded metadata and integrity checks
+
+`rescue --metadata-trial dimension` extends the disposable, original-checksum
+trial to **one byte of one selected dataset chunk dimension** in a v4/v5
+layout message. It requires an intact modern superblock, a direct checked
+compact-root hard link, a selected first-chunk v2 object header no larger than
+16 KiB, and a fixed-array, extensible-array, or version-2 B-tree index. The
+datatype-size field and object-header continuations are excluded. A unique
+original-checksum substitution is only a candidate: the corrected native
+schema, complete selected index, rooted object and bounded competing-owner
+inventory must also agree. The 512 MiB trial source bound remains. Neither
+the original file nor its stored checksum is changed.
+
+The prospective capsule now checks the **exact encoded HDF5 datatype** when
+the damaged file still exposes a selected dataset. A NumPy storage dtype
+match alone can miss a changed enum label or other HDF5 type metadata; such a
+contradiction now refuses. Routes copying bounded scientific attributes
+preserve a source attribute when its name collides with a tool convenience
+annotation; `selected_annotation_collisions` lists the skipped tool names.
+The validity datasets under `/_h5reclaim/` remain authoritative. Routes
+that cannot copy source attributes list the omission rather than claiming
+preservation.
+
+The older version-1 B-tree route now bridges one **interior root-to-internal
+subtree** link when both neighboring children are still rooted and their
+reciprocal sibling pointers uniquely name the same missing subtree root. Its
+parent key interval must exactly match, and the candidate's full descendant
+tree must have complete, disjoint, bounded ownership and consistent keys.
+The generated 8,192-chunk trial recovered 8,192 exact chunks against separate
+test truth, including 3,249 chunks under the bridged subtree; missing anchors
+or a second broken descendant link refused. The ordinary structural chunk
+ceiling is now 8,192 while the traversed-node ceiling remains 4,096.
+Version-1 nodes do not have a stored checksum, so these links still lack an
+independent historical payload hash.
+
+`rescue --large-structural` is a distinct streaming structural path for one
+damaged FAHD-to-FADB pointer in an otherwise rooted one-dimensional,
+unfiltered primitive numeric fixed-array dataset. The pointer substitution
+must uniquely restore the **original** FAHD checksum; the FADB checksum and
+back-pointer, initialized pages, complete grid and physical ranges must also
+agree. It streams raw checked-index chunks into a derived output with HDF5
+validity and physical-evidence datasets. A generated sparse file larger than
+4 GiB with 8,200 grid slots exercises the route, including accepted sparse
+chunks and unknown unallocated slots. A separate 8,200 allocated-chunk trial
+exercises streaming beyond the old chunk ceiling. Caps include 64 GiB physical source,
+8 GiB copied snapshot bytes, 65,536 grid slots, 1,048,576 selected elements,
+and 1 MiB nominal chunks; sparse candidate search has a separate 512 MiB
+allocated-extent cap, and unsupported sparse enumeration falls back only
+under an 8 GiB dense scan cap. Disk, output, time and ownership checks also
+apply. This repairs that checked link, whereas `--large-readable` exports
+values that native HDF5 can already read.
+
+These additions cover only the stated routes. They do not fix arbitrary
+object-header fields, other large-file index links, correlated edits to data
+and metadata, unavailable prior evidence, or overwritten unique measurements.
+The historical 0.9.0 verification counts are recorded below; new release
+counts must come from a fresh full run and do not establish a field success
+percentage.
+
 ## Version 0.9.0: tail salvage, checked metadata trials, prospective capsules, and broader fixed records
 
 The `rescue --truncated-chunks` route handles a physical tail cut when the

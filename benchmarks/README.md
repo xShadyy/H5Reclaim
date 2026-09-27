@@ -1,5 +1,27 @@
 # Recovery benchmarks
 
+## Version 0.10 focused checks
+
+The selected chunk-dimension metadata trial tests a one-byte damaged object
+header against its original checksum, then requires the corrected rooted
+schema, complete index and competing-owner inventory to agree. Capsule
+regression also rejects an otherwise readable selected object whose encoded
+HDF5 enum labels differ from the earlier captured type. Older-tree tests
+bridge one interior missing internal subtree when two rooted reciprocal
+siblings and all descendants agree; missing anchors and a second fault
+refuse. Larger structural tests include a physically sparse file over 4 GiB
+with 8,200 selected grid slots, a separate 8,200 allocated-chunk trial, and
+invalid child-checksum or scan-budget refusals. Run:
+
+```sh
+python -m unittest tests.test_header_dimension_trial tests.test_deep_v1 tests.test_large_structural tests.test_annotation_collisions tests.test_v10_cli_routes -q
+```
+
+These are targeted generated tests. Test truth is compared after the route
+runs, and is not an explicit recovery argument; tests in one workspace do not
+form an isolation boundary. They do not estimate how often those faults
+occur in real laboratories or establish a field success percentage.
+
 ## Version 0.9 focused regression coverage
 
 Run `python benchmarks/run_authentic_v09_routes.py` for a readable controlled

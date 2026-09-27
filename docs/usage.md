@@ -45,23 +45,28 @@ positions is not recovered science. Missing metadata or index bytes, an
 overlap with a known sibling owner, contradictory structure, or a larger tail
 cut causes refusal. The ordinary source-size, chunk and grid bounds apply.
 
-### Trial one checked metadata pointer
+### Trial one checked metadata field
 
 If the observed fault is a single byte in a modern superblock root pointer,
-or a selected modern object header's chunk-index pointer, try one declared
-kind on a disposable private copy:
+a selected modern object header's chunk-index pointer, or a selected chunk
+dimension in that header, try one declared kind on a disposable private copy:
 
 ```powershell
 python -m h5reclaim rescue damaged.h5 --dataset /experiment/readings --metadata-trial root --output root-trial.h5 --report root-trial.json
 python -m h5reclaim rescue damaged.h5 --dataset /readings --metadata-trial layout --output layout-trial.h5 --report layout-trial.json
+python -m h5reclaim rescue damaged.h5 --dataset /readings --metadata-trial dimension --output dimension-trial.h5 --report dimension-trial.json
 ```
 
 `root` requires a modern version-2/3 superblock whose other fields are
 valid. `layout` requires a valid superblock, a direct local hard link under
 a checksummed compact root, and a selected checksummed first-chunk v2 header
-with a supported modern index-pointer field. The command searches only one
-byte in that pointer, keeps the **original** checksum, rejects multiple
-checksum-matching substitutions, and validates rooted ownership and a
+with a supported modern index-pointer field. `dimension` has the same root
+and first-header requirements and tries one byte among the selected dataset's
+chunk extents in a v4/v5 layout with a fixed-array, extensible-array, or
+version-2 B-tree index. It excludes the encoded datatype-size field and
+header continuations. The command searches only the declared field, keeps
+the **original** checksum, rejects multiple checksum-matching substitutions,
+and validates native schema, complete index, rooted ownership and a
 native-readable selected dataset. The input limit is 512 MiB. It publishes
 only a new selected dataset and evidence report. A checksum match does not
 establish the historical value of the measurements or make the corrected
@@ -205,7 +210,12 @@ The route reads raw bytes at the captured offsets even when the damaged file
 cannot open its root, selected header, or chunk index. It checks each
 complete stored chunk against the prior raw hash. For unfiltered chunks,
 matching smaller blocks can be accepted as complete elements while altered
-blocks are unknown. Filtered chunks need the entire stored stream to match;
+blocks are unknown. If the damaged dataset is still rooted, its exact HDF5
+datatype encoding must match the capsule, including enum names that an equal
+NumPy storage dtype would miss. The capsule's output preserves same-named
+scientific attributes when a tool convenience annotation would collide; the
+report lists omitted annotations and `/_h5reclaim/` holds the authoritative
+validity map. Filtered chunks need the entire stored stream to match;
 the capsule has no replacement payload. Check
 `/_h5reclaim/chunk_status` and, where the report provides it,
 `/_h5reclaim/element_status`. A capsule for another acquisition, one captured
@@ -383,16 +393,16 @@ An optional `source_sha256` refers to the **damaged input**. Observed conflicts 
 python -m h5reclaim recover damaged.h5 --dataset /experiment/readings --output result.h5 --report result.json
 ```
 
-The destinations must not exist. Recovery reads only the damaged input through a private snapshot. Native HDF5 normally locates the selected local dataset and schema; when native metadata lookup fails, a narrower rooted parser can resolve surviving old symbol-table or modern compact/dense-group links and required messages. It refuses unsupported paths and records this route in `metadata_resolution`. A bounded independent parser validates raw indexes and decodes chunks. Version-1 trees can bridge one lost **leaf** pointer only through a unique matching parent interval and reciprocal left/right sibling links. Modern damage repair applies only to documented, bounded pointer positions when the unique substitution restores an original metadata checksum and the child and full traversal agree; see the [damage taxonomy](damage-taxonomy.md) for the implemented links. Other broken links remain unsupported. The report's `evidence_ledger` records index chains, physical ranges, checksums or their absence, decoding checks, contradictions, and per-region decisions.
+The destinations must not exist. Recovery reads only the damaged input through a private snapshot. Native HDF5 normally locates the selected local dataset and schema; when native metadata lookup fails, a narrower rooted parser can resolve surviving old symbol-table or modern compact/dense-group links and required messages. It refuses unsupported paths and records this route in `metadata_resolution`. A bounded independent parser validates raw indexes and decodes chunks. Version-1 trees can bridge one interior lost **leaf or internal subtree** pointer only through an exact parent interval, two rooted reciprocal sibling links and a complete, disjoint candidate subtree. Modern damage repair applies only to documented, bounded pointer positions when the unique substitution restores an original metadata checksum and the child and full traversal agree; see the [damage taxonomy](damage-taxonomy.md) for the implemented links. Other broken links remain unsupported. The report's `evidence_ledger` records index chains, physical ranges, checksums or their absence, decoding checks, contradictions, and per-region decisions.
 
 | Structural condition | Supported behavior |
 | --- | --- |
 | Dataset | One local rank-one through rank-four chunked dataset with canonical integer (8/16/32/64 bit signed or unsigned), IEEE float32/64, or a bounded self-contained fixed-size compound, enum, array, fixed string or opaque HDF5 type. Exact encoded file type is retained for the fixed records. Positive current dimensions, partial edge chunks, sparse allocation and growing maxima are supported when the index parser validates their mapping. Variable-length and reference members refuse. |
-| Older format | Superblock v0/v1, object header v1 with up to eight supported continuations, layout v3, version-1 B-tree with intact level-zero or deeper tree. One missing leaf link can be bridged even below a deeper root. Internal subtree loss or multiple lost links is refused. Older rooted fallback covers bounded canonical rank-one through four numeric and supported shuffle/DEFLATE/Fletcher32 layouts; old links themselves are unchecksummed. |
+| Older format | Superblock v0/v1, object header v1 with up to eight supported continuations, layout v3, version-1 B-tree with intact level-zero or deeper tree. One interior missing leaf link or one interior root-to-internal subtree link can be bridged if two rooted reciprocal siblings, exact parent interval, and complete disjoint candidate traversal agree. Boundary gaps, a second broken descendant link and ambiguous candidates refuse. Older rooted fallback covers bounded canonical rank-one through four numeric and supported shuffle/DEFLATE/Fletcher32 layouts; old links themselves are unchecksummed. |
 | Newer format | Checksummed superblock v2/v3, checksummed selected object header v2 with bounded continuations, layout v4/v5 and intact single-chunk, implicit, filtered/paged/sparse fixed array, bounded extensible array including validated initialized pages, or version-2 B-tree. One FAHD-to-FADB, EAHD-to-EAIB, EAIB-to-EADB/EASB, EASB-to-EADB, BTHD-to-root or BTIN-to-child link can be tried when one pointer replacement restores the original parent checksum, a checked child and full traversal agree, and the 512 MiB scan and ownership bounds hold. Other broken modern links remain unsupported. Raw metadata fallback follows rooted compact links or a bounded checksummed dense-group name index and managed fractal heap; unsupported variants refuse. |
 | Selected shared messages | A committed canonical numeric datatype can resolve through a checked v2 object header. Bounded SOHM single-list or type-7 v2 B-tree leaf/one-internal-level managed-heap references can resolve selected shared dataspace, datatype or filter messages. Deeper and unsupported heap/index variants refuse. |
 | Filters | Bounded built-in shuffle, DEFLATE, and Fletcher32 in their actual declared order; per-chunk optional skip masks. Missing unknown decoders are reported separately, never treated as verified measurements. |
-| Resource bounds | Source snapshot at most 4 GiB, 30-minute 1 MiB-buffer copy, temporary disk for full logical source size plus 32 MiB reserve; structural dataset at most 1,048,576 elements, 4,096 chunks and traversed nodes, 1 MiB decoded chunk. |
+| Resource bounds | Source snapshot at most 4 GiB, 30-minute 1 MiB-buffer copy, temporary disk for full logical source size plus 32 MiB reserve; structural dataset at most 1,048,576 elements, 8,192 chunks and 4,096 traversed nodes, 1 MiB decoded chunk. |
 
 The structural decoder enforces a strict expansion bound and exact final nominal chunk length. Invalid masks, unknown active filters, missing metadata anchors, overlapping physical extents, invalid checksums, or destroyed payloads cannot be promoted to measurements. An unknown active filter with an otherwise anchored chunk is status 7. A missing index slot remains allocation unknown; output fill is never proof of a measurement.
 
@@ -406,6 +416,13 @@ The output's `/_h5reclaim/chunk_status` is indexed by chunk grid:
 | 7 `decoder_unavailable` | An anchored chunk needs an unsupported active filter decoder; output fill is unknown. |
 
 Codes 3 `ambiguous`, 4 `unavailable`, and 5 `unsupported` are reserved in this output. Check the status map even if the HDF5 output opens. `complete` means all grid chunks have status 1, not that original science was independently authenticated. The report is external JSON and embedded at `/_h5reclaim/report_json`. Only the selected dataset and bounded safe attributes are copied; siblings, links, scales, and full scientific context are excluded.
+
+If a copied scientific attribute has a name also used for a convenience tool
+annotation, the source attribute retains its value. The report's
+`selected_annotation_collisions` lists any skipped annotations. Read the
+authoritative validity and provenance under `/_h5reclaim/`; do not infer
+status from a dataset attribute that may belong to the scientist. Some
+routes cannot copy the source attributes and report that omission.
 
 An anchored decode-failed raw extent may be exported separately as a coordinate-free forensic fragment:
 
@@ -451,6 +468,31 @@ datasets instead of embedding a huge per-chunk list. Default limits include
 still determine whether a particular file can run. The source may be larger
 than 4 GiB, but no lost index, old value, compound record, other rank, or
 nonlocal dependency is reconstructed by this route.
+
+For one large file with a damaged, original-checksummed **fixed-array header
+to data-block pointer**, choose the narrower structural streaming route:
+
+```powershell
+python -m h5reclaim rescue damaged-large.h5 --dataset /experiment/readings --large-structural --output partial-large.h5 --report large-structural.json
+```
+
+This route needs an otherwise rooted, readable selected schema, one-dimensional
+unfiltered primitive numeric chunks, a unique pointer candidate restoring
+the original FAHD checksum, checked FADB back-pointer and checksum, validated
+initialized pages, and consistent chunk slots. It reads raw chunks from their
+checked physical ranges, even if native HDF5 cannot read through the damaged
+index. Sparse or unallocated slots remain unknown in
+`/_h5reclaim/validity`; checked physical ranges and raw hashes are in
+`/_h5reclaim/physical_evidence`. It does not reconstruct other index links or
+authenticate the pre-damage value of unchecksummed measurements. The route
+accepts at most 64 GiB physical source and 8 GiB copied snapshot data,
+65,536 grid/allocated chunks, 1,048,576 selected elements and 1 MiB nominal
+chunks, subject to disk, output and deadline quotas. On a filesystem with
+sparse extent enumeration, candidate search is capped at 512 MiB of
+allocated extents; where it is unavailable, a complete dense search is
+capped at 8 GiB. A dense file may need enough space for a full copy or
+refuse the copied-byte limit. Use `--large-readable` only for current values that
+native HDF5 can already read; the reports name which route produced output.
 
 ## Interpreting results
 
