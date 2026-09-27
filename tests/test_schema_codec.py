@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import tempfile
 import unittest
 import zlib
@@ -205,6 +206,40 @@ class SchemaCodecTests(unittest.TestCase):
                     with h5py.File(source, "r") as handle:
                         mask, raw = handle["data"].id.read_direct_chunk((0,))
                     self.assertEqual(decode_chunk(raw, spec, mask), expected.tobytes())
+
+    def test_every_order_of_three_builtin_filters_matches_native_values(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            values = np.arange(30, dtype="<u2").reshape(5, 6)
+            methods = {"shuffle": "set_shuffle", "deflate": "set_deflate",
+                       "fletcher": "set_fletcher32"}
+            for order in itertools.permutations(methods):
+                with self.subTest(order=order):
+                    source = Path(directory) / "all_orders.h5"
+                    with h5py.File(source, "w", libver=("earliest", "v108")) as handle:
+                        creation = h5py.h5p.create(h5py.h5p.DATASET_CREATE)
+                        creation.set_chunk((4, 4))
+                        for name in order:
+                            arguments = (6,) if name == "deflate" else ()
+                            getattr(creation, methods[name])(*arguments)
+                        dataset = h5py.h5d.create(
+                            handle.id, b"data", h5py.h5t.py_create(values.dtype),
+                            h5py.h5s.create_simple(values.shape), dcpl=creation,
+                        )
+                        dataset.write(h5py.h5s.ALL, h5py.h5s.ALL, values)
+                    spec = read_dataset_spec(source, "/data")
+                    with h5py.File(source, "r") as handle:
+                        for coordinate in ((0, 0), (0, 4), (4, 0), (4, 4)):
+                            mask, raw = handle["data"].id.read_direct_chunk(coordinate)
+                            chunk = np.frombuffer(
+                                decode_chunk(raw, spec, mask), dtype=values.dtype
+                            ).reshape(4, 4)
+                            rows = min(4, values.shape[0] - coordinate[0])
+                            cols = min(4, values.shape[1] - coordinate[1])
+                            np.testing.assert_array_equal(
+                                chunk[:rows, :cols],
+                                values[coordinate[0]:coordinate[0]+rows,
+                                       coordinate[1]:coordinate[1]+cols],
+                            )
 
     def test_missing_decoder_distinct_from_corrupt_bytes(self) -> None:
         from h5reclaim.metadata import DatasetSpec
