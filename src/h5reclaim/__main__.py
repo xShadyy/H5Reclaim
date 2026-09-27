@@ -309,6 +309,8 @@ def main(argv: list[str] | None = None) -> int:
     choices.add_argument("--split-members", type=Path, help="pinned HDF5 Split metadata and raw member manifest")
     choices.add_argument("--replicas", type=Path, help="pinned replica manifest and prospective baseline")
     choices.add_argument("--parity", type=Path, help="pinned baseline plus prospective parity sidecar manifest")
+    choices.add_argument("--status-trial", action="store_true",
+                         help="trial a validated v3 write flag on a disposable copy before native-readable export")
     args = parser.parse_args(argv)
 
     if args.command == "capture-baseline":
@@ -346,6 +348,9 @@ def main(argv: list[str] | None = None) -> int:
             elif args.parity is not None:
                 report = run_route("parity", args.output, args.report, source=source,
                                    dataset=args.dataset, manifest=str(args.parity.absolute()))
+            elif args.status_trial:
+                report = run_route("status", args.output, args.report, source=source,
+                                   dataset=args.dataset)
             elif args.family_members is not None:
                 from .family_bundle import _manifest
                 _, members = _manifest(args.family_members)
@@ -400,6 +405,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"H5Reclaim rescue | {report['outcome']} | {accepted} accepted {unit}")
             if report.get("mode") == "readable_export":
                 print("Route: native-readable copy of currently accessible values; no damaged index was reconstructed.")
+            elif report.get("mode") == "status_trial_readable_export":
+                print("Route: status-only trial on a disposable copy, then native-readable export; historical values are unverified.")
             print(f"Output: {_display_path(args.output, 240)}")
             print(f"Evidence report: {_display_path(args.report, 240)}")
             print("Check the validity map before using output values. Accepted values may still lack historical authentication.")

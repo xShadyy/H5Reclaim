@@ -17,7 +17,7 @@ from typing import Any
 
 MAX_REQUEST = 65536
 MAX_REPORT = 32 * 1024 * 1024
-ROUTES = frozenset({"family", "split", "vds", "external_raw", "nonchunked", "replicas", "parity"})
+ROUTES = frozenset({"family", "split", "vds", "external_raw", "nonchunked", "replicas", "parity", "status"})
 
 
 def _child(request_path: Path, response_path: Path) -> int:
@@ -56,6 +56,10 @@ def _child(request_path: Path, response_path: Path) -> int:
         elif route == "replicas":
             from .replica_recovery import restore_from_replicas
             restore_from_replicas(args["source"], args["dataset"], args["manifest"], output, report)
+        elif route == "status":
+            from .status_trial_export import export_status_trial
+            export_status_trial(args["source"], args["dataset"], output, report,
+                                published_output=request["published_output"])
         else:
             from .parity_sidecar import restore_from_parity
             restore_from_parity(args["source"], args["dataset"], args["manifest"], output, report)
