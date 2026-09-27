@@ -96,6 +96,28 @@ def _group_inventory(group: Any, path: str) -> dict[str, Any]:
     }
 
 
+def _unit_value(dataset: Any, name: str) -> dict[str, Any]:
+    """Inspect a tiny inline scalar string; leave heap-backed values unread."""
+    import h5py
+
+    try:
+        attr = dataset.attrs.get_id(name)
+        data_type, space = attr.get_type(), attr.get_space()
+        if (space.get_simple_extent_ndims() != 0 or space.get_simple_extent_npoints() != 1
+                or data_type.get_class() != h5py.h5t.STRING
+                or data_type.is_variable_str() or data_type.get_size() > 128
+                or attr.get_storage_size() > 128):
+            return {"status": "not_read", "reason": "not a bounded fixed scalar string"}
+        value = dataset.attrs[name]
+        if isinstance(value, bytes):
+            value = value.decode("utf-8", errors="strict")
+        if not isinstance(value, str) or len(value.encode("utf-8")) > 128:
+            return {"status": "not_read", "reason": "unit value exceeds the bounded string limit"}
+        return {"status": "observed", "value": value}
+    except (OSError, RuntimeError, TypeError, ValueError, UnicodeError):
+        return {"status": "not_read", "reason": "unit value is unreadable or not valid UTF-8"}
+
+
 def _inspect(source: Path, selected_path: str) -> dict[str, Any]:
     import h5py
     from .metadata import _selected_local_dataset
@@ -121,10 +143,14 @@ def _inspect(source: Path, selected_path: str) -> dict[str, Any]:
         units = None if attr_names is None else [
             name for name in attr_names if "unit" in name.casefold()
         ]
+        unit_values = None if units is None else {
+            name: _unit_value(selected, name) for name in units
+        }
         return {
             "selected_dataset": {
                 "path": selected_path, "shape": list(selected.shape),
                 "attribute_names": selected_attrs, "unit_attribute_names": units,
+                "unit_values": unit_values,
                 "dimension_scale_markers": markers,
                 "dimension_scale_targets": "not dereferenced or copied",
             },

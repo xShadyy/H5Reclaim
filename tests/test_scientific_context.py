@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import h5py
+import numpy as np
 
 from h5reclaim.scientific_context import audit_context
 
@@ -24,6 +25,7 @@ class ScientificContextTests(unittest.TestCase):
             group.attrs["instrument"] = "spectrometer"
             selected = group.create_dataset("readings", data=list(range(8)), chunks=(4,))
             selected.attrs["units"] = "count"
+            selected.attrs["channel_units"] = np.bytes_("millivolt")
             selected.attrs["calibration"] = 3.5
             handle["/alias"] = selected
             handle["/shortcut"] = h5py.SoftLink("/lab/readings")
@@ -40,7 +42,10 @@ class ScientificContextTests(unittest.TestCase):
         self.assertEqual(result["status"], "bounded_observation")
         self.assertEqual(result["source_sha256_bound"], self.digest)
         selected = result["source_metadata"]["selected_dataset"]
-        self.assertEqual(selected["unit_attribute_names"], ["units"])
+        self.assertEqual(selected["unit_attribute_names"], ["channel_units", "units"])
+        self.assertEqual(selected["unit_values"]["channel_units"],
+                         {"status": "observed", "value": "millivolt"})
+        self.assertEqual(selected["unit_values"]["units"]["status"], "not_read")
         self.assertTrue(selected["dimension_scale_markers"]["dimension_list"])
         self.assertTrue(selected["dimension_scale_markers"]["dimension_labels"])
         self.assertEqual(selected["dimension_scale_targets"], "not dereferenced or copied")
