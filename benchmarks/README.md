@@ -2,6 +2,18 @@
 
 ## Version 0.9 focused regression coverage
 
+Run `python benchmarks/run_authentic_v09_routes.py` for a readable controlled
+trial on the pinned authentic GWOSC strain file (`--json` prints the complete
+evaluator evidence). A prior capsule survives separate root-link, object-header,
+and index faults with 64 of 64 chunks exact in each trial. Two same-stripe
+payload losses are reconstructed by prior GF(256) parity with 64 of 64 exact;
+a physical tail cut yields 63 exact and one unknown chunk. The evaluator
+retains the original only to compare every accepted value bitwise and also
+checks that a tampered capsule is refused. Run
+`python -m unittest benchmarks.test_authentic_v09_routes -q` for its
+false-acceptance self-check. These five constructed cases on one source do
+not estimate a field recovery rate.
+
 The following generated tests exercise distinct new routes and deliberately
 contradictory inputs. They are **development tests**, not an independent
 population sample:

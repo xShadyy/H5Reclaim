@@ -82,9 +82,23 @@ agree. These are specific one-link damage paths. Rewritten checksums,
 multiple broken nodes, ambiguous candidates and unsupported layouts do not
 become generally recoverable.
 
+Release verification on 2026-09-27: `python -m unittest discover -s tests -q`
+passed 499 tests. The four pinned scientific originals passed size and SHA-256
+verification; the controlled GWOSC index trial recovered 128/128 exact chunks.
+The new authentic GWOSC benchmark passed five selected prospective or tail-cut
+cases: three capsule metadata trials each exported 64/64 exact chunks, two
+same-stripe losses were rebuilt by parity with 64/64 exact, and truncation
+exported 63 exact chunks with one unknown. The 23-case seeded matrix recorded
+954 exact accepted chunks and zero wrong acceptances. The 28-case stratified
+layout evaluation deliberately exposed **one historically wrong accepted
+unchecksummed value without prior evidence**, alongside 2,336 exact accepted
+regions. Its presence is a concrete reason not to infer historical accuracy
+or a universal recovery percentage from successful reads. All these mutation
+cases were selected during development; independently sampled naturally
+damaged files remain unevaluated.
+
 The section below records the prior v0.8.0 release and its historical test
-totals. New-route regression and benchmark results for v0.9.0 must be read
-from the release verification record once the complete test run finishes.
+totals.
 
 ## Version 0.8.0: additional damage routes and independent integrity gates
 
