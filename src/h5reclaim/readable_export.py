@@ -490,7 +490,8 @@ def _range_sha256(snapshot: Path, offset: int, size: int) -> str:
 def _export_readable_local(source: str | Path, dataset_path: str, output: str | Path,
                            report_path: str | Path, *, hints: DatasetHints | None = None,
                            published_output: Path | None = None,
-                           worker_budget: dict[str, Any] | None = None) -> dict[str, Any]:
+                           worker_budget: dict[str, Any] | None = None,
+                           output_dataset_path: str | None = None) -> dict[str, Any]:
     """Export one bounded local dataset, marking missing chunk values unknown.
 
     This uses only the damaged/current file as input. It never reconstructs an
@@ -498,6 +499,14 @@ def _export_readable_local(source: str | Path, dataset_path: str, output: str | 
     """
     source, output, report_path = Path(source), Path(output), Path(report_path)
     _validate_paths(source, output, report_path)
+    output_dataset_path = output_dataset_path or dataset_path
+    if (not isinstance(output_dataset_path, str) or not output_dataset_path.startswith("/")
+            or output_dataset_path == "/" or len(output_dataset_path.encode("utf-8")) > MAX_PATH_BYTES
+            or output_dataset_path.split("/")[1] == "_h5reclaim"
+            or len(output_dataset_path.split("/")) > 65
+            or any(part in ("", ".", "..") for part in output_dataset_path[1:].split("/"))
+            or any(ord(character) < 32 or ord(character) == 127 for character in output_dataset_path)):
+        raise UnsupportedCase("output dataset path must be bounded, absolute, and canonical")
     with source_snapshot(source) as (snapshot, digest, identity, source_size):
         try:
             with h5py.File(snapshot, "r") as original:
@@ -558,7 +567,7 @@ def _export_readable_local(source: str | Path, dataset_path: str, output: str | 
                         output_temp = Path(out_dir) / "output.h5"
                         report_temp = Path(rep_dir) / "report.json"
                         with h5py.File(output_temp, "x") as target:
-                            exported = _create_matching_dataset(target, selected, dataset_path)
+                            exported = _create_matching_dataset(target, selected, output_dataset_path)
                             for selection in _allocated_selections(
                                     storage, shape, selected.chunks, dtype.itemsize,
                                     reference_block_limit):
@@ -612,7 +621,7 @@ def _export_readable_local(source: str | Path, dataset_path: str, output: str | 
 
                         output_values = hashlib.sha256()
                         with h5py.File(output_temp, "r") as target:
-                            exported = target[dataset_path]
+                            exported = target[output_dataset_path]
                             output_address = int(h5py.h5o.get_info(exported.id).addr)
                             for selection in _allocated_selections(
                                     storage, shape, selected.chunks, dtype.itemsize,
@@ -638,7 +647,8 @@ def _export_readable_local(source: str | Path, dataset_path: str, output: str | 
                                 "sha256_before": digest, "sha256_after": digest,
                             },
                             "dataset": {
-                                "path": dataset_path, "shape": list(shape), "dtype": dtype.descr if dtype.fields else dtype.str,
+                                "path": output_dataset_path, "source_path": dataset_path,
+                                "shape": list(shape), "dtype": dtype.descr if dtype.fields else dtype.str,
                                 "maxshape": [item for item in selected.maxshape],
                                 "chunks": list(selected.chunks) if selected.chunks else None,
                                 "filters_in_order": list(observed_filters),
