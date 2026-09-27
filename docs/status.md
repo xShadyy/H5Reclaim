@@ -86,6 +86,14 @@ hash evidence. These two selected trials do not estimate field reliability.
 
 The sections below describe older releases and are historical.
 
+Release verification on 2026-09-27: `python -m unittest discover -s tests -q`
+passed **434 tests**; the held-out evaluator's three self-tests passed
+separately. The authentic prospective-baseline trial passed both selected
+cases, the 23-case seeded scientific matrix had zero false accepted chunks,
+and the 36-case stratified layout matrix reported two deliberately changed,
+unchecksummed values that still looked structurally valid without a prior
+baseline. These named, correlated trials do not supply a field denominator.
+
 ## Version 0.7.0: additional evidence routes, dependency bundles, and prospective checks
 
 The guided `rescue` command now chooses among bounded chunked structural
