@@ -31,7 +31,7 @@ from .snapshot_io import (
 )
 
 
-VERSION = "0.7.0"
+VERSION = "0.8.0"
 _WINDOWS_STAT = os.name == "nt"
 STATUS_CODES = {
     "recovered": 1,
