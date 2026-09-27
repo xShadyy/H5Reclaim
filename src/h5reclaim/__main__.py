@@ -10,6 +10,7 @@ from collections import Counter
 from dataclasses import asdict
 from pathlib import Path
 
+from .baseline import capture_baseline
 from .diagnose import diagnose
 from .dependency_routes import (
     DependencyError, load_dependency_manifest, probe_status_copy,
@@ -279,7 +280,26 @@ def main(argv: list[str] | None = None) -> int:
     export_cmd.add_argument("--hints", type=Path, help="optional operator claims checked before output")
     export_cmd.add_argument("--output", required=True, type=Path)
     export_cmd.add_argument("--report", required=True, type=Path)
+    baseline_cmd = commands.add_parser(
+        "capture-baseline",
+        help="record decoded chunk hashes from a complete intact acquisition for later independent comparison",
+    )
+    baseline_cmd.add_argument("source", type=Path)
+    baseline_cmd.add_argument("--dataset", required=True)
+    baseline_cmd.add_argument("--output", required=True, type=Path, help="new baseline JSON destination, stored separately")
     args = parser.parse_args(argv)
+
+    if args.command == "capture-baseline":
+        try:
+            result = capture_baseline(args.source, args.dataset, args.output)
+            print("H5Reclaim acquisition baseline")
+            print(f"Dataset: {_display_path(result['dataset_path'])} | {len(result['chunk_hashes'])} allocated chunks hashed")
+            print(f"Baseline: {_display_path(args.output, 240)}")
+            print("Keep this record independently. Its hashes describe the observed capture, not earlier historical truth.")
+            return 0
+        except (FormatError, UnsupportedCase, RecoveryError, OSError, ValueError, RuntimeError) as exc:
+            print(f"h5reclaim: baseline capture failed: {_display_path(exc, 300)}", file=sys.stderr)
+            return 2
 
     if args.command == "export-fragments":
         try:
