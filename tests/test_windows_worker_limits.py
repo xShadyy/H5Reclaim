@@ -24,13 +24,24 @@ class _KernelFunction:
         self.kernel.calls.append(self.name)
         if self.name == "CreateJobObjectW":
             return 11
+        if self.name == "GetEnvironmentStringsW":
+            return ctypes.addressof(self.kernel.environment_block)
         if self.name == "SetInformationJobObject":
             limits = args[2]._obj
             self.kernel.flags = limits.BasicLimitInformation.LimitFlags
             self.kernel.memory = (limits.ProcessMemoryLimit, limits.JobMemoryLimit)
         if self.name == "CreateFileW":
             return 12
+        if self.name == "InitializeProcThreadAttributeList":
+            args[-1]._obj.value = 128
+            return 1
+        if self.name == "UpdateProcThreadAttribute":
+            self.kernel.attribute = args[2]
+            self.kernel.inherited_handles = tuple(args[3])
         if self.name == "CreateProcessW":
+            self.kernel.application_name = args[0]
+            self.kernel.creation_flags = args[5]
+            self.kernel.environment_seen = "".join(args[6][:])
             process = args[-1]._obj
             process.hProcess, process.hThread = 13, 14
             return 1
@@ -52,6 +63,12 @@ class _FakeKernel:
         self.functions: dict[str, _KernelFunction] = {}
         self.flags = 0
         self.memory = (0, 0)
+        self.attribute = 0
+        self.inherited_handles: tuple[int, ...] = ()
+        self.application_name = None
+        self.creation_flags = 0
+        self.environment_block = ctypes.create_unicode_buffer("=C:=C:\\work\0PATH=C:\\Windows\0\0")
+        self.environment_seen = ""
         self.timed_out = timed_out
         self.waited = False
 
@@ -70,10 +87,17 @@ class WindowsJobCallOrderTests(unittest.TestCase):
         self.assertEqual(result.returncode, 17)
         self.assertEqual(kernel.flags & (0x100 | 0x200 | 0x2000), 0x100 | 0x200 | 0x2000)
         self.assertEqual(kernel.memory, (128 * 1024**2, 128 * 1024**2))
+        self.assertEqual(kernel.application_name, "python")
+        self.assertEqual(kernel.attribute, 0x20002)
+        self.assertEqual(kernel.inherited_handles, (12,))
+        self.assertTrue(kernel.creation_flags & 0x80000)
+        self.assertIn("=C:=C:\\work\0PATH=C:\\Python\0", kernel.environment_seen)
+        self.assertIn("FreeEnvironmentStringsW", kernel.calls)
         self.assertLess(kernel.calls.index("SetInformationJobObject"),
                         kernel.calls.index("CreateProcessW"))
         self.assertLess(kernel.calls.index("AssignProcessToJobObject"),
                         kernel.calls.index("ResumeThread"))
+        self.assertIn("DeleteProcThreadAttributeList", kernel.calls)
         self.assertEqual(kernel.calls[-1], "CloseHandle")
 
     def test_timeout_terminates_job(self) -> None:
@@ -85,6 +109,14 @@ class WindowsJobCallOrderTests(unittest.TestCase):
         self.assertIn("TerminateJobObject", kernel.calls)
         self.assertLess(kernel.calls.index("TerminateJobObject"),
                         kernel.calls.index("CloseHandle"))
+
+    def test_invalid_or_oversized_limits_fail_before_launch(self) -> None:
+        kernel = _FakeKernel()
+        with patch.object(ctypes, "WinDLL", return_value=kernel, create=True):
+            with self.assertRaises(ValueError):
+                _run_windows_job(["python"], {"PATH": "C:\\Python"},
+                                 timeout_seconds=3, memory_bytes=16 * 1024**3 + 1)
+        self.assertNotIn("CreateProcessW", kernel.calls)
 
 
 @unittest.skipUnless(os.name == "nt", "Windows Job Object tests")
