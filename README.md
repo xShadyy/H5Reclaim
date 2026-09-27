@@ -35,6 +35,20 @@ h5reclaim --help
 
 The [usage guide](docs/usage.md) covers current commands, supported structures, output interpretation, and safety limits. The [file guide](docs/file-guide.md) maps the source tree. The [corpus notes](corpus/README.md) and [benchmark guide](benchmarks/README.md) explain the controlled evaluations.
 
+To inspect a damaged acquisition, first select the dataset and new output
+paths with `python -m h5reclaim diagnose damaged.h5 --dataset /measurements`;
+then use `python -m h5reclaim rescue damaged.h5 --dataset /measurements --output
+derived.h5 --report evidence.json`. The report distinguishes currently
+readable values from equality to an independently retained prior capture.
+`--strict-history` requires a pinned baseline, capsule, replica, or parity
+route. For an intact future acquisition, `python -m h5reclaim protect
+healthy.h5 --dataset /measurements --output protection.zip` creates a
+prospective bundle; store the printed manifest digest independently and run
+`verify-protection` and `drill-protection` while the source is intact. The
+[incident intake protocol](benchmarks/INCIDENT_INTAKE.md) separates recovery
+of consented naturally damaged files from later independent scoring. No
+representative field success rate is established.
+
 ## License
 
 H5Reclaim is available under the [Apache License 2.0](LICENSE).
