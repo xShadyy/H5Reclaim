@@ -54,12 +54,22 @@ under an 8 GiB dense scan cap. Disk, output, time and ownership checks also
 apply. This repairs that checked link, whereas `--large-readable` exports
 values that native HDF5 can already read.
 
+Release verification on 2026-09-27: the complete unit suite passed **521 tests**
+in 414 seconds. The four pinned authentic originals passed size and SHA-256
+checks. The existing authentic GWOSC five-case prospective and truncation
+benchmark passed, as did its older 128-chunk index-link trial. A separate
+generated deep version-1 tree yielded 8,192/8,192 exact chunks after one
+interior link loss. The generated large structural tests recovered a checked
+index link in an actual sparse HDF5 container above 4 GiB, and separately
+recovered 8,200 allocated chunks. The 28-case stratified benchmark still
+reported one historically wrong accepted unchecksummed value without prior
+evidence. These selected tests cannot estimate field recovery probability.
+
 These additions cover only the stated routes. They do not fix arbitrary
 object-header fields, other large-file index links, correlated edits to data
 and metadata, unavailable prior evidence, or overwritten unique measurements.
-The historical 0.9.0 verification counts are recorded below; new release
-counts must come from a fresh full run and do not establish a field success
-percentage.
+The historical 0.9.0 verification counts are recorded below. Neither release
+establishes a field success percentage.
 
 ## Version 0.9.0: tail salvage, checked metadata trials, prospective capsules, and broader fixed records
 
