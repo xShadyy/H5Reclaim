@@ -251,7 +251,7 @@ class ReadableExportTests(unittest.TestCase):
                 handle.create_dataset("unwritten", shape=(8,), dtype="<u4")
                 handle.create_dataset("large", shape=(MAX_BLOCK_BYTES // 8 + 1,),
                                       chunks=(MAX_BLOCK_BYTES // 8 + 1,), dtype="<f8")
-            for selected in ("/vlen", "/vlen_strings", "/references", "/nested_references",
+            for selected in ("/vlen", "/vlen_strings", "/nested_references",
                              "/unwritten", "/large"):
                 with self.subTest(selected=selected):
                     with self.assertRaises(UnsupportedCase):
@@ -267,7 +267,7 @@ class ReadableExportTests(unittest.TestCase):
                     output.unlink()
                     report.unlink()
 
-    def test_noncanonical_numeric_precision_and_unbounded_logical_size_refused(self) -> None:
+    def test_reduced_precision_integer_is_copied_but_unbounded_size_refused(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             source, output, report = self._paths(Path(directory))
             with h5py.File(source, "x") as handle:
@@ -275,16 +275,160 @@ class ReadableExportTests(unittest.TestCase):
                 lowered.set_precision(24)
                 created = h5py.h5d.create(handle.id, b"short_precision", lowered,
                                           h5py.h5s.create_simple((2,)))
+                created.write(h5py.h5s.ALL, h5py.h5s.ALL,
+                              np.array([0x123456, 0xabcdef], dtype="<u4"))
                 created.close()
                 handle.create_dataset("huge_sparse", shape=(MAX_DATA_BYTES // 8 + 1,),
                                       chunks=(1024,), dtype="<f8")
-            for dataset, reason in (("/short_precision", "precision"),
-                                    ("/huge_sparse", "512 MiB")):
-                with self.subTest(dataset=dataset):
-                    with self.assertRaisesRegex(UnsupportedCase, reason):
-                        export_readable(source, dataset, output, report)
-                    self.assertFalse(output.exists())
-                    self.assertFalse(report.exists())
+            export_readable(source, "/short_precision", output, report)
+            with h5py.File(output, "r") as handle:
+                self.assertEqual(handle["short_precision"][...].tolist(), [0x123456, 0xabcdef])
+                self.assertEqual(handle["short_precision"].id.get_type().get_precision(), 24)
+            output.unlink()
+            report.unlink()
+            with self.assertRaisesRegex(UnsupportedCase, "512 MiB"):
+                export_readable(source, "/huge_sparse", output, report)
+            self.assertFalse(output.exists())
+            self.assertFalse(report.exists())
+
+    def test_builtin_nbit_and_scaleoffset_keep_observed_values_and_pipeline(self) -> None:
+        for kind in ("nbit", "scaleoffset"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                source, output, report = self._paths(Path(directory))
+                with h5py.File(source, "x") as handle:
+                    if kind == "nbit":
+                        properties = h5py.h5p.create(h5py.h5p.DATASET_CREATE)
+                        properties.set_chunk((5,))
+                        properties.set_filter(h5py.h5z.FILTER_NBIT,
+                                              h5py.h5z.FLAG_MANDATORY, ())
+                        datatype = h5py.h5t.STD_U16LE.copy()
+                        datatype.set_precision(12)
+                        created = h5py.h5d.create(handle.id, b"values", datatype,
+                                                  h5py.h5s.create_simple((20,)),
+                                                  dcpl=properties)
+                        created.write(h5py.h5s.ALL, h5py.h5s.ALL,
+                                      np.arange(20, dtype="<u2"))
+                        created.close()
+                    else:
+                        handle.create_dataset(
+                            "values", data=np.array([0.101, 0.205, 1.517, 2.993], dtype="<f8"),
+                            chunks=(2,), scaleoffset=2,
+                        )
+                    expected = handle["/values"][...].tobytes()
+                    original_filters = [handle["/values"].id.get_create_plist().get_filter(i)
+                                        for i in range(handle["/values"].id.get_create_plist().get_nfilters())]
+                before = digest(source)
+                result = export_readable(source, "/values", output, report)
+                self.assertEqual(digest(source), before)
+                self.assertEqual(result["outcome"], "complete")
+                with h5py.File(output, "r") as handle:
+                    copied = handle["/values"]
+                    self.assertEqual(copied[...].tobytes(), expected)
+                    self.assertEqual([copied.id.get_create_plist().get_filter(i)
+                                      for i in range(copied.id.get_create_plist().get_nfilters())],
+                                     original_filters)
+                if kind == "scaleoffset":
+                    self.assertIn("lossy", result["dataset"]["filter_semantics"])
+                else:
+                    self.assertIsNone(result["dataset"]["filter_semantics"])
+
+    def test_bitfield_preserves_native_values_and_hdf5_type(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source, output, report = self._paths(Path(directory))
+            with h5py.File(source, "x") as handle:
+                original = h5py.h5d.create(handle.id, b"bits", h5py.h5t.STD_B16LE,
+                                           h5py.h5s.create_simple((3,)))
+                original.write(h5py.h5s.ALL, h5py.h5s.ALL,
+                               np.array([0x0012, 0x8000, 0xffff], dtype="<u2"))
+                original.close()
+            result = export_readable(source, "/bits", output, report)
+            self.assertEqual(result["outcome"], "complete")
+            with h5py.File(source, "r") as original, h5py.File(output, "r") as exported:
+                self.assertEqual(exported["/bits"].id.get_type().get_class(), h5py.h5t.BITFIELD)
+                self.assertEqual(exported["/bits"][...].tobytes(),
+                                 original["/bits"][...].tobytes())
+
+    def test_szip_uses_only_compiled_in_encoder_and_decoder(self) -> None:
+        if (not h5py.h5z.filter_avail(h5py.h5z.FILTER_SZIP)
+                or h5py.h5z.get_filter_info(h5py.h5z.FILTER_SZIP) & 3 != 3):
+            self.skipTest("SZIP encoder and decoder are not built into this HDF5")
+        with tempfile.TemporaryDirectory() as directory:
+            source, output, report = self._paths(Path(directory))
+            with h5py.File(source, "x") as handle:
+                handle.create_dataset("values", data=np.arange(64, dtype="<u2"),
+                                      chunks=(32,), compression="szip",
+                                      compression_opts=("ec", 8))
+            result = export_readable(source, "/values", output, report)
+            self.assertEqual(result["dataset"]["filters_in_order"], [h5py.h5z.FILTER_SZIP])
+            with h5py.File(output, "r") as handle:
+                np.testing.assert_array_equal(handle["/values"][...], np.arange(64))
+
+    def test_self_object_references_are_remapped_with_sparse_validity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source, output, report = self._paths(Path(directory))
+            with h5py.File(source, "x") as handle:
+                selected = handle.create_dataset("refs", shape=(5,), dtype=h5py.ref_dtype,
+                                                 chunks=(2,))
+                selected[0:2] = [selected.ref, h5py.Reference()]
+                selected[4] = selected.ref
+            before = digest(source)
+            result = export_readable(source, "/refs", output, report)
+            self.assertEqual(digest(source), before)
+            self.assertEqual(result["outcome"], "partial")
+            self.assertEqual((result["accepted_elements"], result["unknown_elements"]), (3, 2))
+            self.assertEqual(result["dataset"]["reference_mapping"]["selected_dataset_count"], 2)
+            self.assertEqual(result["dataset"]["reference_mapping"]["null_count"], 1)
+            with h5py.File(output, "r") as handle:
+                selected = handle["/refs"]
+                self.assertTrue(bool(selected[0]))
+                self.assertEqual(handle[selected[0]].name, "/refs")
+                self.assertFalse(bool(selected[1]))
+                self.assertEqual(handle[selected[4]].name, "/refs")
+                self.assertEqual(handle["/_h5reclaim/validity"][...].tolist(), [1, 0, 1])
+
+    def test_selected_dataset_region_references_keep_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source, output, report = self._paths(Path(directory))
+            with h5py.File(source, "x") as handle:
+                selected = handle.create_dataset("regions", shape=(3,), dtype=h5py.regionref_dtype)
+                selected[0] = selected.regionref[0:2]
+                selected[1] = h5py.RegionReference()
+                selected[2] = selected.regionref[2:3]
+            before = digest(source)
+            result = export_readable(source, "/regions", output, report)
+            self.assertEqual(digest(source), before)
+            self.assertEqual(result["dataset"]["reference_mapping"]["kind"], "top_level_region")
+            self.assertEqual(result["dataset"]["reference_mapping"]["selected_dataset_count"], 2)
+            with h5py.File(source, "r") as old, h5py.File(output, "r") as new:
+                for index in (0, 2):
+                    old_ref, new_ref = old["/regions"][index], new["/regions"][index]
+                    self.assertEqual(new[new_ref].name, "/regions")
+                    self.assertEqual(h5py.h5r.get_region(old_ref, old.id).encode(),
+                                     h5py.h5r.get_region(new_ref, new.id).encode())
+                self.assertFalse(bool(new["/regions"][1]))
+
+    def test_reference_to_other_object_and_region_reference_are_refused(self) -> None:
+        for kind in ("outside", "dangling", "region"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                source, output, report = self._paths(Path(directory))
+                with h5py.File(source, "x") as handle:
+                    if kind == "region":
+                        other = handle.create_dataset("other", data=[1])
+                        selected = handle.create_dataset("refs", shape=(1,),
+                                                         dtype=h5py.regionref_dtype)
+                        selected[0] = other.regionref[0:1]
+                    else:
+                        other = handle.create_dataset("other", data=[1])
+                        selected = handle.create_dataset("refs", shape=(1,), dtype=h5py.ref_dtype)
+                        selected[0] = other.ref
+                        if kind == "dangling":
+                            del handle["other"]
+                before = digest(source)
+                with self.assertRaises(UnsupportedCase):
+                    export_readable(source, "/refs", output, report)
+                self.assertEqual(digest(source), before)
+                self.assertFalse(output.exists())
+                self.assertFalse(report.exists())
 
     def test_unknown_filter_is_refused_before_any_payload_read(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

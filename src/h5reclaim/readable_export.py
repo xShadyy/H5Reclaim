@@ -48,12 +48,15 @@ MAX_PATH_BYTES = 4096
 MAX_TYPE_DEPTH = 4
 MAX_TYPE_MEMBERS = 64
 MAX_FIXED_FIELD_BYTES = 4096
+MAX_REFERENCE_ELEMENTS_PER_BLOCK = 4096
 NATIVE_WORKER_SECONDS = 900
 NATIVE_WORKER_MEMORY_BYTES = 3 * 1024 * 1024 * 1024
 MAX_WORKER_MESSAGE_BYTES = 65536
 # These filters ship with HDF5. Unknown filters may load third-party plugins.
 NATIVE_FILTERS = frozenset((h5py.h5z.FILTER_DEFLATE, h5py.h5z.FILTER_SHUFFLE,
-                            h5py.h5z.FILTER_FLETCHER32))
+                            h5py.h5z.FILTER_FLETCHER32, h5py.h5z.FILTER_SZIP,
+                            h5py.h5z.FILTER_NBIT,
+                            h5py.h5z.FILTER_SCALEOFFSET))
 
 
 def _selected_dataset(handle: h5py.File, path: str) -> h5py.Dataset:
@@ -84,14 +87,22 @@ def _selected_dataset(handle: h5py.File, path: str) -> h5py.Dataset:
 
 
 def _canonical_numeric(datatype: h5py.h5t.TypeID, dtype: np.dtype) -> None:
-    """Accept ordinary full-width fixed numeric HDF5 representations only."""
+    """Accept bounded integers and ordinary IEEE floating-point storage.
+
+    Reduced-precision integers are safely copied by native HDF5 with the
+    original type retained and a bitwise readback. Their unused storage bits
+    are not separately claimed as recovered measurements.
+    """
     if dtype.kind not in "iuf" or dtype.subdtype is not None or dtype.itemsize not in (1, 2, 4, 8):
         raise UnsupportedCase("readable export requires a primitive fixed-width integer or IEEE float")
     klass = datatype.get_class()
-    if datatype.get_size() != dtype.itemsize or datatype.get_precision() != dtype.itemsize * 8:
-        raise UnsupportedCase("numeric datatype has noncanonical storage or bit precision")
-    if datatype.get_offset() != 0 or datatype.get_pad() != (h5py.h5t.PAD_ZERO, h5py.h5t.PAD_ZERO):
-        raise UnsupportedCase("numeric datatype has noncanonical bit offset or padding")
+    precision = datatype.get_precision()
+    offset = datatype.get_offset()
+    if (datatype.get_size() != dtype.itemsize or precision < 1 or offset < 0
+            or precision + offset > dtype.itemsize * 8):
+        raise UnsupportedCase("numeric datatype has invalid bit precision or offset")
+    if datatype.get_pad() != (h5py.h5t.PAD_ZERO, h5py.h5t.PAD_ZERO):
+        raise UnsupportedCase("numeric datatype has unsupported padding")
     orders = (h5py.h5t.ORDER_LE, h5py.h5t.ORDER_BE)
     if dtype.itemsize == 1:
         orders += (h5py.h5t.ORDER_NONE,)
@@ -103,6 +114,8 @@ def _canonical_numeric(datatype: h5py.h5t.TypeID, dtype: np.dtype) -> None:
         ):
             raise UnsupportedCase("integer representation is not canonical")
     else:
+        if precision != dtype.itemsize * 8 or offset != 0:
+            raise UnsupportedCase("floating-point datatype is not a full-width IEEE value")
         fields, bias = {
             4: ((31, 23, 8, 0, 23), 127),
             8: ((63, 52, 11, 0, 52), 1023),
@@ -125,6 +138,13 @@ def _safe_fixed_type(datatype: h5py.h5t.TypeID, dtype: np.dtype, depth: int = 0)
     klass = datatype.get_class()
     if klass in (h5py.h5t.INTEGER, h5py.h5t.FLOAT):
         _canonical_numeric(datatype, dtype)
+        return
+    if klass == h5py.h5t.BITFIELD:
+        if (dtype.kind != "u" or dtype.itemsize not in (1, 2, 4, 8)
+                or datatype.get_size() != dtype.itemsize
+                or datatype.get_order() not in (h5py.h5t.ORDER_LE, h5py.h5t.ORDER_BE,
+                                                 h5py.h5t.ORDER_NONE)):
+            raise UnsupportedCase("bitfield does not have bounded unsigned fixed-size storage")
         return
     if klass == h5py.h5t.ENUM:
         base = datatype.get_super()
@@ -182,6 +202,64 @@ def _safe_fixed_type(datatype: h5py.h5t.TypeID, dtype: np.dtype, depth: int = 0)
     raise UnsupportedCase("references, variable-length values, and this datatype class are not safely exportable")
 
 
+def _safe_reference_type(datatype: h5py.h5t.TypeID, dtype: np.dtype) -> str | None:
+    """Recognize only top-level object and selected-dataset region references.
+
+    A reference's stored bytes identify an object in the *source* file. They
+    cannot be copied directly into a new HDF5 file. The exporter remaps only
+    null and self references after checking each source referent and region.
+    """
+    if datatype.get_class() != h5py.h5t.REFERENCE:
+        return None
+    if h5py.check_dtype(ref=dtype) is h5py.Reference and datatype.equal(h5py.h5t.STD_REF_OBJ):
+        return "object"
+    if (h5py.check_dtype(ref=dtype) is h5py.RegionReference
+            and datatype.equal(h5py.h5t.STD_REF_DSETREG)):
+        return "region"
+    raise UnsupportedCase("only top-level object and dataset-region references can be remapped")
+
+
+def _reference_tokens(block: np.ndarray, handle: h5py.File, selected: h5py.Dataset,
+                      selected_address: int, kind: str) -> tuple[bytes, int, int]:
+    """Return comparable *logical* tokens; Python object pointers are not data."""
+    if block.size > MAX_REFERENCE_ELEMENTS_PER_BLOCK:
+        raise UnsupportedCase("reference read exceeds the per-block element limit")
+    tokens = bytearray()
+    null_count = self_count = 0
+    for reference in block.flat:
+        expected_type = h5py.Reference if kind == "object" else h5py.RegionReference
+        if type(reference) is not expected_type:
+            raise UnsupportedCase("native read did not return the selected reference type")
+        if not reference:
+            tokens.append(0)
+            null_count += 1
+            continue
+        try:
+            referent = handle[reference]
+            address = int(h5py.h5o.get_info(referent.id).addr)
+        except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            raise UnsupportedCase("object reference target is dangling or unreadable") from exc
+        if not isinstance(referent, h5py.Dataset) or address != selected_address:
+            raise UnsupportedCase("object reference points outside the selected dataset")
+        if kind == "region":
+            try:
+                space = h5py.h5r.get_region(reference, handle.id)
+                if (space is None or not space.select_valid()
+                        or tuple(space.get_simple_extent_dims()) != selected.shape):
+                    raise UnsupportedCase("dataset-region reference has an invalid selection")
+                encoded = space.encode()
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                raise UnsupportedCase("dataset-region selection is unreadable") from exc
+            if (len(encoded) > 65536 or space.get_select_npoints() > MAX_DATA_BYTES
+                    or len(tokens) + len(encoded) + 5 > MAX_BLOCK_BYTES):
+                raise UnsupportedCase("dataset-region selection exceeds the bounded limit")
+            tokens.extend(b"\x02" + len(encoded).to_bytes(4, "little") + encoded)
+        else:
+            tokens.append(1)
+        self_count += 1
+    return bytes(tokens), null_count, self_count
+
+
 @dataclass(frozen=True)
 class StorageInspection:
     layout: str
@@ -221,8 +299,10 @@ def _safe_export_attributes(dataset: h5py.Dataset) -> tuple[tuple[tuple[str, Any
     return tuple(copied), tuple(omitted)
 
 
-def _check_storage(dataset: h5py.Dataset, snapshot_size: int) -> StorageInspection:
+def _check_storage(dataset: h5py.Dataset, snapshot_size: int,
+                   file_itemsize: int | None = None) -> StorageInspection:
     creation = dataset.id.get_create_plist()
+    itemsize = file_itemsize or dataset.dtype.itemsize
     if creation.get_external_count() or dataset.is_virtual:
         raise UnsupportedCase("external and virtual dataset storage is not supported")
     filter_count = creation.get_nfilters()
@@ -231,11 +311,18 @@ def _check_storage(dataset: h5py.Dataset, snapshot_size: int) -> StorageInspecti
     filters = [creation.get_filter(index)[0] for index in range(filter_count)]
     if any(value not in NATIVE_FILTERS for value in filters):
         raise UnsupportedCase("filter pipeline would require a plugin or exceeds the limit")
+    for value in filters:
+        if (not h5py.h5z.filter_avail(value)
+                or (h5py.h5z.get_filter_info(value) & (
+                    h5py.h5z.FILTER_CONFIG_DECODE_ENABLED | h5py.h5z.FILTER_CONFIG_ENCODE_ENABLED
+                )) != (h5py.h5z.FILTER_CONFIG_DECODE_ENABLED
+                       | h5py.h5z.FILTER_CONFIG_ENCODE_ENABLED)):
+            raise UnsupportedCase("a built-in filter encoder or decoder is unavailable")
     layout = creation.get_layout()
     if layout == h5py.h5d.CHUNKED:
         chunks = dataset.chunks
         assert chunks is not None
-        if prod(chunks) * dataset.dtype.itemsize > MAX_BLOCK_BYTES:
+        if prod(chunks) * itemsize > MAX_BLOCK_BYTES:
             raise UnsupportedCase("decoded chunk exceeds the 1 MiB limit")
         grid = prod((length + width - 1) // width for length, width in zip(dataset.shape, chunks))
         if grid > MAX_CHUNKS:
@@ -274,7 +361,7 @@ def _check_storage(dataset: h5py.Dataset, snapshot_size: int) -> StorageInspecti
     if layout in (h5py.h5d.CONTIGUOUS, h5py.h5d.COMPACT):
         # For these two layouts there are no per-chunk allocation records.
         # Refuse a merely defined, unwritten dataset whose reads use fill.
-        if dataset.id.get_storage_size() != prod(dataset.shape) * dataset.dtype.itemsize:
+        if dataset.id.get_storage_size() != prod(dataset.shape) * itemsize:
             raise UnsupportedCase("the contiguous or compact dataset is not fully allocated")
         if layout == h5py.h5d.CONTIGUOUS:
             address = dataset.id.get_offset()
@@ -285,9 +372,10 @@ def _check_storage(dataset: h5py.Dataset, snapshot_size: int) -> StorageInspecti
     raise UnsupportedCase("dataset layout is not a local compact, contiguous, or chunked layout")
 
 
-def _blocks(shape: tuple[int, ...], itemsize: int) -> Iterator[tuple[slice, ...]]:
+def _blocks(shape: tuple[int, ...], itemsize: int,
+            max_elements: int | None = None) -> Iterator[tuple[slice, ...]]:
     dimensions = [1] * len(shape)
-    allowance = MAX_BLOCK_BYTES // itemsize
+    allowance = min(MAX_BLOCK_BYTES // itemsize, max_elements or MAX_BLOCK_BYTES // itemsize)
     for index in range(len(shape) - 1, -1, -1):
         dimensions[index] = min(shape[index], max(1, allowance))
         allowance = max(1, allowance // dimensions[index])
@@ -296,9 +384,10 @@ def _blocks(shape: tuple[int, ...], itemsize: int) -> Iterator[tuple[slice, ...]
 
 
 def _allocated_selections(storage: StorageInspection, shape: tuple[int, ...],
-                          chunks: tuple[int, ...] | None, itemsize: int) -> Iterator[tuple[slice, ...]]:
+                          chunks: tuple[int, ...] | None, itemsize: int,
+                          max_elements: int | None = None) -> Iterator[tuple[slice, ...]]:
     if storage.layout != "chunked":
-        yield from _blocks(shape, itemsize)
+        yield from _blocks(shape, itemsize, max_elements)
         return
     assert chunks is not None
     for origin, _, _, _ in storage.records:
@@ -375,14 +464,27 @@ def _export_readable_local(source: str | Path, dataset_path: str, output: str | 
             with h5py.File(snapshot, "r") as original:
                 selected = _selected_dataset(original, dataset_path)
                 dtype = selected.dtype
-                _safe_fixed_type(selected.id.get_type(), dtype)
+                reference_kind = _safe_reference_type(selected.id.get_type(), dtype)
+                if reference_kind:
+                    # A non-null fill reference could point to an object that
+                    # will not exist in the one-dataset output.
+                    fill = selected.fillvalue
+                    if fill is not None and bool(fill):
+                        raise UnsupportedCase("non-null reference fill value cannot be remapped")
+                else:
+                    _safe_fixed_type(selected.id.get_type(), dtype)
                 shape = tuple(int(value) for value in selected.shape)
                 if not 1 <= len(shape) <= MAX_RANK or any(length <= 0 for length in shape):
                     raise UnsupportedCase("expected a nonempty dataset with rank one through four")
-                logical_bytes = prod(shape) * dtype.itemsize
+                file_itemsize = selected.id.get_type().get_size()
+                logical_bytes = prod(shape) * file_itemsize
                 if logical_bytes > MAX_DATA_BYTES:
                     raise UnsupportedCase("selected logical data exceeds the 512 MiB limit")
-                storage = _check_storage(selected, source_size)
+                storage = _check_storage(selected, source_size, file_itemsize)
+                if (reference_kind and storage.layout == "chunked" and selected.chunks is not None
+                        and prod(selected.chunks) > MAX_REFERENCE_ELEMENTS_PER_BLOCK):
+                    raise UnsupportedCase("reference chunk exceeds the per-block element limit")
+                reference_block_limit = MAX_REFERENCE_ELEMENTS_PER_BLOCK if reference_kind else None
                 creation = selected.id.get_create_plist()
                 observed_filters = tuple(int(creation.get_filter(index)[0])
                                          for index in range(creation.get_nfilters()))
@@ -410,18 +512,40 @@ def _export_readable_local(source: str | Path, dataset_path: str, output: str | 
                 source_values = hashlib.sha256()
                 block_count = 0
                 accepted_elements = 0
+                null_references = self_references = 0
                 with tempfile.TemporaryDirectory(prefix=".h5reclaim-", dir=output.parent) as out_dir:
                     with tempfile.TemporaryDirectory(prefix=".h5reclaim-", dir=report_path.parent) as rep_dir:
                         output_temp = Path(out_dir) / "output.h5"
                         report_temp = Path(rep_dir) / "report.json"
                         with h5py.File(output_temp, "x") as target:
                             exported = _create_matching_dataset(target, selected, dataset_path)
-                            for selection in _allocated_selections(storage, shape, selected.chunks, dtype.itemsize):
+                            for selection in _allocated_selections(
+                                    storage, shape, selected.chunks, dtype.itemsize,
+                                    reference_block_limit):
                                 block = np.asarray(selected[selection])
                                 if block.dtype != dtype or block.nbytes > MAX_BLOCK_BYTES:
                                     raise RecoveryError("native read returned an unexpected bounded block")
-                                exported[selection] = block
-                                source_values.update(block.tobytes(order="C"))
+                                if reference_kind:
+                                    tokens, nulls, selves = _reference_tokens(
+                                        block, original, selected, object_address, reference_kind)
+                                    mapped = np.empty(block.shape, dtype=dtype)
+                                    for index, reference in np.ndenumerate(block):
+                                        if reference_kind == "region":
+                                            mapped[index] = (
+                                                h5py.h5r.create(exported.id, b".",
+                                                                 h5py.h5r.DATASET_REGION,
+                                                                 h5py.h5r.get_region(reference, original.id))
+                                                if reference else h5py.RegionReference()
+                                            )
+                                        else:
+                                            mapped[index] = exported.ref if reference else h5py.Reference()
+                                    exported[selection] = mapped
+                                    source_values.update(tokens)
+                                    null_references += nulls
+                                    self_references += selves
+                                else:
+                                    exported[selection] = block
+                                    source_values.update(block.tobytes(order="C"))
                                 block_count += 1
                                 accepted_elements += block.size
                             copied_attributes: list[str] = []
@@ -449,10 +573,19 @@ def _export_readable_local(source: str | Path, dataset_path: str, output: str | 
                         output_values = hashlib.sha256()
                         with h5py.File(output_temp, "r") as target:
                             exported = target[dataset_path]
-                            for selection in _allocated_selections(storage, shape, selected.chunks, dtype.itemsize):
-                                output_values.update(np.asarray(exported[selection]).tobytes(order="C"))
+                            output_address = int(h5py.h5o.get_info(exported.id).addr)
+                            for selection in _allocated_selections(
+                                    storage, shape, selected.chunks, dtype.itemsize,
+                                    reference_block_limit):
+                                block = np.asarray(exported[selection])
+                                if reference_kind:
+                                    tokens, _, _ = _reference_tokens(
+                                        block, target, exported, output_address, reference_kind)
+                                    output_values.update(tokens)
+                                else:
+                                    output_values.update(block.tobytes(order="C"))
                         if output_values.digest() != source_values.digest():
-                            raise RecoveryError("output values differ from native reads of the source snapshot")
+                            raise RecoveryError("output values or reference targets differ from the source snapshot")
 
                         report: dict[str, Any] = {
                             "schema_version": 1,
@@ -481,6 +614,20 @@ def _export_readable_local(source: str | Path, dataset_path: str, output: str | 
                                 "source_chunk_records": chunk_records,
                                 "logical_bytes": logical_bytes, "attributes_copied": copied_attributes,
                                 "attributes_omitted": omitted,
+                                "reference_mapping": {
+                                    "kind": "top_level_" + reference_kind,
+                                    "allowed_target": dataset_path,
+                                    "null_count": null_references, "selected_dataset_count": self_references,
+                                    "selections_may_include_unknown_values": bool(storage.unknown),
+                                    "comparison": (
+                                        "logical null/self target and encoded region selection sequence, "
+                                        "not raw source reference bytes"
+                                    ),
+                                } if reference_kind else None,
+                                "filter_semantics": (
+                                    "SCALEOFFSET may be lossy; only the currently readable decoded values "
+                                    "are checked against the output"
+                                ) if h5py.h5z.FILTER_SCALEOFFSET in observed_filters else None,
                             },
                             "accepted_elements": accepted_elements,
                             "unknown_elements": prod(shape) - accepted_elements,
@@ -497,7 +644,12 @@ def _export_readable_local(source: str | Path, dataset_path: str, output: str | 
                                 "comparisons": [vars(comparison) for comparison in comparisons],
                                 "warning": "Matching hints do not prove the origin or historical value of measurements.",
                             } if hints is not None else None,
-                            "verification": "all accepted values read through native HDF5 and output read back bitwise equal",
+                            "verification": (
+                                "all accepted object references resolve to the selected dataset or null; "
+                                "output references were remapped and checked against the logical source sequence"
+                                if reference_kind else
+                                "all accepted values read through native HDF5 and output read back bitwise equal"
+                            ),
                             "native_worker": worker_budget,
                             "limits": (
                                 "This copies current native-readable values, not structurally recovered bytes. "
