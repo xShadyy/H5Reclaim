@@ -281,6 +281,24 @@ class SharedMessageTests(unittest.TestCase):
         with self.assertRaisesRegex(FormatError, "SOHM B-tree node checksum"):
             read_dataset_spec_fallback(self.path, "/shape_10_1")
 
+    def test_sohm_btree_reordered_records_with_new_checksum_refuses(self):
+        self._btree_fixture(internal=False)
+        raw = bytearray(self.path.read_bytes())
+        table = raw.index(b"SMTB")
+        index_address = int.from_bytes(raw[table+18:table+26], "little")
+        leaf = int.from_bytes(raw[index_address+16:index_address+24], "little")
+        count = int.from_bytes(raw[index_address+24:index_address+26], "little")
+        self.assertEqual(raw[leaf:leaf+4], b"BTLF")
+        first = bytes(raw[leaf+6:leaf+23])
+        second = bytes(raw[leaf+23:leaf+40])
+        raw[leaf+6:leaf+23] = second
+        raw[leaf+23:leaf+40] = first
+        checksum = leaf + 6 + count*17
+        raw[checksum:checksum+4] = lookup3(raw[leaf:checksum]).to_bytes(4, "little")
+        self.path.write_bytes(raw)
+        with self.assertRaisesRegex(FormatError, "key order"):
+            read_dataset_spec_fallback(self.path, "/shape_10_1")
+
     def test_sohm_btree_internal_recovers_from_damaged_native_open(self):
         self._btree_fixture(internal=True)
         with ModernH5File(self.path) as reader, h5py.File(self.path, "r") as native:
