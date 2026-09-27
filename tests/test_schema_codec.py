@@ -20,6 +20,31 @@ from h5reclaim.schema_codec import (
 
 
 class SchemaCodecTests(unittest.TestCase):
+    def test_dataset_selection_never_follows_external_or_soft_link(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            related = Path(directory) / "related.h5"
+            source = Path(directory) / "selected.h5"
+            with h5py.File(related, "w") as handle:
+                handle.create_dataset("secret", data=np.arange(4, dtype="<u4"), chunks=(4,))
+            with h5py.File(source, "w") as handle:
+                group = handle.create_group("experiment")
+                group.create_dataset("hard", data=np.arange(4, dtype="<u4"), chunks=(4,))
+                group["soft"] = h5py.SoftLink("/experiment/hard")
+                group["external"] = h5py.ExternalLink(str(related), "/secret")
+                handle["external_group"] = h5py.ExternalLink(str(related), "/")
+            self.assertEqual(read_dataset_spec(source, "/experiment/hard").shape, (4,))
+            for selection in (
+                "/experiment/soft", "/experiment/external", "/external_group/secret",
+            ):
+                with self.subTest(selection=selection):
+                    with self.assertRaisesRegex(UnsupportedCase, "local hard links"):
+                        read_dataset_spec(source, selection)
+            for selection in ("experiment/hard", "/experiment//hard", "/experiment/../experiment/hard",
+                              "/experiment/hard/children", "/_h5reclaim/data"):
+                with self.subTest(selection=selection):
+                    with self.assertRaises(UnsupportedCase):
+                        read_dataset_spec(source, selection)
+
     def test_legacy_index_keys_own_edge_coordinates_for_other_widths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             for dtype in ("u1", ">i2", "<f4", ">f8"):

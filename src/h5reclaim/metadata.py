@@ -126,16 +126,43 @@ def _safe_scalar_attributes(dataset: h5py.Dataset) -> tuple[tuple[tuple[str, Any
     return tuple(copied), tuple(omitted)
 
 
+def _selected_local_dataset(handle: h5py.File, path: str) -> h5py.Dataset:
+    """Resolve only canonical, local hard-link paths before opening the object.
+
+    `handle.get('/a/b')` can follow an external link before the caller checks
+    that the final dataset belongs to the snapshot. Examine each link itself
+    first, without asking HDF5 to dereference soft or external targets.
+    """
+    if not isinstance(path, str) or not path.startswith("/") or path == "/":
+        raise UnsupportedCase("select an absolute dataset path such as /group/data")
+    if len(path.encode("utf-8")) > 4096 or any(
+        ord(character) < 32 or ord(character) == 127 for character in path
+    ):
+        raise UnsupportedCase("selected dataset path is too long or contains control characters")
+    parts = path[1:].split("/")
+    if len(parts) > 64 or any(part in ("", ".", "..") for part in parts):
+        raise UnsupportedCase("selected dataset path must be canonical")
+    if parts[0] == "_h5reclaim":
+        raise UnsupportedCase("the /_h5reclaim output namespace is reserved")
+    current: h5py.Group | h5py.Dataset = handle["/"]
+    for position, part in enumerate(parts):
+        if not isinstance(current, h5py.Group):
+            raise UnsupportedCase("selected path contains a non-group parent")
+        link = current.get(part, getlink=True)
+        if not isinstance(link, h5py.HardLink):
+            raise UnsupportedCase("selected path must use only local hard links")
+        current = current[part]
+        if position != len(parts) - 1 and not isinstance(current, h5py.Group):
+            raise UnsupportedCase("selected path contains a non-group parent")
+    if not isinstance(current, h5py.Dataset):
+        raise UnsupportedCase("selected path is not a dataset")
+    return current
+
+
 def read_dataset_spec(source: Path, dataset_path: str) -> DatasetSpec:
-    if not dataset_path.startswith("/"):
-        raise UnsupportedCase("dataset path must be absolute, for example /measurements")
     try:
         with h5py.File(source, "r") as handle:
-            selected = handle.get(dataset_path)
-            if not isinstance(selected, h5py.Dataset):
-                raise UnsupportedCase(f"dataset {dataset_path!r} was not found")
-            if selected.name == "/_h5reclaim" or selected.name.startswith("/_h5reclaim/"):
-                raise UnsupportedCase("the /_h5reclaim output namespace is reserved")
+            selected = _selected_local_dataset(handle, dataset_path)
             if not Path(selected.file.filename).samefile(source):
                 raise UnsupportedCase("external dataset links are not supported")
 
