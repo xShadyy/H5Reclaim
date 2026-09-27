@@ -32,7 +32,7 @@ from .snapshot_io import (
 )
 
 
-VERSION = "0.9.0"
+VERSION = "0.10.0"
 _WINDOWS_STAT = os.name == "nt"
 STATUS_CODES = {
     "recovered": 1,
@@ -405,10 +405,7 @@ def _analyze_snapshot(
             node_ranges: list[tuple[int, int, int]] = []
             for node in (*walk.nodes, *graft_nodes,
                          *(candidate.node for candidate in grafts if not candidate.node.level)):
-                length = (8 + 2 * reader.superblock.offset_size
-                          + 2 * reader.superblock.istore_k
-                          * (8 + 8 * (rank + 1) + reader.superblock.offset_size)
-                          + 8 + 8 * (rank + 1))
+                length = reader.tree_node_allocation_size(rank=rank)
                 start = reader.absolute(node.address)
                 node_ranges.append((start, start + length, node.address))
             node_ranges.sort()

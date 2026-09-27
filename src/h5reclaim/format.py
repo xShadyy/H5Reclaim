@@ -333,6 +333,16 @@ class H5File:
         offsets = tuple(_uint(data[8 + 8 * i : 16 + 8 * i]) for i in range(rank + 1))
         return ChunkKey(_uint(data[0:4]), _uint(data[4:8]), offsets)
 
+    def tree_node_allocation_size(self, *, rank: int) -> int:
+        """Full v1 node allocation, including the unused key and child slots."""
+        if rank not in (1, 2, 3, 4):
+            raise UnsupportedFormat("only rank-one through rank-four chunk keys are supported")
+        offsize = self.superblock.offset_size
+        key_size = 8 + 8 * (rank + 1)
+        return 8 + 2 * offsize + 2 * self.superblock.istore_k * (
+            key_size + offsize
+        ) + key_size
+
     def read_tree(self, address: int, *, rank: int = 2, element_size: int = 4) -> TreeNode:
         """Decode used entries of an explicitly declared type-1 v1 B-tree node."""
         if rank not in (1, 2, 3, 4) or not 0 < element_size <= MAX_ELEMENT_BYTES:
@@ -354,9 +364,7 @@ class H5File:
         prefix_length = 8 + 2 * offsize
         # Version-1 nodes reserve 2K child slots and 2K+1 key slots even
         # when only a prefix is used. Their entire allocation is metadata.
-        allocated_length = prefix_length + 2 * self.superblock.istore_k * (
-            key_size + offsize
-        ) + key_size
+        allocated_length = self.tree_node_allocation_size(rank=rank)
         if allocated_length > self.superblock.eof_address - self.absolute(address):
             raise FormatError(f"B-tree node at {address} crosses HDF5 end-of-file")
         content = self.read_at(address + prefix_length, used * (key_size + offsize) + key_size)
