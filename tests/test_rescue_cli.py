@@ -15,6 +15,7 @@ import h5py
 import numpy as np
 
 from h5reclaim.baseline import capture_baseline
+from h5reclaim.parity_sidecar import capture_parity_sidecar
 
 
 class RescueCliTests(unittest.TestCase):
@@ -164,3 +165,30 @@ class RescueCliTests(unittest.TestCase):
         self.assertEqual(report["replacements_from_replicas"], 1)
         with h5py.File(self.out) as file:
             np.testing.assert_array_equal(file["science"][:], np.arange(16, dtype="<u4"))
+
+    def test_parity_route_reconstructs_one_changed_chunk_from_prior_capture(self) -> None:
+        pristine, damaged = self.base / "capture.h5", self.base / "damaged.h5"
+        baseline, parity = self.base / "baseline.json", self.base / "parity.zip"
+        with h5py.File(pristine, "w", libver="latest") as file:
+            file.create_dataset("science", data=np.arange(32, dtype="<u4"), chunks=(8,))
+        capture_baseline(pristine, "/science", baseline)
+        capture_parity_sidecar(pristine, "/science", baseline, parity, stripe_width=4)
+        shutil.copyfile(pristine, damaged)
+        with h5py.File(damaged, "r") as file:
+            address = int(file["science"].id.get_chunk_info_by_coord((8,)).byte_offset)
+        with damaged.open("r+b") as handle:
+            handle.seek(address)
+            first = handle.read(1)
+            handle.seek(address)
+            handle.write(bytes([first[0] ^ 0x40]))
+        manifest = self.base / "parity_manifest.json"
+        manifest.write_text(json.dumps({
+            "schema_version": 1, "damaged_sha256": hashlib.sha256(damaged.read_bytes()).hexdigest(),
+            "baseline": {"path": str(baseline), "sha256": hashlib.sha256(baseline.read_bytes()).hexdigest()},
+            "parity": {"path": str(parity), "sha256": hashlib.sha256(parity.read_bytes()).hexdigest()},
+        }), encoding="utf-8")
+        result = self._run(damaged, "--parity", str(manifest))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(self.report.read_text())["reconstructed_from_parity"], 1)
+        with h5py.File(self.out) as file:
+            np.testing.assert_array_equal(file["science"][:], np.arange(32, dtype="<u4"))

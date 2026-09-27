@@ -288,6 +288,14 @@ def main(argv: list[str] | None = None) -> int:
     baseline_cmd.add_argument("source", type=Path)
     baseline_cmd.add_argument("--dataset", required=True)
     baseline_cmd.add_argument("--output", required=True, type=Path, help="new baseline JSON destination, stored separately")
+    parity_cmd = commands.add_parser(
+        "capture-parity", help="record prospective XOR parity after a complete prior chunk-hash baseline",
+    )
+    parity_cmd.add_argument("source", type=Path)
+    parity_cmd.add_argument("--dataset", required=True)
+    parity_cmd.add_argument("--baseline", required=True, type=Path)
+    parity_cmd.add_argument("--output", required=True, type=Path, help="new parity ZIP destination, stored independently")
+    parity_cmd.add_argument("--stripe-width", type=int, default=4, help="1 to 16 chunks per stripe (default: 4)")
     rescue_cmd = commands.add_parser(
         "rescue", help="select a bounded recovery route and publish an output with validity evidence",
     )
@@ -300,6 +308,7 @@ def main(argv: list[str] | None = None) -> int:
     choices.add_argument("--family-members", type=Path, help="pinned HDF5 Family member manifest")
     choices.add_argument("--split-members", type=Path, help="pinned HDF5 Split metadata and raw member manifest")
     choices.add_argument("--replicas", type=Path, help="pinned replica manifest and prospective baseline")
+    choices.add_argument("--parity", type=Path, help="pinned baseline plus prospective parity sidecar manifest")
     args = parser.parse_args(argv)
 
     if args.command == "capture-baseline":
@@ -314,12 +323,29 @@ def main(argv: list[str] | None = None) -> int:
             print(f"h5reclaim: baseline capture failed: {_display_path(exc, 300)}", file=sys.stderr)
             return 2
 
+    if args.command == "capture-parity":
+        try:
+            from .parity_sidecar import capture_parity_sidecar
+            result = capture_parity_sidecar(args.source, args.dataset, args.baseline,
+                                            args.output, stripe_width=args.stripe_width)
+            print("H5Reclaim prospective parity capture")
+            print(f"Dataset: {_display_path(args.dataset)} | {len(result['stripes'])} stripes")
+            print(f"Sidecar: {_display_path(args.output, 240)}")
+            print("Keep the baseline and sidecar separately; one damaged chunk per stripe can be reconstructed when other evidence survives.")
+            return 0
+        except (FormatError, UnsupportedCase, RecoveryError, OSError, ValueError, RuntimeError, KeyError) as exc:
+            print(f"h5reclaim: parity capture failed: {_display_path(exc, 300)}", file=sys.stderr)
+            return 2
+
     if args.command == "rescue":
         try:
             source = str(args.source.absolute())
             if args.replicas is not None:
                 report = run_route("replicas", args.output, args.report, source=source,
                                    dataset=args.dataset, manifest=str(args.replicas.absolute()))
+            elif args.parity is not None:
+                report = run_route("parity", args.output, args.report, source=source,
+                                   dataset=args.dataset, manifest=str(args.parity.absolute()))
             elif args.family_members is not None:
                 from .family_bundle import _manifest
                 _, members = _manifest(args.family_members)
