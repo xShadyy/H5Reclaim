@@ -21,6 +21,7 @@ import h5py
 import numpy as np
 
 from .metadata import UnsupportedCase
+from .output_annotations import add_output_annotations
 from .recovery import (
     MAX_CHUNKS, STATUS_CODES, VERSION, RecoveryError, _validate_paths,
     _verify_source, analyze, sha256_file,
@@ -139,6 +140,18 @@ def export_verified_chunks(
             "and chunk validity; other groups, dimension scales and context are not copied."
         ),
     }
+    annotation_values = {
+        "h5reclaim_chunk_status": "/_h5reclaim/chunk_status",
+        "h5reclaim_complete": complete,
+        "h5reclaim_warning": (
+            "Unknown output chunks read as zero but are not known measurements. "
+            "Check the chunk status and retained baseline evidence."
+        ),
+    }
+    annotation_collisions = sorted(set(annotation_values) & {
+        name for name, _value in spec.attributes
+    })
+    report["selected_annotation_collisions"] = annotation_collisions
     report_bytes = (json.dumps(report, indent=2, sort_keys=True) + "\n").encode("utf-8")
     if len(report_bytes) > MAX_REPORT_BYTES:
         raise UnsupportedCase("prospective baseline report exceeds publication limit")
@@ -169,12 +182,8 @@ def export_verified_chunks(
                     )
                     meta.create_dataset("report_json", data=report_bytes.decode("utf-8"),
                                         dtype=h5py.string_dtype("utf-8"))
-                    dataset.attrs["h5reclaim_chunk_status"] = "/_h5reclaim/chunk_status"
-                    dataset.attrs["h5reclaim_complete"] = complete
-                    dataset.attrs["h5reclaim_warning"] = (
-                        "Unknown output chunks read as zero but are not known measurements. "
-                        "Check the chunk status and retained baseline evidence."
-                    )
+                    if add_output_annotations(dataset, annotation_values) != annotation_collisions:
+                        raise RecoveryError("selected attributes changed during publication")
                     meta.attrs["source_sha256"] = source_digest
                     meta.attrs["report_schema_version"] = 1
                     file.flush()

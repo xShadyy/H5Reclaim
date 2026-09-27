@@ -87,7 +87,7 @@ def _safe_scalar_attributes(dataset: h5py.Dataset) -> tuple[tuple[tuple[str, Any
     copied: list[tuple[str, Any]] = []
     omitted: list[str] = []
     for name in dataset.attrs:
-        if not isinstance(name, str) or len(name.encode("utf-8")) > 128 or name.startswith("h5reclaim_"):
+        if not isinstance(name, str) or len(name.encode("utf-8")) > 128:
             omitted.append(str(name)[:128])
             continue
         try:
@@ -200,9 +200,7 @@ def read_dataset_spec(source: Path, dataset_path: str) -> DatasetSpec:
             if creation.get_external_count() != 0 or selected.is_virtual:
                 raise UnsupportedCase("external and virtual storage are not supported")
 
-            attributes, omitted_attributes = (
-                _safe_scalar_attributes(selected) if len(shape) == 1 else ((), ())
-            )
+            attributes, omitted_attributes = _safe_scalar_attributes(selected)
 
             # H5Oget_info on a dataset may traverse its damaged chunk index
             # and even crash in some HDF5 builds. The canonical selected path

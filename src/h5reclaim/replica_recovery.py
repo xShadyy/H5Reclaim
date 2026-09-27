@@ -28,6 +28,7 @@ import h5py
 import numpy as np
 
 from .metadata import UnsupportedCase
+from .output_annotations import add_output_annotations
 from .recovery import (
     MAX_CHUNKS, STATUS_CODES, VERSION, Analysis, ChunkRecord, RecoveryError,
     _validate_paths, _verify_source, analyze, sha256_file,
@@ -342,6 +343,18 @@ def restore_from_replicas(
             "and chunk validity. Other links, scales, siblings, and scientific context are not copied."
         ),
     }
+    annotation_values = {
+        "h5reclaim_chunk_status": "/_h5reclaim/chunk_status",
+        "h5reclaim_complete": complete,
+        "h5reclaim_warning": (
+            "Check chunk_status before using values; output fill at unknown coordinates "
+            "is not an accepted measurement. Baseline provenance requires operator review."
+        ),
+    }
+    annotation_collisions = sorted(set(annotation_values) & {
+        name for name, _value in spec.attributes
+    })
+    report["selected_annotation_collisions"] = annotation_collisions
     report_text = json.dumps(report, indent=2, sort_keys=True) + "\n"
     if len(report_text.encode("utf-8")) > MAX_REPORT_BYTES:
         raise UnsupportedCase("replica report exceeds publication size limit")
@@ -368,12 +381,8 @@ def restore_from_replicas(
                     validity.attrs["codes_json"] = json.dumps(STATUS_CODES, sort_keys=True)
                     meta.create_dataset("report_json", data=report_text,
                                         dtype=h5py.string_dtype(encoding="utf-8"))
-                    data.attrs["h5reclaim_chunk_status"] = "/_h5reclaim/chunk_status"
-                    data.attrs["h5reclaim_complete"] = complete
-                    data.attrs["h5reclaim_warning"] = (
-                        "Check chunk_status before using values; output fill at unknown coordinates "
-                        "is not an accepted measurement. Baseline provenance requires operator review."
-                    )
+                    if add_output_annotations(data, annotation_values) != annotation_collisions:
+                        raise RecoveryError("selected attributes changed during publication")
                     meta.attrs["source_sha256"] = source_hash
                     meta.attrs["report_schema_version"] = 1
                 report_temp.write_text(report_text, encoding="utf-8")

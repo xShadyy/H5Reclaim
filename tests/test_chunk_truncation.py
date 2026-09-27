@@ -64,6 +64,20 @@ class ChunkTruncationTests(unittest.TestCase):
         self.assertEqual(json.loads(self.report.read_text())["index"]["type"],
                          "v1_raw_data_btree")
 
+    def test_raw_fallback_explicitly_omits_scientific_attributes(self):
+        self.make_fixture()
+        with h5py.File(self.source, "r+") as file:
+            file["science"].attrs["h5reclaim_complete"] = np.uint32(17)
+        self.source.write_bytes(self.source.read_bytes()[:-20])
+        result = recover_truncated(self.source, "/science", self.output, self.report)
+        self.assertEqual(result["selected_annotation_collisions"], [])
+        self.assertEqual(result["dataset"]["attributes_copied"], [])
+        self.assertTrue(any("all attribute metadata" in name
+                            for name in result["dataset"]["attributes_omitted"]))
+        with h5py.File(self.output, "r") as output:
+            self.assertEqual(output["science"].attrs["h5reclaim_complete"], False)
+            self.assertEqual(json.loads(output["/_h5reclaim/report_json"][()]), result)
+
     def test_modern_fixed_array_partially_present_last_chunk(self):
         values = self.make_fixture()
         self.source.write_bytes(self.source.read_bytes()[:-20])

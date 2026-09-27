@@ -28,6 +28,7 @@ from .metadata_fallback import read_dataset_spec_fallback
 from .modern_evidence_adapter import build_modern_evidence
 from .modern_indexes import ModernH5File
 from .ownership_inventory import inventory_other_allocations, reject_sibling_overlap
+from .output_annotations import add_output_annotations
 from .recovery import (
     Analysis, ChunkDecodeError, ChunkRecord, MAX_CHUNKS, MAX_NODES,
     MAX_SOURCE_BYTES, MissingDecoderError, RecoveryError, STATUS_CODES, VERSION,
@@ -286,7 +287,7 @@ def analyze_truncated(source: Path, dataset_path: str, *,
                     "filter_pipeline": [{"id": item.id, "flags": item.flags,
                                          "values": list(item.values)} for item in spec.filter_pipeline],
                     "maxshape": list(spec.maxshape or spec.shape),
-                    "attributes_copied": [],
+                    "attributes_copied": [name for name, _value in spec.attributes],
                     "attributes_omitted": list(spec.omitted_attributes)
                                           + list(rooted.omitted_auxiliary_metadata)},
         "metadata_resolution": {"route": rooted.route,
@@ -312,8 +313,8 @@ def analyze_truncated(source: Path, dataset_path: str, *,
                            "and payload. Structural placement does not prove historical byte "
                            "integrity when the chunk lacks an independent checksum."),
         "metadata_note": ("Only the selected dataset's rooted numeric schema and accepted "
-                          "chunks are exported. Attribute values and other scientific context "
-                          "are omitted."),
+                          "chunks are exported. Listed omitted attributes and other scientific "
+                          "context are not copied."),
         "limits": ("A bounded tail-only truncation with fully present rooted path, schema, "
                    "and index. Missing metadata or index bytes cause refusal. Private zero "
                    "extension is not data evidence."),
@@ -329,6 +330,21 @@ def recover_truncated(source: Path, dataset_path: str, output: Path,
     _validate_paths(source, output, report_path)
     analysis = analyze_truncated(source, dataset_path,
                                  max_missing_tail_bytes=max_missing_tail_bytes)
+    annotation_values = {
+        "h5reclaim_chunk_status": "/_h5reclaim/chunk_status",
+        "h5reclaim_complete": analysis.report["complete"],
+        "h5reclaim_execution_state": "finished",
+        "h5reclaim_integrity": "per_chunk_in_report; some chunks may lack a payload checksum",
+        "h5reclaim_warning": (
+            "Check chunk_status before using values. Unavailable output chunks "
+            "read as fill zero but are not known measurements. Listed omitted attributes, "
+            "other scientific context, and sibling objects are not preserved."
+        ),
+    }
+    annotation_collisions = sorted(set(annotation_values) & {
+        name for name, _value in analysis.spec.attributes
+    })
+    analysis.report["selected_annotation_collisions"] = annotation_collisions
     report_text = json.dumps(analysis.report, indent=2, sort_keys=True) + "\n"
     with tempfile.TemporaryDirectory(prefix=".h5reclaim-", dir=output.parent) as out_dir:
         with tempfile.TemporaryDirectory(prefix=".h5reclaim-", dir=report_path.parent) as rep_dir:
@@ -344,6 +360,8 @@ def recover_truncated(source: Path, dataset_path: str, output: Path,
                     )
                     for record in analysis.records:
                         data.id.write_direct_chunk(record.coordinate, record.payload, filter_mask=0)
+                    for name, value in spec.attributes:
+                        data.attrs[name] = value
                     meta = handle.create_group("/_h5reclaim")
                     validity = meta.create_dataset("chunk_status", data=analysis.status, dtype="u1")
                     validity.attrs["codes_json"] = json.dumps(STATUS_CODES, sort_keys=True)
@@ -353,15 +371,8 @@ def recover_truncated(source: Path, dataset_path: str, output: Path,
                                         dtype=h5py.string_dtype(encoding="utf-8"))
                     meta.attrs["source_sha256"] = analysis.report["source"]["sha256_before"]
                     meta.attrs["report_schema_version"] = 1
-                    data.attrs["h5reclaim_chunk_status"] = "/_h5reclaim/chunk_status"
-                    data.attrs["h5reclaim_complete"] = analysis.report["complete"]
-                    data.attrs["h5reclaim_execution_state"] = "finished"
-                    data.attrs["h5reclaim_integrity"] = (
-                        "per_chunk_in_report; some chunks may lack a payload checksum")
-                    data.attrs["h5reclaim_warning"] = (
-                        "Check chunk_status before using values. Unavailable output chunks "
-                        "read as fill zero but are not known measurements. Attribute values, "
-                        "other scientific context, and sibling objects are not preserved.")
+                    if add_output_annotations(data, annotation_values) != annotation_collisions:
+                        raise RecoveryError("selected attributes changed during publication")
                     handle.flush()
                 report_temp.write_text(report_text, encoding="utf-8")
                 _verify_source(source, analysis.source_identity,

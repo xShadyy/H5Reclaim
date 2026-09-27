@@ -20,7 +20,7 @@ MAX_REPORT = 32 * 1024 * 1024
 ROUTES = frozenset({
     "family", "split", "vds", "external_raw", "external_link", "nonchunked",
     "replicas", "parity", "erasure", "status", "metadata_trial", "capsule",
-    "truncated_chunks", "large_readable", "structural", "element_baseline", "chunk_baseline",
+    "truncated_chunks", "large_readable", "large_structural", "structural", "element_baseline", "chunk_baseline",
 })
 
 
@@ -94,6 +94,10 @@ def _child(request_path: Path, response_path: Path) -> int:
             from .large_streaming import export_large_readable
             export_large_readable(args["source"], args["dataset"], output, report,
                                   published_output=request["published_output"])
+        elif route == "large_structural":
+            from .large_structural import recover_large_fixed_array
+            recover_large_fixed_array(args["source"], args["dataset"], output, report,
+                                      published_output=Path(request["published_output"]))
         elif route == "structural":
             from .recovery import recover
             if args.get("hints"):

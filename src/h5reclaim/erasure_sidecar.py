@@ -22,6 +22,7 @@ import numpy as np
 
 from .gf256 import MAX_PARITY_SHARDS, encode_parity, recover_data
 from .metadata import UnsupportedCase
+from .output_annotations import add_output_annotations
 from .parity_sidecar import _origins, _serialized
 from .recovery import (
     MAX_CHUNKS, STATUS_CODES, VERSION, RecoveryError, _identity, _validate_paths,
@@ -323,6 +324,15 @@ def restore_from_erasure(
             "this route needs surviving selected metadata and no more than m losses per stripe."
         ),
     }
+    annotation_values = {
+        "h5reclaim_chunk_status": "/_h5reclaim/chunk_status",
+        "h5reclaim_complete": complete,
+        "h5reclaim_warning": "Unknown output fill is not a measurement. Check chunk_status.",
+    }
+    annotation_collisions = sorted(set(annotation_values) & {
+        name for name, _value in spec.attributes
+    })
+    report["selected_annotation_collisions"] = annotation_collisions
     report_bytes = _serialized(report)
     if len(report_bytes) > MAX_REPORT_BYTES:
         raise UnsupportedCase("erasure report exceeds its publication bound")
@@ -347,9 +357,8 @@ def restore_from_erasure(
                     validity.attrs["codes_json"] = json.dumps(STATUS_CODES, sort_keys=True)
                     meta.create_dataset("report_json", data=report_bytes.decode("utf-8"),
                                         dtype=h5py.string_dtype(encoding="utf-8"))
-                    data.attrs["h5reclaim_chunk_status"] = "/_h5reclaim/chunk_status"
-                    data.attrs["h5reclaim_complete"] = complete
-                    data.attrs["h5reclaim_warning"] = "Unknown output fill is not a measurement. Check chunk_status."
+                    if add_output_annotations(data, annotation_values) != annotation_collisions:
+                        raise RecoveryError("selected attributes changed during publication")
                     meta.attrs["source_sha256"] = damaged_hash
                 staged_report.write_bytes(report_bytes)
                 _verify_source(source, damaged.source_identity, damaged_hash)

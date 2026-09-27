@@ -346,6 +346,8 @@ def main(argv: list[str] | None = None) -> int:
                          help="retain complete rooted chunks before a physical tail truncation")
     choices.add_argument("--large-readable", action="store_true",
                          help="bounded streaming export of a large currently native-readable numeric dataset")
+    choices.add_argument("--large-structural", action="store_true",
+                         help="stream one checked damaged fixed-array pointer in a large sparse numeric dataset")
     args = parser.parse_args(argv)
 
     if args.command == "capture-baseline":
@@ -469,6 +471,9 @@ def main(argv: list[str] | None = None) -> int:
                                    dataset=args.dataset)
             elif args.large_readable:
                 report = run_route("large_readable", args.output, args.report, source=source,
+                                   dataset=args.dataset)
+            elif args.large_structural:
+                report = run_route("large_structural", args.output, args.report, source=source,
                                    dataset=args.dataset)
             elif args.family_members is not None:
                 from .family_bundle import _manifest

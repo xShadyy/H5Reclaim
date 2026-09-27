@@ -18,6 +18,7 @@ import numpy as np
 from .format import FormatError, H5File, SIGNATURE
 from .hints import DatasetHints, compare_hints, require_no_conflicts
 from .metadata import DatasetSpec, UnsupportedCase, read_dataset_spec
+from .output_annotations import add_output_annotations
 from .ownership_inventory import inventory_other_allocations, reject_sibling_overlap
 from .schema_codec import (
     ChunkDecodeError as SchemaChunkDecodeError,
@@ -644,6 +645,21 @@ def recover(
             "note": hints.note,
             "warning": "Matching hints do not prove the origin or historical value of measurements.",
         }
+    annotation_values = {
+        "h5reclaim_chunk_status": "/_h5reclaim/chunk_status",
+        "h5reclaim_complete": analysis.report["complete"],
+        "h5reclaim_execution_state": "finished",
+        "h5reclaim_integrity": "per_chunk_in_report; some chunks may lack a payload checksum",
+        "h5reclaim_warning": (
+            "Check chunk_status before using values; unallocated output chunks "
+            "read as fill zero but are not known measurements. The report lists copied "
+            "attributes; other scientific metadata and sibling objects are not preserved."
+        ),
+    }
+    annotation_collisions = sorted(set(annotation_values) & {
+        name for name, _value in analysis.spec.attributes
+    })
+    analysis.report["selected_annotation_collisions"] = annotation_collisions
     report_text = json.dumps(analysis.report, indent=2, sort_keys=True) + "\n"
     # Private temporary directories keep HDF5's pathname reopen away from
     # other users of a shared output directory. The context managers clean up
@@ -673,17 +689,8 @@ def recover(
                     meta.create_dataset(
                         "report_json", data=report_text, dtype=h5py.string_dtype(encoding="utf-8")
                     )
-                    data.attrs["h5reclaim_chunk_status"] = "/_h5reclaim/chunk_status"
-                    data.attrs["h5reclaim_complete"] = analysis.report["complete"]
-                    data.attrs["h5reclaim_execution_state"] = "finished"
-                    data.attrs["h5reclaim_integrity"] = (
-                        "per_chunk_in_report; some chunks may lack a payload checksum"
-                    )
-                    data.attrs["h5reclaim_warning"] = (
-                        "Check chunk_status before using values; unallocated output chunks "
-                        "read as fill zero but are not known measurements. The report lists copied "
-                        "attributes; other scientific metadata and sibling objects are not preserved."
-                    )
+                    if add_output_annotations(data, annotation_values) != annotation_collisions:
+                        raise RecoveryError("selected attributes changed during publication")
                     meta.attrs["source_sha256"] = analysis.report["source"]["sha256_before"]
                     meta.attrs["report_schema_version"] = 1
                     handle.flush()
