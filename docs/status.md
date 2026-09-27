@@ -2,9 +2,48 @@
 
 Updated: 2026-09-27
 
+## Version 0.3.0: authentic scientific data
+
+Four unchanged, license-attributed scientific HDF5 files are bundled in
+`corpus/files/` with SHA-256 hashes and source records in `corpus/manifest.json`.
+`python benchmarks/run_real_corpus.py` verifies all four originals before
+inventorying 251 local datasets. One dataset is a candidate: the original
+GWOSC GW150914 Hanford 16 kHz `/strain/Strain` array, rank-one canonical
+little-endian IEEE float64, shape `(524288,)`, chunks `(4096,)`, Fletcher32
+then DEFLATE, a v1 object-header continuation, and a level-one v1 raw-data
+B-tree with 128 chunks in three leaves. The other 250 datasets remain
+unsupported under explicit rules, including the 4 kHz strain variant whose
+root is level zero. A candidate is a metadata assessment, not a recovered file.
+
+The rank-one adapter parses the one bounded continuation, checks the selected
+object's index against rank-one key coordinates, reverses only the declared
+filter pipeline with bounded decompression, verifies stored Fletcher32 for
+each accepted chunk, and writes direct unfiltered bytes to preserve exact
+float bits. It copies seven bounded scalar attributes of this selected
+dataset and reports copied/omitted names. Other attributes, scale links,
+sibling objects, and full research context are not reproduced. The rank-two
+unfiltered path and its no-checksum integrity warning remain supported.
+
+`python benchmarks/run_gwosc_recovery.py` independently checked all 128 raw
+chunk index records against h5py on the untouched original, made one verified
+root child-pointer change in a byte-for-byte **copy**, and measured 57 chunks
+that a native reader could no longer return correctly. Recovery of that copy
+exported 128/128 chunks at their original sample coordinates with identical
+float64 bit patterns, including 57/57 from the reconstructed link. The seven
+source dataset scalar attributes, embedded and external reports, status map,
+and both original and damaged-input SHA-256 hashes were checked. This is one
+controlled corruption against authentic experiment data. No organically
+damaged research file or broad real-world recovery has been demonstrated.
+
+The current suite passes 47 tests (`PYTHONPATH=src python -m unittest discover
+-s tests -q`), including real bundled-source tests and negative checksum,
+deflate, filter mask, and unsupported pipeline cases. The corpus baseline
+passes with four hashes verified, 1 candidate, 250 unsupported. Earlier
+0.2.0 results below are retained as historical synthetic-fixture evidence.
+
 ## Implemented
 
-The current package is version 0.2.0. It contains an installable `h5reclaim` CLI with `survey`, `inspect`, and `recover`. Survey inventories local dataset metadata, storage layouts, filters, and support reasons without reading dataset values or resolving soft or external links. The recovery path uses a bounded parser for a declared HDF5 v1 B-tree case, a private source snapshot shared by h5py and the raw parser, a deterministic healthy fixture, a verified broken-pointer copy tool, an embedded output status map, per-chunk evidence reports, an exact-placement benchmark, and adversarial tests. The pristine reference and mutation manifest are never passed as arguments to the recovery subprocess in the end-to-end trial, though the same-user process can access their sibling directory on disk.
+The 0.2.0 package contained an installable `h5reclaim` CLI with `survey`, `inspect`, and `recover`. Survey inventories local dataset metadata, storage layouts, filters, and support reasons without reading dataset values or resolving soft or external links. The recovery path uses a bounded parser for a declared HDF5 v1 B-tree case, a private source snapshot shared by h5py and the raw parser, a deterministic healthy fixture, a verified broken-pointer copy tool, an embedded output status map, per-chunk evidence reports, an exact-placement benchmark, and adversarial tests. The pristine reference and mutation manifest are never passed as arguments to the recovery subprocess in the end-to-end trial, though the same-user process can access their sibling directory on disk.
 
 The first supported fixture is a single fixed `(512,512)` little-endian `uint32` dataset with `(16,16)` unfiltered chunks. Its actual generated layout has a version-0 superblock, a version-1 object header at relative address 800, a version-3 chunked layout, a type-1 v1 B-tree rooted at 1400, level-one root, 18 leaves, and 1,024 chunks. This was verified by parsing the selected object's layout and comparing every chunk record with h5py on the healthy file. H5Reclaim does not assign ownership by scanning for `TREE` signatures.
 
@@ -44,6 +83,6 @@ The Apache 2.0 `LICENSE` text was synchronized byte for byte with GitHub's licen
 
 ## Limits and next work
 
-This is an experimental narrow release. It requires h5py to resolve the selected dataset metadata from the damaged file. Only v0/v1 superblocks, inline v1 object headers, v3 chunked layouts, a level-one v1 raw-data B-tree, unfiltered fixed-size rank-two canonical little-endian `uint32`, and at most one lost root-to-leaf pointer are implemented. One selected local dataset can be recovered from a file containing other local datasets, but detached candidates still require the selected object's root and two-sided sibling bridge with matching parent key interval. These conditions support structural attribution, not historical byte integrity. The report says when no checksum is available and warns that scientific metadata is not preserved. Survey reports unsupported or indeterminate structures without converting them.
+This is an experimental narrow release. It requires h5py to resolve the selected dataset metadata from the damaged file. Only v0/v1 superblocks, v1 object headers (inline or one bounded continuation), v3 chunked layouts, a level-one v1 raw-data B-tree, fixed aligned chunks of rank-two canonical little-endian `uint32` without filters **or** rank-one canonical little-endian IEEE `float64` with exactly Fletcher32 followed by DEFLATE, and at most one lost root-to-leaf pointer are implemented. One selected local dataset can be recovered from a file containing other local datasets, but detached candidates still require the selected object's root and two-sided sibling bridge with matching parent key interval. These conditions support structural attribution; a Fletcher32 match detects some byte errors but cannot prove a measurement's origin or historical authenticity. Survey reports unsupported or indeterminate structures without converting them.
 
-Meaningful future work includes running relevant existing recovery tools on the same inputs, a larger negative corpus with stale/deallocated metadata and varied distractor datasets, additional indexing families and metadata variants only where users need them, fuzzing stable parser entry points, independent technical review, and suitably consented real cases. The benchmark keeps truth out of the recovery program's explicit inputs, but its sibling directories are not a filesystem isolation boundary. No competitor advantage, production reliability, outside user, or publication has been established.
+Meaningful future work includes running relevant existing recovery tools on the same inputs, a larger negative corpus with stale/deallocated metadata and varied distractor datasets, additional indexing families and metadata variants based on real demand, fuzzing stable parser entry points, independent technical review, and suitably consented naturally damaged cases. The benchmarks keep truth out of the recovery program's explicit inputs, but their sibling directories are not a filesystem isolation boundary. No competitor advantage, production reliability, outside user, or publication has been established.

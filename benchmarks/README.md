@@ -1,5 +1,34 @@
 # Independent broken-link benchmark
 
+## Authentic GWOSC file, controlled damage
+
+The repository includes the untouched 16 kHz Hanford strain file from GWOSC.
+From the repository root, with Python, h5py, and NumPy available, run:
+
+```sh
+python benchmarks/run_gwosc_recovery.py
+```
+
+This one command verifies the original's SHA-256, checks all 128 raw B-tree
+chunk records against h5py, creates a separate damaged copy, and changes one
+verified interior root child pointer in that copy. It checks that ordinary
+HDF5 reads fail or differ for the affected chunks and that unaffected chunks
+remain exact. It invokes recovery in a subprocess with only the damaged input,
+then compares every output `float64` bit pattern at the corresponding sample
+coordinate against the untouched original. It checks output status, evidence
+mappings, Fletcher32 verification labels, selected scalar attributes, embedded
+and external reports, and both file hashes. Trial files and JSON evidence are
+left in the path printed by the command. Use `--work-dir path/to/new-dir` to
+choose an empty location.
+
+The recorded trial had 57 native-unavailable or incorrect chunks. H5Reclaim
+reconstructed those 57 and exported all 128 chunks with zero wrong bits. The
+scientific file's bytes are authentic; the pointer damage is controlled for
+evaluation. This says nothing about unrelated layouts, organically damaged
+files, or repairs to the original file. See [corpus sources](../corpus/README.md).
+
+## Synthetic random-value trial
+
 Run from the repository root in an environment with h5py and NumPy:
 
 ```sh
