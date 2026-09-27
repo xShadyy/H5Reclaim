@@ -123,7 +123,7 @@ def _reconstruct_header_index_link(reader: ModernH5File, header: bytes,
     matches: list[int] = []
     for address in candidate_addresses(reader, b"EAIB"):
         absolute = sb.base_address + address
-        if absolute + index_size > sb.eof_address or any(
+        if absolute + index_size > min(sb.eof_address, reader.size) or any(
             absolute < end and start < absolute + index_size
             for start, end, _ in reader.metadata_ranges
         ):
@@ -184,7 +184,7 @@ def _reconstruct_index_child_link(
                     choices = tuple((direct_start + (row.start_data_pointer + db) * offsize,
                                      row.start + (row.start_data_pointer + db) * row.elements_per_block)
                                     for db in range(row.data_blocks))
-                if length > MAX_READ_BYTES or absolute + length > sb.eof_address or any(
+                if length > MAX_READ_BYTES or absolute + length > min(sb.eof_address, reader.size) or any(
                     absolute < end and start < absolute + length
                     for start, end, _ in reader.metadata_ranges
                 ):
@@ -234,7 +234,7 @@ def _reconstruct_secondary_data_link(
         if candidates_seen > MAX_REPAIR_CANDIDATES:
             raise UnsupportedFormat("extensible-array secondary-link candidate budget exceeded")
         absolute = sb.base_address + candidate
-        if absolute + data_size > sb.eof_address or any(
+        if absolute + data_size > min(sb.eof_address, reader.size) or any(
             absolute < end and start < absolute + data_size
             for start, end, _ in reader.metadata_ranges
         ):

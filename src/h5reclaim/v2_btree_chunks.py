@@ -70,7 +70,7 @@ def _candidate_checked(reader: ModernH5File, address: int, *,
         return False
     try:
         start = reader.absolute(address)
-        if start + node_size > reader.superblock.eof_address:
+        if start + node_size > min(reader.superblock.eof_address, reader.size):
             return False
         node = reader.read_at(address, node_size)
     except FormatError:
