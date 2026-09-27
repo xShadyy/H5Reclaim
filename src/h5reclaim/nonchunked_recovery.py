@@ -346,7 +346,8 @@ def _group_links(reader: H5File | ModernH5File, address: int,
 def _refuse_competing_rooted_allocations(reader: H5File | ModernH5File,
                                          root: int, root_cached: tuple[int, int] | None,
                                          selected_address: int, selected_start: int,
-                                         selected_end: int, *, older: bool) -> int:
+                                         selected_end: int, *, older: bool,
+                                         selected_hard_link_count: int) -> int:
     """Boundedly follow the local namespace, refusing competing allocations.
 
     The selected path alone cannot distinguish a redirect to a sibling's data.
@@ -356,6 +357,7 @@ def _refuse_competing_rooted_allocations(reader: H5File | ModernH5File,
     pending = [(root, root_cached, 0)]
     visited: dict[int, tuple[int, int] | None] = {}
     links_seen = 0
+    selected_links_seen = 0
     beyond_physical_eof = 0
     chunked_sibling_seen = False
     while pending:
@@ -388,6 +390,13 @@ def _refuse_competing_rooted_allocations(reader: H5File | ModernH5File,
                 raise UnsupportedFormat("rooted ownership inventory exceeds link limit")
             for step in children.values():
                 if step is not None:
+                    if step.object_address == selected_address:
+                        selected_links_seen += 1
+                        if selected_links_seen > selected_hard_link_count:
+                            raise FormatError(
+                                "rooted local hard links to selected dataset exceed "
+                                "its object-header link count"
+                            )
                     pending.append((step.object_address, step.cached_group, depth + 1))
         elif layout is not None and address != selected_address:
             if len(layout.data) >= 2 and layout.data[0] in (3, 4, 5) and layout.data[1] == 2:
@@ -462,6 +471,21 @@ def read_nonchunked_spec(snapshot: Path, dataset_path: str) -> NonchunkedSpec:
         if space is None or datatype is None or layout is None:
             raise UnsupportedFormat("selected object lacks required dataset metadata")
         old_header = selected_generation == 1
+        if old_header:
+            # Version-1 object headers carry this count in their prefix.
+            selected_hard_link_count = _uint(reader.read_at(address, 16)[4:8])
+        else:
+            # Version-2 headers encode it in an optional type-22 message;
+            # absence means the default single link.
+            count_message = _unique(messages, 22)
+            if count_message is None:
+                selected_hard_link_count = 1
+            elif len(count_message.data) == 5 and count_message.data[0] == 0:
+                selected_hard_link_count = _uint(count_message.data[1:])
+            else:
+                raise FormatError("invalid selected object hard-link count message")
+        if selected_hard_link_count < 1:
+            raise FormatError("selected object has no valid hard-link count")
         shape = _dataspace(space.data, reader.superblock.length_size, older=old_header)
         dtype = _datatype(datatype.data, older=old_header)
         expected = prod(shape) * np.dtype(dtype).itemsize
@@ -477,7 +501,7 @@ def read_nonchunked_spec(snapshot: Path, dataset_path: str) -> NonchunkedSpec:
         )
         uninspected = (_refuse_competing_rooted_allocations(
             reader, root, root_cached, address, absolute, absolute + stored,
-            older=older,
+            older=older, selected_hard_link_count=selected_hard_link_count,
         ) if absolute is not None else 0)
         _validate_metadata_ranges(reader.metadata_ranges)
         if absolute is not None:

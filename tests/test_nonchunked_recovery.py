@@ -215,6 +215,43 @@ class NonchunkedRecoveryTests(unittest.TestCase):
             export_nonchunked(self.source, "/instrument/absent", self.output, self.report_path)
         self.assertFalse(self.output.exists())
 
+    def test_redirected_old_link_into_aliased_sibling_refuses_false_measurements(self) -> None:
+        with h5py.File(self.source, "w", libver="earliest") as handle:
+            lab = handle.create_group("lab")
+            lab.create_dataset("science", data=np.arange(16, dtype="<u4"))
+            distractor = lab.create_dataset("distractor", data=np.full(16, 99, dtype="<u4"))
+            handle.create_group("elsewhere")["alias"] = distractor
+            distractor_address = int(h5py.h5o.get_info(distractor.id).addr)
+        selected = read_nonchunked_spec(self.source, "/lab/science")
+        with _TruncatedOldReader(self.source) as reader:
+            offset_size, length_size = reader.superblock.offset_size, reader.superblock.length_size
+        # An old symbol-table record has no checksum. Change only the selected
+        # link target, leaving two intact links already pointing to distractor.
+        position = selected.link_chain[-1]["link_message_offset"] + length_size
+        raw = bytearray(self.source.read_bytes())
+        raw[position:position + offset_size] = distractor_address.to_bytes(offset_size, "little")
+        self.source.write_bytes(raw)
+        with h5py.File(self.source, "r") as handle:
+            np.testing.assert_array_equal(handle["/lab/science"][:], np.full(16, 99))
+        with self.assertRaisesRegex(FormatError, "hard links.*exceed"):
+            export_nonchunked(self.source, "/lab/science", self.output, self.report_path)
+        self.assertFalse(self.output.exists() or self.report_path.exists())
+        self.assertEqual(self.source.read_bytes(), raw)
+
+    def test_valid_nonchunked_hard_link_aliases_still_export(self) -> None:
+        for latest in (False, True):
+            with self.subTest(latest=latest):
+                self.source.unlink(missing_ok=True)
+                self.output.unlink(missing_ok=True)
+                self.report_path.unlink(missing_ok=True)
+                with h5py.File(self.source, "w", libver="latest" if latest else "earliest") as handle:
+                    item = handle.create_dataset("science", data=np.arange(9, dtype="<i4"))
+                    handle.create_group("elsewhere")["alias"] = item
+                result = export_nonchunked(self.source, "/science", self.output, self.report_path)
+                self.assertEqual(result["counts"], {"recovered": 9, "unknown": 0})
+                with h5py.File(self.output, "r") as handle:
+                    np.testing.assert_array_equal(handle["science"][:], np.arange(9, dtype="<i4"))
+
     def test_operator_hints_can_reject_conflicts_but_do_not_assign_bytes(self) -> None:
         self._create(latest=True, compact=False)
         with self.assertRaisesRegex(HintsError, "assert chunks"):
