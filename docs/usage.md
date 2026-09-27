@@ -1,6 +1,6 @@
 # Run H5Reclaim
 
-H5Reclaim works from a damaged HDF5 file. It does not need a healthy original for diagnosis or recovery. The bundled originals are used to make disposable damage copies and independently score controlled experiments. An output file holds one selected dataset and a validity map, not a repair of the source container or proof of historical values.
+H5Reclaim's single-file structural routes work from the damaged HDF5 file without a healthy original. Optional replica or parity recovery needs independent evidence captured before damage. The bundled originals are used to make disposable damage copies and independently score controlled experiments. An output file holds one selected dataset and a validity map, not a repair of the source container or proof of historical values.
 
 ## Install this checkout
 
@@ -26,6 +26,9 @@ python -m h5reclaim rescue damaged.h5 --dataset /experiment/readings --output re
 Without additional files, `rescue` first attempts rooted chunked structural recovery. If its schema is unsupported, it tries rooted compact/contiguous numeric recovery; if that cannot justify output, it tries the separate bounded native-readable copy route. An actual structural contradiction is never silently reinterpreted as another layout. The printed route and JSON report distinguish recovery from copying values HDF5 could already read. The original is read-only; output and report must be new paths. Examine `/_h5reclaim/chunk_status`, `/_h5reclaim/element_status`, or `/_h5reclaim/validity`, whichever the report names. Fill at an unknown position is not a measurement.
 
 The compact/contiguous structural route can retain fully present elements at their justified offsets after physical tail truncation, and leaves incomplete elements unknown. It currently supports a rooted local numeric dataset of rank zero through four, canonical fixed-width integers or IEEE floats, and selected layout messages v3–v5. It does not restore missing bytes or claim historical authenticity for unchecksummed values. The readable fallback preserves bounded fixed-size local schema when native HDF5 can already read it; its report says `readable_export`.
+
+Structural routes refuse a selected physical range when another observed rooted local dataset claims those bytes. Reports state when bounded sibling enumeration was incomplete; a complete native inventory is still not a historical ownership certificate. A manifest rejects duplicate keys and a related raw file that aliases the main HDF5 container.
+Native-readable, VDS source, Family, and Split value exports also reject observed competing sibling allocations; they refuse if their bounded native sibling inventory cannot complete.
 
 ### Supply related files
 
@@ -62,6 +65,20 @@ python -m h5reclaim rescue damaged.h5 --dataset /experiment/readings --replicas 
 
 Each copy must independently provide a rooted, matching dataset and justified chunk coordinates. A chunk is accepted only if its decoded bytes match the prior baseline; conflicting replicas remain ambiguous. This route cannot use an arbitrary raw fragment as a substitute for an indexed copy. The operator must establish the baseline's provenance.
 
+Alternatively, while the complete acquisition and its prior baseline both still exist, capture a separate XOR parity ZIP:
+
+```powershell
+python -m h5reclaim capture-parity healthy.h5 --dataset /experiment/readings --baseline baseline.json --stripe-width 4 --output parity.zip
+```
+
+Store the baseline and parity sidecar independently. If future damage affects one chunk in a stripe, the other chunks still match their prior hashes, and the reconstructed bytes match the missing chunk's prior hash, `rescue` can restore that chunk without a full healthy copy. Supply a manifest with `schema_version: 1`, `damaged_sha256`, `baseline: {path, sha256}`, and `parity: {path, sha256}`, using absolute paths:
+
+```powershell
+python -m h5reclaim rescue damaged.h5 --dataset /experiment/readings --parity parity_manifest.json --output rescued.h5 --report evidence.json
+```
+
+Two damaged chunks in the same stripe remain unknown. Parity also needs surviving selected metadata and coordinate ownership; it cannot repair arbitrary index loss. The capture, baseline, and sidecar must be independently trustworthy.
+
 ### Open a Family driver bundle
 
 An HDF5 Family file spans numbered physical members. A separate manifest gives its actual member size and every member in order:
@@ -82,6 +99,16 @@ python -m h5reclaim rescue C:\Lab\run000.h5 --dataset /experiment/readings --fam
 ```
 
 The source argument must be member zero. This route performs a bounded **native-readable export** of the pinned Family address space with physical member provenance and sparse validity; it does not reconstruct broken driver metadata. Missing or truncated member bytes are refused. The manifest must reflect the producer's member size, not a guessed value.
+Distinct member indices must refer to distinct physical files, including across hard links.
+
+For a two-member HDF5 Split driver, use `--split-members` with the metadata member as the source argument. The manifest lists exactly `schema_version: 1`, `driver: "split"`, and `members` in metadata then raw order, each with `role`, absolute `path`, and lowercase `sha256`. For example:
+
+```powershell
+python -m h5reclaim rescue C:\Lab\run-m.h5 --dataset /experiment/readings --split-members split.json --output rescued.h5 --report evidence.json
+```
+
+The Split route checks the stored two-member virtual address map against the pinned files and physically present raw byte ranges. It exports current native-readable values with sparse validity. Generic Multi configurations, missing members, and contradicting driver metadata refuse. It cannot reconstruct overwritten measurements or an arbitrary broken Multi address map.
+The metadata and raw manifest entries must refer to different physical files.
 
 ## Run on supplied scientific data
 
@@ -175,6 +202,7 @@ The destinations must not exist. Recovery reads only the damaged input through a
 | Dataset | One local rank-one through rank-four chunked canonical integer (8/16/32/64 bit signed or unsigned) or IEEE float32/64 dataset, either byte order. Positive current dimensions, partial edge chunks, sparse allocation, and growing maxima are supported when the index parser validates their mapping. |
 | Older format | Superblock v0/v1, object header v1 with bounded continuation, layout v3, version-1 B-tree with intact level-zero or deeper tree. One missing leaf link can be bridged even below a deeper root. Internal subtree loss or multiple lost links is refused. Older raw metadata fallback has a narrower original numeric/filter envelope and unchecksummed link ownership. |
 | Newer format | Checksummed superblock v2/v3, checksummed selected object header v2 with bounded continuations, layout v4/v5 and intact single-chunk, implicit, filtered/paged/sparse fixed array, bounded extensible array including validated initialized pages, or version-2 B-tree. Missing modern index links remain unsupported. Raw metadata fallback follows rooted compact links or a bounded checksummed dense-group name index and managed fractal heap; unsupported variants refuse. |
+| Selected shared messages | A committed canonical numeric datatype can resolve through a checked v2 object header. Bounded SOHM single-list managed-heap references can resolve selected shared dataspace or datatype messages. Unsupported SOHM index and heap variants refuse. |
 | Filters | Bounded built-in shuffle, DEFLATE, and Fletcher32 in their actual declared order; per-chunk optional skip masks. Missing unknown decoders are reported separately, never treated as verified measurements. |
 | Resource bounds | Source snapshot at most 4 GiB, 30-minute 1 MiB-buffer copy, temporary disk for full logical source size plus 32 MiB reserve; structural dataset at most 1,048,576 elements, 4,096 chunks and traversed nodes, 1 MiB decoded chunk. |
 

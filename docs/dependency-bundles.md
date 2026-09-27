@@ -36,6 +36,9 @@ from the present prefix of a shorter external raw segment and marks the rest
 unknown. It can materialize bounded VDS mappings after separately opening
 pinned private source snapshots. A VDS target itself backed by other files
 and dynamic VDS filenames remain unsupported.
+Related-file manifests reject duplicate JSON keys. An external raw member
+that aliases the selected HDF5 container is refused so container metadata
+cannot be assigned as external measurements.
 
 A matching hash identifies the supplied bytes at inspection time. It does not
 prove that the file is the original instrument output or that its scientific
@@ -47,8 +50,10 @@ from a missing source is never accepted as a measurement.
 
 The Family driver has a separate `--family-members` manifest with a member
 size and numbered physical files. Family addresses can span member boundaries;
-joining the files by ordinary concatenation is not a general repair. See
-[guided rescue](usage.md#open-a-family-driver-bundle) for the exact manifest.
+joining the files by ordinary concatenation is not a general repair. The
+two-member Split driver uses `--split-members`, with pinned metadata and raw
+files and a validated stored address map. Other Multi and Subfiling driver
+configurations remain unsupported. See [guided rescue](usage.md#open-a-family-driver-bundle).
 
 ## Superblock status
 

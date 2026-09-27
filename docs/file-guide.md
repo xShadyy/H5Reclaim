@@ -36,6 +36,8 @@ This is a data recovery project, not a robotics simulator. An HDF5 file may cont
 | `src/h5reclaim/snapshot_io.py` | Streams a quota-bound source snapshot in small blocks after a full logical disk-space preflight. |
 | `src/h5reclaim/dependency_routes.py` | Observes raw superblock status, inventories external/VDS declarations, validates explicit related-file manifests, and confines optional h5clear to a disposable status-only trial. |
 | `src/h5reclaim/metadata.py`, `metadata_fallback.py`, `dense_group_links.py`, `schema_codec.py` | Resolve only local hard links; check numeric schema, filter pipeline and bounded decoding. A rooted old/modern raw fallback, including bounded dense groups, may resolve selected metadata when native open fails. |
+| `src/h5reclaim/shared_messages.py` | Resolves selected committed datatype and bounded single-list SOHM managed-heap references after checking their pointer chains and available checksums. Other shared-message variants refuse. |
+| `src/h5reclaim/ownership_inventory.py` | Records bounded native observations of sibling chunk and contiguous allocations, then rejects a selected structural chunk that overlaps a known competing owner. Incomplete enumeration is disclosed, not a global ownership proof. |
 | `src/h5reclaim/survey.py` | Inventories bounded local dataset metadata and index nodes without reading values. It reports candidate, unsupported, or indeterminate reasons and skips soft and external links. |
 | `src/h5reclaim/diagnose.py` | Checks a bounded snapshot's format signature and, when possible, local metadata; records condition, supported candidate, suggested action, and questions without reading values. |
 | `src/h5reclaim/hints.py` | Parses size-limited scientist assertions about one dataset and compares them with independently observed metadata and the damaged input hash. Conflicts stop export; unobserved assertions remain unverified. |
@@ -44,7 +46,8 @@ This is a data recovery project, not a robotics simulator. An HDF5 file may cont
 | `src/h5reclaim/nonchunked_recovery.py` | Follows rooted metadata to compact/contiguous numeric bytes, including complete prefix elements of a physically truncated payload, with element validity. |
 | `src/h5reclaim/external_raw_export.py`, `vds_export.py` | Materialize selected values from explicit hash-pinned related files, map every accepted element to a source extent/selection, and refuse unknown source fill. |
 | `src/h5reclaim/family_bundle.py` | Reconstructs a bounded Family driver address space from explicit numbered members and exports currently readable selected values with physical member provenance. |
-| `src/h5reclaim/baseline.py`, `replica_recovery.py` | Record prospective decoded-chunk hashes and later reconcile independently parsed copies against that separate baseline, leaving conflicts unknown. |
+| `src/h5reclaim/split_bundle.py` | Validates a pinned two-member Split-compatible Multi map and exports bounded current values from separate metadata and raw files. |
+| `src/h5reclaim/baseline.py`, `replica_recovery.py`, `parity_sidecar.py` | Record prospective decoded-chunk hashes and XOR stripes, then reconcile independent copies or one lost chunk per stripe against the prior baseline. |
 | `src/h5reclaim/route_worker.py` | Runs new native routes under a child deadline, disables dynamic plugins, applies a POSIX address-space cap, and publishes only completed output/report pairs. |
 
 The recovery program does not import the fixture generator or the benchmark. It receives the damaged file and the selected dataset path. Other local datasets may coexist; the selected object's header anchors the index. If mandatory metadata or coordinate ownership cannot be established, it stops or leaves a region unknown. It copies only bounded primitive scalar attributes for rank-one data, listing omissions. Links, dimension scales, sibling objects, and larger scientific context remain outside the derived output.
@@ -91,9 +94,11 @@ The benchmark keeps `truth/pristine.h5`, `truth/challenge.json`, and `truth/muta
 | `tests/test_recovery_safety.py` | Destination aliases, contradictory or out-of-bounds metadata, missing sibling evidence, and failures while publishing output do not produce falsely trusted results. |
 | `tests/test_integrity_limits.py` | Deliberately changed payload bytes can still be copied under a structurally valid mapping, so the report must not claim a historical integrity check. |
 | `tests/test_end_to_end.py` | Runs the recovery path on damaged input and checks exact placement, output status, source preservation, and benchmark error categories. |
-| `tests/test_baseline.py`, `test_replica_recovery.py` | Complete capture baselines, independently parsed replica attribution, hash conflicts, ambiguity and source preservation. |
+| `tests/test_baseline.py`, `test_replica_recovery.py`, `test_parity_sidecar.py` | Complete capture baselines, independently parsed replica attribution, one-loss parity reconstruction, multi-loss refusal, hash conflicts and source preservation. |
 | `tests/test_nonchunked_recovery.py`, `test_external_raw_export.py`, `test_vds_export.py` | Structural nonchunked, ordered external segments and finite virtual mappings with positive, truncated, missing and contradictory evidence cases. |
 | `tests/test_family_bundle.py`, `test_route_worker.py`, `test_rescue_cli.py` | Family address mapping, child staging and public route selection, including absence of output on refusals. |
+| `tests/test_split_bundle.py` | Split address-map parsing and native export across old and newer superblocks, with sparse and corrupt-member negatives. |
+| `tests/test_shared_messages.py`, `test_cross_dataset_ownership.py`, `test_v07_adversarial.py` | Shared-message pointer and checksum checks, competing rooted owners, redirected pointers, and ambiguity/refusal cases. |
 
 ## Documentation and decisions
 

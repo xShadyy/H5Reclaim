@@ -2,6 +2,138 @@
 
 Updated: 2026-09-27
 
+## Version 0.7.0: additional evidence routes, dependency bundles, and prospective checks
+
+The guided `rescue` command now chooses among bounded chunked structural
+recovery, rooted compact/contiguous numeric recovery, and a clearly labeled
+native-readable fallback. It accepts separate explicit manifests for external
+raw storage, virtual datasets, Family driver members, two-member Split driver
+files, or prior-baseline replica reconciliation. Each route produces a new file
+and evidence report; accepted regions have a chunk or element validity map.
+Routes with native HDF5 processing run in a child with a 900-second deadline,
+disabled dynamic plugins, and a POSIX 3 GiB address-space cap. Windows still
+lacks an enforced child memory cap. The original source and supplied related
+files are read-only and checked against private snapshots or pinned hashes.
+
+Rooted compact/contiguous recovery accepts canonical fixed numeric rank-zero
+through rank-four datasets with checked layout messages v3–v5. A physically
+truncated contiguous tail yields only the surviving complete elements;
+incomplete trailing bytes are unassigned. A compact payload remains inside
+its selected object header. Bounded traversal rejects overlap with other
+rooted local dataset allocations it can observe and reports when the inventory
+is incomplete. The selected schema, layout class, byte patterns,
+and element-level unknowns are preserved, but unrelated groups, dimension
+scales, and full scientific context are not recreated. Older rooted metadata
+has no on-disk checksums, so internal consistency is weaker evidence of
+historical ownership.
+
+The external raw route maps each accepted element through ordered declared
+segments to an explicitly supplied, hash-pinned snapshot. Missing physical
+bytes, including beyond-EOF bytes that native HDF5 could expose as zeros,
+remain unknown. It rejects a related raw file that aliases the HDF5 container
+itself. The VDS route materializes finite ALL or regular hyperslab
+mappings from pinned local source datasets and marks absent or unallocated
+source coordinates unknown rather than accepting virtual fill. It refuses
+overlap, dynamic source names, transitive dependencies, unsupported types,
+and unbounded selections. Family and Split routes validate the supplied
+member maps and physical extents before native-readable export. Hard-link
+aliases that assign one physical file to multiple Family indices or both
+Split roles now refuse; an adversarial duplicate-member case previously
+misassigned values. Family also caps individual stored chunks at 2 MiB. Generic
+Multi and Subfiling configurations remain unsupported.
+
+`capture-baseline` records hashes of every decoded nominal chunk while a
+fully allocated acquisition still exists. It is prospective evidence, not a
+retrospective repair. The replica route requires a separately hash-pinned
+baseline and one or more independently parsed HDF5 copies with matching
+schema. It accepts a replacement chunk only when its decoded bytes match the
+captured coordinate hash; conflicting copies remain ambiguous. No majority
+vote, orphan scan, or inferred scientist schema turns unsupported bytes into
+measurements. A file already damaged before baseline capture cannot gain a
+trustworthy prior checksum through this command.
+
+The optional `capture-parity` sidecar records XOR stripes after the baseline
+has been made and verified against a complete source. Later `rescue --parity`
+can reconstruct exactly one unknown chunk per stripe only when all surviving
+companions match their baseline hashes and the reconstructed chunk's hash
+matches too. Two losses in a stripe stay unknown. This needs retained,
+independently trusted baseline and parity files plus surviving selected
+metadata; it does not help a lone historical file with no prior redundancy.
+
+Intact extensible-array indexes now include validated paged data blocks, with
+secondary bitmaps, initialized-page checksums, sparse slots and bounded
+coordinate/physical overlap checks. Dense-group rooted fallback traverses
+bounded nested, checksummed fractal-heap indirect blocks, including child and
+deeper descendants. This expands intact or auxiliary-damaged metadata paths;
+it does not reconstruct arbitrary lost modern chunk-index links. Filtered,
+huge and tiny fractal-heap objects remain unsupported by that parser.
+
+The v1 and modern structural routes also compare selected chunk extents with
+observed local sibling chunk and contiguous allocations. They reject a
+redirected selected pointer when it overlaps an observed sibling, including
+an adversarial checksum-repaired modern index. The report names the checked
+allocation count and whether bounded native enumeration completed. Native
+enumeration can miss damaged or unreachable owners, so this is a contradiction
+check, not a complete file-wide proof of ownership.
+
+Selected modern raw-metadata fallback can resolve a committed numeric datatype
+through a separate checked v2 object header. It can also resolve shared
+dataspace and datatype messages through a checked superblock extension,
+single-list SOHM index, and bounded managed fractal-heap block. Generated
+HDF5 fixtures also cover a shared filter pipeline. The report lists which
+selected shared messages were resolved. SOHM v2 B-tree
+indexes, filtered, huge, and tiny heap IDs, older shared-header variants,
+and noncanonical datatypes still refuse; a checked metadata path does not
+authenticate historical payload values.
+
+The native-readable copy route now includes linked-library NBIT,
+SCALEOFFSET and SZIP where both SZIP directions are available, bounded
+reduced-precision integers and bitfields, and null or selected-dataset
+object/region references. References are remapped and compared by logical
+target and region selection, since raw reference IDs change in the output.
+SCALEOFFSET may have discarded precision when the file was originally
+written. Variable-length heap values, nested reference graphs, external
+reference targets, and arbitrary filter plugins are still refused. A
+redirected native-readable chunk pointer into an observed sibling dataset
+previously caused false acceptance in an adversarial test; native-readable,
+VDS source, Family, and Split exports now refuse such overlaps and require a
+complete bounded rooted sibling inventory before publication. This still
+cannot establish absence of lost historical owners.
+
+The authentic corpus remains four unchanged scientific originals and six
+chunked structural candidates among 251 local datasets. The intact candidate
+evaluator passed 196/196 exact chunks with zero wrong; two representative
+Zenodo datasets passed current-value native-readable export. A separate
+controlled fill-metadata fault on a copy of the Zenodo quantum file now tests
+the rooted compact/contiguous path under its mixed older/newer object-header
+graph: native selected open fails and the structural route exports all 2,000
+selected uint8 elements exactly against untouched truth. The survey's six
+chunked candidate count does not yet classify that nonchunked route. The controlled
+GWOSC broken-pointer trial passed 128/128 exact chunks, including 57 behind a
+reconstructed link and 57 that native reads failed or misread. Ten cases in
+the authentic-layout damage catalog passed. Additional generated tests cover
+the new routes, but no naturally damaged held-out scientific file or
+representative failure distribution has been evaluated. These results do not
+support a 99% field success claim. Overwritten unique bytes without a prior
+copy or redundancy cannot be restored exactly from a lone damaged file.
+
+The final regression run completed 373 tests. After the last Family/Split
+alias checks were added, 54 focused route, shared-metadata, and rescue tests
+passed. Seeded authentic-file mutations passed 23/23 chosen cases with 954
+exact chunks, 226 inaccessible or incorrect through native reads, zero false
+acceptance in that campaign, and 14 safe refusals. A separate stratified
+generated-layout run passed 36/36 chosen cases and explicitly labeled two
+historically wrong accepted regions where the payload had no independent
+checksum. These are constructed tests, not a field success-rate estimate.
+
+The next evidence task is a blinded, naturally damaged multi-lab corpus with
+documented acquisition histories and an independent truth source where one
+exists. Broken modern index links, SOHM heap variants, arbitrary custom
+filters, variable-length graphs, and other virtual file drivers each need
+separate format and evidence gates; unsupported cases continue to refuse.
+
+The sections below describe older releases and are historical.
+
 ## Version 0.6.0: broader bounded structure and damaged-metadata routes
 
 The structural route now handles all five modern chunk-index families within
