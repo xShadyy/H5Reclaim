@@ -11,6 +11,11 @@ from dataclasses import asdict
 from pathlib import Path
 
 from .diagnose import diagnose
+from .dependency_routes import (
+    DependencyError, load_dependency_manifest, probe_status_copy,
+    validate_dependency_manifest,
+)
+from .evidence import export_unassigned_fragments, load_evidence_report
 from .format import FormatError
 from .hints import HintsError, compare_hints, load_hints, require_no_conflicts
 from .metadata import UnsupportedCase
@@ -129,9 +134,10 @@ def _render_inspect(summary: dict) -> str:
         f"Dataset: {_display_path(dataset['path'])}",
         f"Shape: {_dimensions(dataset['shape'])} | dtype {dataset['dtype']} | "
         f"chunks {_dimensions(dataset['chunks'])} | filters {filters}",
-        f"Index: {index['type']} | root level {index['root_level']} | "
-        f"{index['reachable_leaves']} reachable leaves | "
-        f"{index['broken_links']} broken links",
+        (f"Index: {index['type']} | " + (
+            f"root level {index['root_level']} | " if index.get('root_level') is not None else ""
+        ) + f"{index.get('reachable_leaves', 0)} reachable leaves | "
+            f"{index['broken_links']} broken links"),
         f"Result: {summary['outcome']} | {counts['recovered']}/{total} chunks accepted "
         f"({summary['reconstructed_chunks']} via reconstructed link)",
     ]
@@ -180,6 +186,26 @@ def _render_diagnose(report: dict) -> str:
             f"Selected: {_display_path(selection['selected_path'])} | "
             f"{selection['support']['status']} | {selection.get('layout', 'unknown')}"
         )
+    status = report.get("file_status")
+    if status and status["outcome"] == "observed":
+        lines.append(
+            f"Superblock: version {status['superblock_version']} | "
+            f"status {status['status_flags']['interpretation']} | "
+            f"EOA {status['end_of_address']['relation']} (raw, checksum unvalidated)"
+        )
+    dependencies = report.get("dependencies")
+    if dependencies and dependencies["dependencies"]:
+        lines.append(
+            f"Dependencies: {len(dependencies['dependencies'])} declared "
+            f"({dependencies['outcome']}); referenced files have not been opened"
+        )
+    validation = report.get("dependency_validation")
+    if validation is not None:
+        counts = Counter(item["status"] for item in validation["references"])
+        lines.append("Related files: " + ", ".join(
+            f"{count} {status.replace('_', ' ')}" for status, count in sorted(counts.items())
+        ))
+        lines.append("File hash matches do not verify historical measurements or VDS coverage.")
     lines.extend([f"Next action: {report['next_action']}", report["detail"]])
     hints = report.get("operator_hints")
     if hints is not None:
@@ -203,7 +229,22 @@ def main(argv: list[str] | None = None) -> int:
     diagnose_cmd.add_argument("source", type=Path)
     diagnose_cmd.add_argument("--dataset", help="local dataset path to assess")
     diagnose_cmd.add_argument("--hints", type=Path, help="optional operator claims in bounded JSON, never proof of data")
+    diagnose_cmd.add_argument(
+        "--related-files", type=Path,
+        help="bounded JSON mapping exact declared names to explicit absolute paths and SHA-256 hashes",
+    )
     diagnose_cmd.add_argument("--json", action="store_true", help="print the complete machine-readable triage report")
+    status_cmd = commands.add_parser(
+        "probe-status", help="try h5clear --status only on a disposable copy of a version-3 write-flagged file"
+    )
+    status_cmd.add_argument("source", type=Path)
+    status_cmd.add_argument("--json", action="store_true", help="print the complete machine-readable probe report")
+    fragments_cmd = commands.add_parser(
+        "export-fragments", help="export anchored but unresolved raw extents from a report as coordinate-free bytes"
+    )
+    fragments_cmd.add_argument("report", type=Path, help="recovery report containing the evidence ledger")
+    fragments_cmd.add_argument("source", type=Path, help="explicit damaged source; its SHA-256 must match the ledger")
+    fragments_cmd.add_argument("--output", required=True, type=Path, help="new raw-fragment ZIP destination")
     survey_cmd = commands.add_parser("survey", help="inventory local datasets without reading values")
     survey_cmd.add_argument("source", type=Path)
     survey_cmd.add_argument("--json", action="store_true", help="print the complete machine-readable report")
@@ -228,11 +269,52 @@ def main(argv: list[str] | None = None) -> int:
     export_cmd.add_argument("--report", required=True, type=Path)
     args = parser.parse_args(argv)
 
+    if args.command == "export-fragments":
+        try:
+            ledger = load_evidence_report(args.report)
+            if len(ledger.sources) != 1:
+                raise ValueError("this command requires exactly one recorded source")
+            count = sum(decision.status != "accepted" for decision in ledger.decisions)
+            if count == 0:
+                raise ValueError("the report has no bounded unresolved raw extents to export")
+            export_unassigned_fragments(
+                ledger, {ledger.sources[0].source_id: args.source}, args.output,
+            )
+            print(f"Exported {count} unresolved raw fragment(s) without dataset coordinates.")
+            print(f"ZIP: {_display_path(args.output, 240)}")
+            print("Fragment hashes and source identity checked; no measurement was restored.")
+            return 0
+        except (OSError, ValueError, RuntimeError, KeyError, TypeError) as exc:
+            print(f"h5reclaim: fragment export failed: {_display_path(exc, 300)}", file=sys.stderr)
+            return 2
+
+    if args.command == "probe-status":
+        try:
+            result = probe_status_copy(args.source)
+            if args.json:
+                print(json.dumps(result, indent=2, sort_keys=True))
+            else:
+                print("H5Reclaim disposable status probe")
+                print(f"Source: {_display_path(args.source, 240)}")
+                print(f"Result: {result['outcome']} | {_display_path(result['detail'], 240)}")
+                print("Original file unchanged. No measurements verified or restored.")
+            return 0 if result["outcome"] == "copy_metadata_opened" else 1
+        except (RecoveryError, UnsupportedCase, OSError, ValueError, RuntimeError) as exc:
+            if args.json:
+                print(json.dumps({"outcome": "error", "error": str(exc)[:300]}, sort_keys=True))
+            else:
+                print(f"h5reclaim: status probe failed: {_display_path(exc, 300)}", file=sys.stderr)
+            return 2
+
     if args.command == "diagnose":
         try:
             hints = load_hints(args.hints) if args.hints else None
             selected_path = args.dataset or (hints.path if hints else None)
             report = diagnose(args.source, selected_path)
+            if args.related_files is not None:
+                report["dependency_validation"] = validate_dependency_manifest(
+                    report["dependencies"] or {}, load_dependency_manifest(args.related_files),
+                )
             if hints is not None:
                 selection = report["selection"]
                 observed = None
@@ -254,7 +336,7 @@ def main(argv: list[str] | None = None) -> int:
                     report["detail"] = "Operator claims conflict with observed file evidence; no values were read or recovered."
             print(json.dumps(report, indent=2, sort_keys=True) if args.json else _render_diagnose(report))
             return 0 if report["outcome"] == "triaged" else 1
-        except (HintsError, SurveyError, RecoveryError, OSError, ValueError, RuntimeError, KeyError, TypeError) as exc:
+        except (DependencyError, HintsError, SurveyError, RecoveryError, OSError, ValueError, RuntimeError, KeyError, TypeError) as exc:
             if args.json:
                 print(json.dumps({
                     "schema_version": 1, "outcome": "error", "recovery_attempted": False,
@@ -329,9 +411,13 @@ def main(argv: list[str] | None = None) -> int:
         else:
             report = export_readable(args.source, args.dataset, args.output, args.report, hints=hints)
             print(
-                f"readable export: {report['dataset']['logical_bytes']} logical bytes "
-                f"copied through native HDF5 in {report['blocks_verified']} blocks"
+                f"readable export: {report['outcome']} | "
+                f"{report.get('accepted_elements', 0)} accepted elements, "
+                f"{report.get('unknown_elements', 0)} unknown elements | "
+                f"{report['blocks_verified']} blocks checked"
             )
+            if report.get("unknown_elements"):
+                print("Check /_h5reclaim/validity before using any output fill values.")
             print("No damaged index was reconstructed; historical measurement values are not verified.")
             print(f"output: {_display_path(args.output, 240)}\nreport: {_display_path(args.report, 240)}")
         return 0

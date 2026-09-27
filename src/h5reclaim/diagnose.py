@@ -12,6 +12,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from .dependency_routes import inspect_dependencies, inspect_superblock_status
 from .recovery import _verify_source, sha256_file, source_snapshot
 from .survey import SurveyError, _survey_snapshot
 
@@ -167,6 +168,8 @@ def diagnose(source: str | Path, dataset_path: str | None = None) -> dict[str, A
             "recovered_values": None,
             "inventory": None,
             "selection": None,
+            "file_status": inspect_superblock_status(image, signature["byte_offset"], size),
+            "dependencies": inspect_dependencies(image, dataset_path) if signature["present"] else None,
         }
         if not signature["present"]:
             report.update({
@@ -193,6 +196,18 @@ def diagnose(source: str | Path, dataset_path: str | None = None) -> dict[str, A
                     ),
                     "error": {"code": "hdf5_metadata_unreadable", "detail": _short_error(exc)},
                 })
+                flags = report["file_status"]["status_flags"]
+                if (report["file_status"]["superblock_version"] == 3
+                        and flags["interpretation"] == "write_flag_present"
+                        and not flags["reserved_bits_present"]
+                        and report["file_status"]["end_of_address"]["relation"]
+                        in ("equal", "before_physical_eof")):
+                    report["next_action"] = "consider_status_copy_probe"
+                    report["detail"] = (
+                        "A version-3 write flag was observed, without a validated superblock checksum. "
+                        "A status-only h5clear trial on a disposable copy may distinguish a stale flag "
+                        "from other metadata failures; it cannot restore damaged values."
+                    )
             else:
                 counts = Counter(item["support"]["status"] for item in inventory["datasets"])
                 candidate_paths = [
@@ -231,6 +246,12 @@ def diagnose(source: str | Path, dataset_path: str | None = None) -> dict[str, A
                     report["selection"]["aliases"] = selection["aliases"][:MAX_CANDIDATE_PATHS]
                     report["selection"]["aliases_omitted"] = max(
                         0, len(selection["aliases"]) - MAX_CANDIDATE_PATHS
+                    )
+                if report["dependencies"] is not None and report["dependencies"]["dependencies"]:
+                    report["next_action"] = "resolve_external_or_virtual_dependencies"
+                    report["detail"] = (
+                        "Selected metadata declares other files. Resolve and verify those files before "
+                        "treating native fill values as measurements; this diagnosis has not read them."
                     )
 
         report["questions"] = _questions(report["condition"], report["selection"])
