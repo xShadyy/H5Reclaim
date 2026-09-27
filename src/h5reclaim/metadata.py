@@ -12,7 +12,8 @@ import numpy as np
 
 from .format import FormatError
 from .schema_codec import (
-    FilterDescriptor, SchemaError, canonical_numeric_dtype, read_filter_pipeline,
+    FilterDescriptor, SchemaError, canonical_numeric_dtype, fixed_file_datatype,
+    read_filter_pipeline,
 )
 
 
@@ -26,7 +27,7 @@ class DatasetSpec:
     object_address: int
     shape: tuple[int, ...]
     chunks: tuple[int, ...]
-    dtype: str = "<u4"
+    dtype: str | np.dtype = "<u4"
     filters: tuple[int, ...] = ()
     attributes: tuple[tuple[str, Any], ...] = ()
     omitted_attributes: tuple[str, ...] = ()
@@ -35,6 +36,7 @@ class DatasetSpec:
     # did not supply a maximum shape, so it is interpreted as the current one.
     filter_pipeline: tuple[FilterDescriptor, ...] = ()
     maxshape: tuple[int | None, ...] | None = None
+    file_type_encoding: bytes | None = None
 
     @property
     def chunk_grid(self) -> tuple[int, ...]:
@@ -178,9 +180,12 @@ def read_dataset_spec(source: Path, dataset_path: str) -> DatasetSpec:
 
             datatype = selected.id.get_type()
             try:
-                # A NumPy dtype by itself does not show shifted or reduced
-                # precision bit fields, unusual padding, or float layout.
-                dtype = canonical_numeric_dtype(datatype, selected.dtype)
+                # The exact encoded H5T carries enum names, fixed string
+                # padding, opaque tags, and compound layout to the export.
+                dtype, type_encoding = fixed_file_datatype(datatype)
+                if datatype.get_class() in (h5py.h5t.INTEGER, h5py.h5t.FLOAT):
+                    dtype = canonical_numeric_dtype(datatype, selected.dtype)
+                    type_encoding = None
             except SchemaError as exc:
                 raise UnsupportedCase(str(exc)) from exc
 
@@ -199,9 +204,18 @@ def read_dataset_spec(source: Path, dataset_path: str) -> DatasetSpec:
                 _safe_scalar_attributes(selected) if len(shape) == 1 else ((), ())
             )
 
+            # H5Oget_info on a dataset may traverse its damaged chunk index
+            # and even crash in some HDF5 builds. The canonical selected path
+            # has already been verified as local hard links; the final link's
+            # recorded target is the object-header address we need.
+            parent_path, link_name = dataset_path.rsplit("/", 1)
+            parent = handle[parent_path or "/"]
+            link_info = parent.id.links.get_info(link_name.encode("utf-8"))
+            if link_info.type != h5py.h5l.TYPE_HARD:
+                raise UnsupportedCase("selected link is not a local hard link")
             spec = DatasetSpec(
                 path=selected.name,
-                object_address=int(h5py.h5o.get_info(selected.id).addr),
+                object_address=int(link_info.u),
                 shape=tuple(int(length) for length in shape),
                 chunks=tuple(int(length) for length in chunks),
                 dtype=dtype,
@@ -210,6 +224,7 @@ def read_dataset_spec(source: Path, dataset_path: str) -> DatasetSpec:
                 omitted_attributes=omitted_attributes,
                 filter_pipeline=filters,
                 maxshape=tuple(selected.maxshape),
+                file_type_encoding=type_encoding,
             )
             # A native open can follow a valid-looking but redirected legacy
             # symbol-table entry. Require a complete bounded census of rooted

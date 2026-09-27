@@ -500,7 +500,11 @@ def _analyze_snapshot(
             "object_address": spec.object_address,
             "shape": list(spec.shape),
             "chunks": list(spec.chunks),
-            "dtype": spec.dtype,
+            "dtype": spec.dtype if isinstance(spec.dtype, str) else str(np.dtype(spec.dtype)),
+            "exact_file_datatype_sha256": (
+                hashlib.sha256(spec.file_type_encoding).hexdigest()
+                if spec.file_type_encoding is not None else None
+            ),
             "chunk_grid": list(grid),
             "filters": list(spec.filters),
             "filter_pipeline": [
@@ -528,7 +532,7 @@ def _analyze_snapshot(
         "evidence_ledger": ledger.to_dict(),
         "ownership_inventory": ownership_inventory.report(),
         "assumptions": [
-            "one selected chunked numeric dataset; bounded raw filter reversal and nominal chunk bytes",
+            "one selected chunked fixed-width dataset; bounded raw filter reversal and nominal chunk bytes",
             (
                 "v1 B-tree with intact level-zero root; no missing payload pointers reconstructed"
                 if root.level == 0 else
@@ -581,6 +585,29 @@ def _record_fallback(report: dict[str, Any], fallback: Any) -> None:
     report["dataset"]["attributes_omitted"].extend(fallback.omitted_auxiliary_metadata)
 
 
+def _create_recovered_dataset(handle: h5py.File, spec: DatasetSpec) -> h5py.Dataset:
+    """Create a chunked output with the exact fixed-width file type, if known."""
+    if spec.file_type_encoding is None:
+        return handle.create_dataset(
+            spec.path, shape=spec.shape, maxshape=spec.maxshape or spec.shape,
+            chunks=spec.chunks, dtype=spec.dtype, fillvalue=0,
+        )
+    type_id = h5py.h5t.decode(spec.file_type_encoding)
+    if (type_id.get_size() != np.dtype(spec.dtype).itemsize
+            or np.dtype(type_id.dtype) != np.dtype(spec.dtype)):
+        raise RecoveryError("selected file type contradicts the recovered schema")
+    maxima = tuple(h5py.h5s.UNLIMITED if length is None else length
+                   for length in (spec.maxshape or spec.shape))
+    space = h5py.h5s.create_simple(spec.shape, maxima)
+    creation = h5py.h5p.create(h5py.h5p.DATASET_CREATE)
+    creation.set_chunk(spec.chunks)
+    parent_name, local_name = spec.path.rsplit("/", 1)
+    parent = handle.require_group(parent_name or "/")
+    return h5py.Dataset(h5py.h5d.create(
+        parent.id, local_name.encode("utf-8"), type_id, space, dcpl=creation,
+    ))
+
+
 def _validate_paths(source: Path, output: Path, report: Path) -> None:
     source = source.resolve(strict=True)
     for target in (output, report):
@@ -629,14 +656,7 @@ def recover(
             try:
                 with h5py.File(output_temp, "x") as handle:
                     spec = analysis.spec
-                    data = handle.create_dataset(
-                        spec.path,
-                        shape=spec.shape,
-                        maxshape=spec.maxshape or spec.shape,
-                        chunks=spec.chunks,
-                        dtype=spec.dtype,
-                        fillvalue=0,
-                    )
+                    data = _create_recovered_dataset(handle, spec)
                     for record in analysis.records:
                         # Direct nominal chunk bytes retain edge padding,
                         # float NaN payloads, and signed zero. The derived

@@ -37,6 +37,11 @@ def capture_baseline(source: str | Path, dataset_path: str, destination: str | P
     if not analysis.report["complete"]:
         raise UnsupportedCase("baseline capture requires every selected chunk to be allocated and decoded")
     spec = analysis.spec
+    if not isinstance(spec.dtype, str):
+        raise UnsupportedCase(
+            "prospective chunk-hash baseline currently requires a primitive numeric datatype; "
+            "use the exact-schema recovery capsule for fixed records"
+        )
     source_digest = analysis.report["source"]["sha256_before"]
     document: dict[str, Any] = {
         "schema_version": 1,

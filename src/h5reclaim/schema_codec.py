@@ -24,6 +24,9 @@ MAX_DECODED_CHUNK_BYTES = 1 << 20
 MAX_STORED_CHUNK_BYTES = 2 << 20
 MAX_FILTERS = 8
 MAX_FILTER_PARAMETERS = 64
+MAX_DATATYPE_ENCODING_BYTES = 16 * 1024
+MAX_DATATYPE_MEMBERS = 64
+MAX_DATATYPE_DEPTH = 4
 KNOWN_FILTERS = frozenset((h5py.h5z.FILTER_SHUFFLE,
                             h5py.h5z.FILTER_DEFLATE,
                             h5py.h5z.FILTER_FLETCHER32))
@@ -89,6 +92,107 @@ def canonical_numeric_dtype(datatype: h5py.h5t.TypeID, dtype: np.dtype) -> str:
                 or datatype.get_inpad() != h5py.h5t.PAD_ZERO):
             raise SchemaError("floating-point representation is not IEEE binary32/64")
     return dtype.str
+
+
+def fixed_file_datatype(datatype: h5py.h5t.TypeID) -> tuple[np.dtype, bytes]:
+    """Accept bounded, self-contained HDF5 file types and retain their exact H5T.
+
+    A NumPy dtype loses information such as string padding, enum names, opaque
+    tags, and compound field offsets in some contexts. The encoded H5T is
+    therefore carried to the output writer, while the dtype supplies only
+    item size and a human-readable schema description. No pointers to a heap,
+    another object, or variable-length storage are accepted.
+    """
+    try:
+        encoded = datatype.encode()
+        dtype = np.dtype(datatype.dtype)
+        if (not 2 < len(encoded) <= MAX_DATATYPE_ENCODING_BYTES
+                or dtype.hasobject or not 0 < datatype.get_size() <= 1_048_576
+                or dtype.itemsize != datatype.get_size()):
+            raise SchemaError("datatype is variable, oversized, or disagrees with file width")
+
+        def check(type_id: h5py.h5t.TypeID, depth: int) -> None:
+            if depth > MAX_DATATYPE_DEPTH:
+                raise SchemaError("datatype nesting exceeds limit")
+            kind = type_id.get_class()
+            if kind in (h5py.h5t.INTEGER, h5py.h5t.FLOAT):
+                canonical_numeric_dtype(type_id, type_id.dtype)
+            elif kind == h5py.h5t.STRING:
+                if (type_id.is_variable_str() or not 0 < type_id.get_size() <= 4096
+                        or type_id.get_cset() not in (h5py.h5t.CSET_ASCII, h5py.h5t.CSET_UTF8)
+                        or type_id.get_strpad() not in (h5py.h5t.STR_NULLTERM,
+                                                       h5py.h5t.STR_NULLPAD,
+                                                       h5py.h5t.STR_SPACEPAD)):
+                    raise SchemaError("variable or unsupported fixed-width string")
+            elif kind == h5py.h5t.OPAQUE:
+                if not 0 < type_id.get_size() <= 4096 or len(type_id.get_tag()) > 256:
+                    raise SchemaError("opaque type exceeds bounded tag or width")
+            elif kind == h5py.h5t.ENUM:
+                if not 0 < type_id.get_nmembers() <= MAX_DATATYPE_MEMBERS:
+                    raise SchemaError("enum exceeds member limit")
+                check(type_id.get_super(), depth + 1)
+                names = [type_id.get_member_name(index) for index in range(type_id.get_nmembers())]
+                if any(not name or len(name) > 128 for name in names) or len(set(names)) != len(names):
+                    raise SchemaError("enum has duplicate or unbounded member names")
+            elif kind == h5py.h5t.ARRAY:
+                dimensions = type_id.get_array_dims()
+                if not 1 <= len(dimensions) <= 4 or any(not 0 < n <= 4096 for n in dimensions):
+                    raise SchemaError("array dimensions exceed limits")
+                check(type_id.get_super(), depth + 1)
+                if np.prod(dimensions, dtype=object) * type_id.get_super().get_size() != type_id.get_size():
+                    raise SchemaError("array width disagrees with dimensions")
+            elif kind == h5py.h5t.COMPOUND:
+                if not 0 < type_id.get_nmembers() <= MAX_DATATYPE_MEMBERS:
+                    raise SchemaError("compound exceeds member limit")
+                names = set()
+                ranges: list[tuple[int, int]] = []
+                for index in range(type_id.get_nmembers()):
+                    name = type_id.get_member_name(index)
+                    if not name or len(name) > 128 or name in names:
+                        raise SchemaError("compound has duplicate or unbounded member names")
+                    names.add(name)
+                    member = type_id.get_member_type(index)
+                    check(member, depth + 1)
+                    start = type_id.get_member_offset(index)
+                    end = start + member.get_size()
+                    if start < 0 or end > type_id.get_size():
+                        raise SchemaError("compound member extends outside record")
+                    ranges.append((start, end))
+                if any(a[1] > b[0] for a, b in zip(sorted(ranges), sorted(ranges)[1:])):
+                    raise SchemaError("overlapping compound members are not supported")
+            else:
+                raise SchemaError("datatype contains a reference, VLEN, heap, or unsupported class")
+
+        check(datatype, 0)
+        return dtype, encoded
+    except SchemaError:
+        raise
+    except (ValueError, TypeError, OverflowError, RuntimeError) as exc:
+        raise SchemaError(f"file datatype cannot be validated: {exc}") from exc
+
+
+def datatype_from_message(raw: bytes, *, padded: bool = False) -> tuple[np.dtype, bytes]:
+    """Validate a rooted raw datatype message against H5T's canonical encoding.
+
+    Legacy object-header messages are rounded up to eight bytes. Other raw
+    messages must match the re-encoded type byte-for-byte, so a parser cannot
+    quietly reinterpret trailing bytes or accept an alternative schema.
+    """
+    if not 8 <= len(raw) <= MAX_DATATYPE_ENCODING_BYTES - 2:
+        raise SchemaError("raw datatype message exceeds bounds")
+    try:
+        datatype = h5py.h5t.decode(b"\x03\x00" + raw)
+        dtype, encoded = fixed_file_datatype(datatype)
+    except (ValueError, TypeError, RuntimeError, OSError) as exc:
+        raise SchemaError(f"raw datatype message cannot be decoded: {exc}") from exc
+    body = encoded[2:]
+    if padded:
+        padding = (-len(body)) % 8
+        if raw != body + b"\x00" * padding:
+            raise SchemaError("older datatype message or padding differs from canonical encoding")
+    elif raw != body:
+        raise SchemaError("datatype message differs from canonical encoding")
+    return dtype, encoded
 
 
 def read_filter_pipeline(creation: h5py.h5p.PropDCID, element_size: int) -> tuple[FilterDescriptor, ...]:

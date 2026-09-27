@@ -20,11 +20,13 @@ from math import prod
 from pathlib import Path
 from time import monotonic
 
+import numpy as np
+
 from .format import FormatError, H5File, UnsupportedFormat
 from .metadata import DatasetSpec
 from .modern_indexes import ModernH5File, lookup3
 from .dense_group_links import read_dense_group_links
-from .schema_codec import FilterDescriptor
+from .schema_codec import FilterDescriptor, SchemaError, datatype_from_message
 from .shared_messages import resolve_shared_schema
 
 
@@ -798,6 +800,29 @@ def _numeric_dtype(raw: bytes) -> str:
     raise UnsupportedFormat("fallback cannot interpret compound, VLEN, reference, or other datatype")
 
 
+def _file_dtype(raw: bytes, *, older_padding: bool = False) -> tuple[str | np.dtype, bytes | None]:
+    """Keep exact file type for fixed records, retaining old numeric API values."""
+    if len(raw) < 8:
+        raise FormatError("dataset datatype message is truncated")
+    type_class = raw[0] & 15
+    if type_class in (0, 1):
+        length = 12 if type_class == 0 else 20
+        if older_padding and (len(raw) != (length + 7) // 8 * 8 or any(raw[length:])):
+            raise FormatError("older dataset datatype message padding invalid")
+        numeric_name = _numeric_dtype(raw[:length] if older_padding else raw)
+    else:
+        numeric_name = None
+    try:
+        dtype, encoding = datatype_from_message(raw, padded=older_padding)
+    except SchemaError as exc:
+        raise UnsupportedFormat(str(exc)) from exc
+    if numeric_name is not None:
+        if np.dtype(numeric_name) != dtype:
+            raise FormatError("raw numeric datatype contradicts HDF5 type encoding")
+        return numeric_name, None
+    return dtype, encoding
+
+
 def _filters(raw: bytes | None, element_size: int) -> tuple[FilterDescriptor, ...]:
     if raw is None:
         return ()
@@ -934,16 +959,8 @@ def _old_fallback(snapshot: Path, dataset_path: str, parts: list[str], source_ha
             raise UnsupportedFormat("selected older object lacks required dataset metadata")
         shape, maximum = _dataspace(space.data, reader.superblock.length_size,
                                     older_padding=True, allow_growing=True)
-        if len(dtype.data) < 8:
-            raise FormatError("older dataset datatype message is truncated")
-        dtype_class = dtype.data[0] & 15
-        if dtype_class not in (0, 1):
-            raise UnsupportedFormat("older fallback requires a primitive numeric datatype")
-        dt_len = 12 if dtype_class == 0 else 20
-        if len(dtype.data) != (dt_len + 7) // 8 * 8 or any(dtype.data[dt_len:]):
-            raise FormatError("older dataset datatype message padding invalid")
-        dtype_name = _numeric_dtype(dtype.data[:dt_len])
-        itemsize = int(dtype_name[-1])
+        dtype_name, type_encoding = _file_dtype(dtype.data, older_padding=True)
+        itemsize = np.dtype(dtype_name).itemsize
         pipeline_message = _unique(selected, 11)
         pipeline = _old_filters(pipeline_message.data if pipeline_message else None, itemsize)
         filters = tuple(item.id for item in pipeline)
@@ -956,7 +973,8 @@ def _old_fallback(snapshot: Path, dataset_path: str, parts: list[str], source_ha
                               if any(message.kind in (12, 21) for message in selected) else ())
         spec = DatasetSpec(dataset_path, address, shape, dataset_layout.chunk_shape, dtype_name,
                            filters, omitted_attributes=omitted_attributes,
-                           filter_pipeline=pipeline, maxshape=maximum)
+                           filter_pipeline=pipeline, maxshape=maximum,
+                           file_type_encoding=type_encoding)
         omitted = tuple(
             f"auxiliary message type {message.kind} at byte {message.absolute_offset}: "
             "preserved only in the damaged source, not interpreted by fallback"
@@ -1064,8 +1082,8 @@ def read_dataset_spec_fallback(
             raise UnsupportedFormat("selected object lacks required dataset metadata")
         shape, maximum = _dataspace(space.data, reader.superblock.length_size,
                                     allow_growing=True)
-        dtype_name = _numeric_dtype(dtype.data)
-        itemsize = int(dtype_name[-1])
+        dtype_name, type_encoding = _file_dtype(dtype.data)
+        itemsize = np.dtype(dtype_name).itemsize
         pipeline_message = selected_message(11)
         pipeline = _filters(pipeline_message.data if pipeline_message else None, itemsize)
         filters = tuple(item.id for item in pipeline)
@@ -1076,7 +1094,8 @@ def read_dataset_spec_fallback(
                               if any(message.kind in (12, 21) for message in selected) else ())
         spec = DatasetSpec(dataset_path, address, shape, chunks, dtype_name, filters,
                            omitted_attributes=omitted_attributes,
-                           filter_pipeline=pipeline, maxshape=maximum)
+                           filter_pipeline=pipeline, maxshape=maximum,
+                           file_type_encoding=type_encoding)
         # The index reader separately checks its own layout interpretation.
         # It also verifies declared data ranges and registered metadata ranges.
         reader.read_index(address, shape, chunks, itemsize,

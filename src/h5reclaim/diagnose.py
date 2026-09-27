@@ -281,7 +281,9 @@ def diagnose(source: str | Path, dataset_path: str | None = None) -> dict[str, A
                     ),
                     "selection": {
                         "selected_path": spec.path, "shape": list(spec.shape),
-                        "chunks": list(spec.chunks), "dtype": spec.dtype,
+                        "chunks": list(spec.chunks), "dtype": (
+                            spec.dtype if isinstance(spec.dtype, str) else str(spec.dtype)
+                        ),
                         "filters": list(spec.filters), "layout": "chunked",
                         "support": {"status": "candidate", "reasons": []},
                         "metadata_resolution": fallback.route,

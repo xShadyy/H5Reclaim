@@ -2,7 +2,7 @@
 
 This module accepts v0/v1 superblocks, bounded v1 object headers with a v3
 chunked layout, and v1 type-1 B-tree nodes for declared rank-one through rank-four
-datasets with one-, two-, four-, or eight-byte fixed-width elements. Addresses exposed
+datasets with bounded fixed-width elements. Addresses exposed
 by HDF5 metadata are relative to the superblock base; pointer_offset is an
 absolute byte offset in the source file. Parsing a plausible TREE signature
 does not establish that a node belongs to a dataset.
@@ -26,6 +26,7 @@ MAX_HEADER_BYTES = 1 << 20
 MAX_CONTINUATIONS = 8
 MAX_READ_BYTES = 16 << 20
 MAX_CHUNK_BYTES = MAX_READ_BYTES
+MAX_ELEMENT_BYTES = 1 << 20
 
 
 class FormatError(ValueError):
@@ -317,8 +318,8 @@ class H5File:
         )
         if any(value == 0 for value in dimensions):
             raise FormatError("zero chunk dimension or datatype element size")
-        if rank not in (1, 2, 3, 4) or dimensions[-1] not in (1, 2, 4, 8):
-            raise UnsupportedFormat("only rank-one through four fixed-width 1/2/4/8-byte elements")
+        if rank not in (1, 2, 3, 4) or dimensions[-1] > MAX_ELEMENT_BYTES:
+            raise UnsupportedFormat("only rank-one through four bounded fixed-width elements")
         if any(data[fields_end:]):
             raise FormatError("nonzero layout message padding")
         return DatasetLayout(root, dimensions[:-1], dimensions[-1], 3)
@@ -334,7 +335,7 @@ class H5File:
 
     def read_tree(self, address: int, *, rank: int = 2, element_size: int = 4) -> TreeNode:
         """Decode used entries of an explicitly declared type-1 v1 B-tree node."""
-        if rank not in (1, 2, 3, 4) or element_size not in (1, 2, 4, 8):
+        if rank not in (1, 2, 3, 4) or not 0 < element_size <= MAX_ELEMENT_BYTES:
             raise UnsupportedFormat("unsupported rank and datatype-element-size pair")
         key_size = 8 + 8 * (rank + 1)
         header = self.read_at(address, 8 + 2 * self.superblock.offset_size)
