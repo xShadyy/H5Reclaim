@@ -2,6 +2,91 @@
 
 Updated: 2026-09-27
 
+## Version 0.5.0: bounded evidence ledger, modern direct indexes, broader readable export
+
+This release adds a typed evidence ledger to structural recovery. For each
+accepted chunk, the report records the selected dataset anchor, observed
+index-pointer path, physical byte extent, raw and decoded hashes, filter mask,
+parser checks, checksum result or its absence, and contradictions. A second
+reconciliation refuses coordinate or byte-range conflicts. An anchored chunk
+whose decoder fails is unassigned; `export-fragments` can publish its bounded
+raw bytes as a separate, coordinate-free ZIP after rechecking source and
+fragment hashes. Missing links without a justified physical extent do not
+produce fragments. The ledger records verified parser observations; its
+hashes are not independent proof that historical measurements were unchanged.
+
+The older version-1 B-tree route now traverses deeper intact trees and can
+bridge one missing **leaf** pointer below a deeper root if one unique
+two-sided sibling bridge and the exact parent interval survive. The
+version-2/3 superblock, checksum-validated version-2 object-header and
+continuation, and version-4/5 chunked-layout parsers support intact modern
+single-chunk, implicit, and bounded nonpaged, unfiltered, fully allocated
+fixed-array indexes. The fixed-array route validates FAHD/FADB checksums,
+back-pointers, slot addresses, and row-major coordinates against native HDF5
+on generated fixtures. The authentic four-file corpus still has only two
+structural candidates and does not independently demonstrate fixed-array
+recovery on scientific data. Modern export is explicitly an
+`intact_index_export`, not a damaged-modern-index reconstruction. Paged,
+filtered, or sparse fixed arrays, extensible arrays, and version-2 B-trees
+remain unsupported by raw structural recovery. Positive end-to-end fixtures
+cover unfiltered single, implicit grid, and filtered single chunks, with
+checksum, pointer, layout, and datatype contradiction negatives.
+
+`export-readable` now preserves the selected local dataset's HDF5 type,
+maxshape, fill rules, layout, and supported built-in filter order for bounded
+compact, contiguous, and chunked data. Supported fixed-width representations
+include canonical numeric, bool/enum, complex, fixed strings/opaque bytes,
+and bounded compound/array fields. Sparse chunks have a **partial** output
+with `/_h5reclaim/validity` marking accepted current values separately from
+unknown output fill. Per-chunk source addresses, masks, sizes, and raw hashes
+appear in the report. Reference/VLEN types, plugins, external/VDS values,
+and noncanonical numeric storage are still refused. Native reads remain in
+process, not in a crash-isolated worker.
+
+`diagnose` observes superblock status and declared external raw, virtual, and
+external-link dependencies without reading values. `--related-files` accepts
+an exact-name, SHA-256-pinned manifest of explicitly supplied absolute file
+paths and checks file identity, fixed raw byte ranges, and local HDF5 target
+metadata. It does **not** export external/VDS values or resolve dynamic
+patterns and transitive dependencies. `probe-status` optionally runs
+`h5clear --status` only on a disposable copy of an eligible version-3 file;
+it is a metadata-openability experiment, not general repair. The real
+`h5clear` utility was absent in this environment, so its simulated
+status-only success path is a test, not an observed real utility run.
+
+The source snapshot now streams in 1 MiB blocks with a 4 GiB default limit,
+30-minute copy deadline, and a preflight for the full logical source size
+plus disk reserve. A separate 129 MiB sparse-source test checks operation
+beyond the old 128 MiB cap. Structural dataset, chunk, native export, and
+report limits remain smaller and explicit in [usage](usage.md). Full native
+processing does not yet have a process-wide timeout or memory sandbox.
+
+The seeded authentic-file damage matrix with seed `20260927` and two trials
+passed 23 specified cases: 954 accepted chunks independently matched the
+original at exact coordinates, including 226 inaccessible to ordinary reads
+in the damaged copies; no false accepted chunk was observed; 14 cases
+refused safely. A second seed also passed. These correlated constructed
+faults and four bundled originals have no known relationship to the
+population of real failures. This does **not** establish anything near a
+99% success rate. Exact restoration of overwritten unique bytes without
+independent redundancy is impossible, and unknown ownership must stay
+unknown. Naturally damaged, held-out cases and a defined fault population
+are needed before a statistical claim.
+
+The final Linux regression run passed **163 discovered tests**. The pinned
+corpus check still reports four verified originals and 2 structural candidates
+among 251 datasets. The controlled 16 kHz GWOSC trial recovered 128/128
+bit-exact chunks from the damaged copy, with 57/57 native-inaccessible chunks
+behind one reconstructed leaf link. The source and damaged copy remained
+unchanged. These outcomes are specific to the tests and their environment;
+this release has not been rerun on the user's Windows machine.
+
+The next concrete milestone is an anchored, checksummed version-2 B-tree
+parser with independent coordinate tests and misleading stale-node negatives,
+followed by a worker boundary for native reads. Paged/filtered fixed arrays,
+extensible arrays, edge chunks, VLEN/reference graphs, and dependent-value
+export each need separate evidence and resource rules before support claims.
+
 ## Version 0.4.0: triage, bounded native export, and another authentic index shape
 
 `h5reclaim diagnose SOURCE [--dataset PATH]` checks a stable snapshot's HDF5

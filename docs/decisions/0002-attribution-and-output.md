@@ -1,5 +1,9 @@
 # 0002: Two-sided attribution and embedded validity
 
+This records the original design. Version 0.5.0 supersedes its 128 MiB
+snapshot bound with a streamed, disk-preflighted 4 GiB default; see
+[current status](../status.md) for active limits.
+
 Date: 2026-09-27
 
 The first recovery case requires the explicitly selected dataset's own layout message to anchor the v1 B-tree root. Other local datasets may coexist, including ones with the same shape. A lost interior root child is accepted only if both adjacent reachable leaves independently identify the same detached node, its sibling pointers reciprocate, its level is zero, and its first/final key boundaries match the missing parent slot. Every accepted chunk must pass coordinate alignment, bounds, size, filter-mask, uniqueness, and payload-range checks. Payload ranges must not overlap one another or parsed metadata extents. A file-wide `TREE` signature scan or compatible shape is insufficient evidence of ownership.
