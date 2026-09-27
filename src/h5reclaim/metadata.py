@@ -10,6 +10,7 @@ from typing import Any
 import h5py
 import numpy as np
 
+from .format import FormatError
 from .schema_codec import (
     FilterDescriptor, SchemaError, canonical_numeric_dtype, read_filter_pipeline,
 )
@@ -198,7 +199,7 @@ def read_dataset_spec(source: Path, dataset_path: str) -> DatasetSpec:
                 _safe_scalar_attributes(selected) if len(shape) == 1 else ((), ())
             )
 
-            return DatasetSpec(
+            spec = DatasetSpec(
                 path=selected.name,
                 object_address=int(h5py.h5o.get_info(selected.id).addr),
                 shape=tuple(int(length) for length in shape),
@@ -210,7 +211,16 @@ def read_dataset_spec(source: Path, dataset_path: str) -> DatasetSpec:
                 filter_pipeline=filters,
                 maxshape=tuple(selected.maxshape),
             )
+            # A native open can follow a valid-looking but redirected legacy
+            # symbol-table entry. Require a complete bounded census of rooted
+            # hard links before trusting the selected object's address.
+            from .metadata_fallback import _superblock_version, verify_old_selected_address
+            if _superblock_version(source) in (0, 1):
+                verify_old_selected_address(source, spec.path, spec.object_address)
+            return spec
     except UnsupportedCase:
+        raise
+    except FormatError:
         raise
     except (OSError, RuntimeError, ValueError, KeyError, TypeError) as exc:
         raise UnsupportedCase(f"HDF5 could not open selected dataset metadata: {exc}") from exc

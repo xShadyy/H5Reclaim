@@ -12,6 +12,7 @@ import numpy as np
 
 from h5reclaim.format import FormatError, H5File, UnsupportedFormat
 from h5reclaim.metadata_fallback import _old_messages, read_dataset_spec_fallback
+from h5reclaim.metadata import read_dataset_spec
 from h5reclaim.recovery import recover
 
 
@@ -155,6 +156,51 @@ class LegacyFallbackBroaderTests(unittest.TestCase):
                 reader.read_dataset_layout(address, rank=1)
         with self.assertRaisesRegex(FormatError, "invalid or repeated older continuation"):
             read_dataset_spec_fallback(self.source, "/experiment/readings")
+
+    def test_valid_cross_group_alias_and_empty_group_pass_rooted_census(self):
+        with h5py.File(self.source, "w", libver="earliest") as handle:
+            selected = handle.create_group("lab").create_dataset(
+                "readings", data=np.arange(8, dtype="<u4"), chunks=(8,))
+            elsewhere = handle.create_group("elsewhere")
+            elsewhere["alias"] = selected
+            elsewhere.create_group("empty")
+            address = int(h5py.h5o.get_info(selected.id).addr)
+        self.assertEqual(read_dataset_spec(self.source, "/lab/readings").object_address,
+                         address)
+        self.assertEqual(read_dataset_spec_fallback(
+            self.source, "/lab/readings").spec.object_address, address)
+
+    def test_cross_group_alias_redirection_refuses_native_and_raw_routes(self):
+        with h5py.File(self.source, "w", libver="earliest") as handle:
+            group = handle.create_group("lab")
+            group.create_dataset("science", data=np.arange(16, dtype="<u4").reshape(4, 4),
+                                 chunks=(4, 4))
+            other = group.create_dataset("distractor", data=np.full((4, 4), 99, dtype="<u4"),
+                                         chunks=(4, 4))
+            handle.create_group("elsewhere")["alias"] = other
+            distractor_address = int(h5py.h5o.get_info(other.id).addr)
+        anchored = read_dataset_spec_fallback(self.source, "/lab/science")
+        entry = anchored.link_chain[-1]
+        with H5File(self.source) as reader:
+            osize, lsize = reader.superblock.offset_size, reader.superblock.length_size
+        damaged = bytearray(self.source.read_bytes())
+        pointer = entry.link_message_offset + lsize
+        damaged[pointer:pointer + osize] = distractor_address.to_bytes(osize, "little")
+        self.source.write_bytes(damaged)
+        with h5py.File(self.source) as handle:
+            # Native HDF5 alone silently follows the redirected link and
+            # serves valid but scientifically wrong values.
+            self.assertEqual(int(handle["/lab/science"][0, 0]), 99)
+        for reader in (read_dataset_spec, read_dataset_spec_fallback):
+            with self.subTest(reader=reader.__name__):
+                with self.assertRaisesRegex(FormatError,
+                                            "rooted hard-link count contradicts"):
+                    reader(self.source, "/lab/science")
+        output, report = self.root / "out.h5", self.root / "out.json"
+        with self.assertRaisesRegex(FormatError, "rooted hard-link count contradicts"):
+            recover(self.source, "/lab/science", output, report)
+        self.assertFalse(output.exists())
+        self.assertFalse(report.exists())
 
 
 if __name__ == "__main__":

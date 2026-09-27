@@ -18,6 +18,7 @@ from collections import Counter
 from hashlib import sha256
 from math import prod
 from pathlib import Path
+from time import monotonic
 
 from .format import FormatError, H5File, UnsupportedFormat
 from .metadata import DatasetSpec
@@ -34,6 +35,9 @@ MAX_CONTINUATIONS = 8
 MAX_MESSAGES = 4096
 MAX_FILTERS = 8
 MAX_SOURCE_BYTES = 4 * (1 << 30)
+MAX_OLD_GROUPS = 4096
+MAX_OLD_LINKS = 8192
+MAX_OLD_CENSUS_SECONDS = 30.0
 
 
 def _uint(value: bytes) -> int:
@@ -235,7 +239,7 @@ def _old_group(reader: H5File, address: int, cached: tuple[int, int] | None) -> 
         if prefix[:4] != b"TREE" or prefix[4] != 0:
             raise FormatError("rooted older group B-tree signature or type invalid")
         level, used = prefix[5], _uint(prefix[6:8])
-        if level > MAX_DEPTH or not 1 <= used <= 2*int_k or (
+        if level > MAX_DEPTH or used > 2*int_k or (
             parent_level is not None and level != parent_level - 1
         ):
             raise FormatError("older group tree level or entry count invalid")
@@ -245,6 +249,18 @@ def _old_group(reader: H5File, address: int, cached: tuple[int, int] | None) -> 
         reader.read_at(node_address, size)
         reader.metadata_ranges.append((reader.absolute(node_address), reader.absolute(node_address)+size,
                                        "older group B-tree node"))
+        if used == 0:
+            # HDF5 keeps an allocated, empty level-zero tree for an empty
+            # group. Its unused child slots can contain stale bytes, so only
+            # the root level, sibling sentinels, and initial empty key matter.
+            undefined = reader.superblock.undefined_address
+            if (parent_level is not None or level != 0
+                or _uint(prefix[8:8+osize]) != undefined
+                or _uint(prefix[8+osize:8+2*osize]) != undefined
+                or heap.name(_uint(reader.read_at(node_address + 8 + 2*osize, lsize)),
+                             allow_empty=True) != ""):
+                raise FormatError("invalid empty older group B-tree root")
+            continue
         content = reader.read_at(node_address + 8 + 2*osize, used*(lsize+osize)+lsize)
         keys = []
         targets = []
@@ -312,6 +328,93 @@ def _old_group(reader: H5File, address: int, cached: tuple[int, int] | None) -> 
         if prefix[0] != 1 or _uint(prefix[4:8]) < count:
             raise FormatError("older local hard-link count contradicts target object header")
     return links
+
+
+def _old_selected_address(
+    reader: H5File, root: int, cached: tuple[int, int] | None, parts: list[str],
+) -> tuple[int, tuple[LinkStep, ...]]:
+    address = root
+    chain: list[LinkStep] = []
+    for part in parts:
+        links = _old_group(reader, address, cached)
+        if part not in links:
+            raise UnsupportedFormat(f"selected component {part!r} has no rooted symbol-table entry")
+        step = links[part]
+        if step is None:
+            raise UnsupportedFormat(f"selected component {part!r} is not a local hard link")
+        chain.append(step)
+        address = step.object_address
+        cached = step.cached_group
+    return address, tuple(chain)
+
+
+def _old_global_link_count(reader: H5File, root: int,
+                           cached: tuple[int, int] | None,
+                           selected_address: int) -> None:
+    """Refuse aliased redirections that a local group count cannot detect.
+
+    Count each hard-link entry once per rooted group object, even when a group
+    itself has aliases. This is bounded and deliberately strict: an incomplete
+    namespace traversal cannot establish a historical owner for a selected
+    object in this unchecksummed format.
+    """
+    deadline = monotonic() + MAX_OLD_CENSUS_SECONDS
+    pending = [(root, cached)]
+    seen_groups: set[int] = set()
+    counts: Counter[int] = Counter()
+    links_seen = 0
+    while pending:
+        if monotonic() > deadline or len(seen_groups) >= MAX_OLD_GROUPS:
+            raise UnsupportedFormat("older rooted hard-link census exceeds limits")
+        group, expected_cached = pending.pop()
+        if group in seen_groups:
+            if expected_cached is not None:
+                stab = _unique(_old_messages(reader, group), 0x11)
+                osize = reader.superblock.offset_size
+                if stab is None or len(stab.data) != 2 * osize or (
+                    _uint(stab.data[:osize]), _uint(stab.data[osize:])
+                ) != expected_cached:
+                    raise FormatError("older aliased group cache contradicts object header")
+            continue
+        seen_groups.add(group)
+        links = _old_group(reader, group, expected_cached)
+        links_seen += len(links)
+        if links_seen > MAX_OLD_LINKS:
+            raise UnsupportedFormat("older rooted hard-link census exceeds link limit")
+        for step in links.values():
+            if monotonic() > deadline:
+                raise UnsupportedFormat("older rooted hard-link census exceeds time limit")
+            if step is None:
+                continue
+            counts[step.object_address] += 1
+            if counts[step.object_address] > MAX_OLD_LINKS:
+                raise UnsupportedFormat("older rooted target has excessive aliases")
+            child_messages = _old_messages(reader, step.object_address)
+            if _unique(child_messages, 0x11) is not None:
+                pending.append((step.object_address, step.cached_group))
+    prefix = reader.read_at(selected_address, 16)
+    if prefix[0] != 1:
+        raise FormatError("selected older object header prefix is invalid")
+    declared = _uint(prefix[4:8])
+    if counts[selected_address] != declared:
+        raise FormatError("rooted hard-link count contradicts selected object header")
+
+
+def verify_old_selected_address(snapshot: Path, dataset_path: str,
+                                expected_address: int) -> None:
+    """Check a native-selected v0/v1 address against raw rooted ownership."""
+    parts = dataset_path.split("/")[1:]
+    if not dataset_path.startswith("/") or not parts or any(
+        not part or part in (".", "..") or "\x00" in part for part in parts
+    ) or len(parts) > MAX_DEPTH or len(dataset_path.encode("utf-8")) > MAX_PATH_BYTES:
+        raise UnsupportedFormat("older selected path is not bounded and canonical")
+    with H5File(snapshot) as reader:
+        root, cached = _old_root_address(reader)
+        address, _chain = _old_selected_address(reader, root, cached, parts)
+        if address != expected_address:
+            raise FormatError("native selected address disagrees with rooted symbol-table path")
+        _old_global_link_count(reader, root, cached, address)
+        _validate_metadata_ranges(reader.metadata_ranges)
 
 
 def _messages(reader: ModernH5File, address: int) -> tuple[HeaderMessage, ...]:
@@ -490,6 +593,58 @@ def _validate_local_modern_hardlinks(reader: ModernH5File,
             _uint(declared.data[1:]) < count
         ):
             raise FormatError("modern local hard-link count contradicts target object header")
+
+
+def _modern_global_link_count(reader: ModernH5File, root: int,
+                              selected_address: int,
+                              known_groups: dict[int, dict[str, LinkStep | None]]) -> None:
+    """Cross-check a selected v2 object against all rooted hard-link entries."""
+    deadline = monotonic() + MAX_OLD_CENSUS_SECONDS
+    pending = [root]
+    seen_groups: set[int] = set()
+    counts: Counter[int] = Counter()
+    links_seen = 0
+    while pending:
+        if monotonic() > deadline or len(seen_groups) >= MAX_OLD_GROUPS:
+            raise UnsupportedFormat("modern rooted hard-link census exceeds limits")
+        group = pending.pop()
+        if group in seen_groups:
+            continue
+        seen_groups.add(group)
+        # A dense-group parser reserves its indexed heap blocks once. Reuse
+        # the validated links already traversed on the selected path.
+        links = known_groups.get(group)
+        if links is None:
+            links = _compact_links(reader, group)
+            known_groups[group] = links
+        links_seen += len(links)
+        if links_seen > MAX_OLD_LINKS:
+            raise UnsupportedFormat("modern rooted hard-link census exceeds link limit")
+        for step in links.values():
+            if monotonic() > deadline:
+                raise UnsupportedFormat("modern rooted hard-link census exceeds time limit")
+            if step is None:
+                continue
+            counts[step.object_address] += 1
+            if counts[step.object_address] > MAX_OLD_LINKS:
+                raise UnsupportedFormat("modern rooted target has excessive aliases")
+            prefix = reader.read_at(step.object_address, 4)
+            child_messages = (_messages(reader, step.object_address)
+                              if prefix == b"OHDR" else
+                              _old_messages(reader, step.object_address))
+            if prefix != b"OHDR" and _unique(child_messages, 0x11) is not None:
+                raise UnsupportedFormat("mixed older group requires a separate rooted census")
+            if _unique(child_messages, 2) is not None and _unique(child_messages, 10) is not None:
+                pending.append(step.object_address)
+    declared_message = _unique(_messages(reader, selected_address), 22)
+    if declared_message is None:
+        declared = 1
+    elif len(declared_message.data) == 5 and declared_message.data[0] == 0:
+        declared = _uint(declared_message.data[1:])
+    else:
+        raise FormatError("invalid modern object hard-link count message")
+    if counts[selected_address] != declared:
+        raise FormatError("rooted hard-link count contradicts selected object header")
 
 
 def _dataspace(raw: bytes, lsize: int, *, older_padding: bool = False,
@@ -684,18 +839,8 @@ def _old_fallback(snapshot: Path, dataset_path: str, parts: list[str], source_ha
     """Follow old symbol-table entries; this format has no metadata checksum."""
     with H5File(snapshot) as reader:
         root, cached = _old_root_address(reader)
-        address = root
-        chain: list[LinkStep] = []
-        for part in parts:
-            links = _old_group(reader, address, cached)
-            if part not in links:
-                raise UnsupportedFormat(f"selected component {part!r} has no rooted symbol-table entry")
-            step = links[part]
-            if step is None:
-                raise UnsupportedFormat(f"selected component {part!r} is not a local hard link")
-            chain.append(step)
-            address = step.object_address
-            cached = step.cached_group
+        address, chain = _old_selected_address(reader, root, cached, parts)
+        _old_global_link_count(reader, root, cached, address)
         selected = _old_messages(reader, address)
         if _unique(selected, 7) is not None:
             raise UnsupportedFormat("selected older dataset uses external raw storage")
@@ -796,8 +941,10 @@ def read_dataset_spec_fallback(
         root = reader.superblock.root_object_address
         address = root
         chain: list[LinkStep] = []
+        visited_groups: dict[int, dict[str, LinkStep | None]] = {}
         for part in parts:
             links = _compact_links(reader, address)
+            visited_groups[address] = links
             if part not in links:
                 raise UnsupportedFormat(f"selected component {part!r} has no verified compact hard link")
             step = links[part]
@@ -805,6 +952,7 @@ def read_dataset_spec_fallback(
                 raise UnsupportedFormat(f"selected component {part!r} is not a local hard link")
             chain.append(step)
             address = step.object_address
+        _modern_global_link_count(reader, root, address, visited_groups)
         selected = _messages(reader, address)
         if _unique(selected, 7) is not None:
             raise UnsupportedFormat("selected dataset uses external raw storage")
