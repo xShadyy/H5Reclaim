@@ -10,11 +10,14 @@ from pathlib import Path
 from .format import FormatError
 from .metadata import UnsupportedCase
 from .recovery import RecoveryError, analyze, recover
+from .survey import SurveyError, survey
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="h5reclaim")
     commands = parser.add_subparsers(dest="command", required=True)
+    survey_cmd = commands.add_parser("survey", help="inventory local datasets without reading values")
+    survey_cmd.add_argument("source", type=Path)
     inspect_cmd = commands.add_parser("inspect", help="inspect the supported dataset and B-tree")
     inspect_cmd.add_argument("source", type=Path)
     inspect_cmd.add_argument("--dataset", required=True)
@@ -24,6 +27,20 @@ def main(argv: list[str] | None = None) -> int:
     recover_cmd.add_argument("--output", required=True, type=Path)
     recover_cmd.add_argument("--report", required=True, type=Path)
     args = parser.parse_args(argv)
+
+    if args.command == "survey":
+        try:
+            report = survey(args.source)
+            print(json.dumps(report, indent=2, sort_keys=True))
+            return 0 if report["outcome"] == "complete" else 1
+        except (SurveyError, OSError, ValueError, RuntimeError, KeyError, TypeError) as exc:
+            print(json.dumps({
+                "schema_version": 1,
+                "outcome": "error",
+                "source": {"path": str(args.source)},
+                "error": {"code": "survey_failed", "detail": str(exc)[:300]},
+            }, sort_keys=True))
+            return 2
 
     try:
         if args.command == "inspect":
@@ -43,7 +60,10 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(f"output: {args.output}\nreport: {args.report}")
         return 0
-    except (FormatError, UnsupportedCase, RecoveryError, OSError, ValueError) as exc:
+    except (
+        FormatError, UnsupportedCase, RecoveryError, OSError, ValueError,
+        RuntimeError, KeyError, TypeError,
+    ) as exc:
         print(f"h5reclaim: {exc}", file=sys.stderr)
         return 2
 
