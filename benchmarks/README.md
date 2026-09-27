@@ -1,5 +1,16 @@
 # Recovery benchmarks
 
+## Operator-declared incidents
+
+The two-stage [incident intake and independent scoring protocol](INCIDENT_INTAKE.md)
+accepts permissioned, hash-pinned damaged files without injecting faults. The
+recovery subprocess sees no healthy reference or historical hashes. A separate
+post-run evaluator can score a matching archived file or a bounded set of
+prior per-element hashes. Cases without truth remain unscorable, and cases
+that share an incident are counted as one distinct incident. No naturally
+damaged file with independently verified prior measurements is bundled, so
+this route supplies evaluation infrastructure, not a field success rate.
+
 ## Version 0.10 focused checks
 
 The selected chunk-dimension metadata trial tests a one-byte damaged object
