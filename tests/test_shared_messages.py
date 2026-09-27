@@ -243,6 +243,13 @@ class SharedMessageTests(unittest.TestCase):
                 nodes = [item for item in record.metadata_ranges
                          if item[2] == "SOHM B-tree node"]
                 self.assertGreaterEqual(len(nodes), 2 if internal else 1)
+                if internal:
+                    # This dataset's heap ID is stored in the BTIN root
+                    # record, rather than in either child leaf.
+                    separator = read_dataset_spec_fallback(self.path, "/shape_21_1")
+                    self.assertEqual(separator.spec.shape, (21,))
+                    self.assertTrue(any("sohm_btree" in item
+                                        for item in separator.resolved_shared_messages))
                 self.assertEqual(self.path.read_bytes(), source)
 
     def test_sohm_internal_repeated_child_with_new_checksum_refuses(self):
