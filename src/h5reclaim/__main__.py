@@ -317,7 +317,9 @@ def main(argv: list[str] | None = None) -> int:
     choices.add_argument("--replicas", type=Path, help="pinned replica manifest and prospective baseline")
     choices.add_argument("--parity", type=Path, help="pinned baseline plus prospective parity sidecar manifest")
     choices.add_argument("--element-baseline", type=Path, help="prior compact/contiguous element-hash ZIP")
+    choices.add_argument("--chunk-baseline", type=Path, help="prior coordinate chunk-hash JSON for integrity-gated export")
     rescue_cmd.add_argument("--element-baseline-sha256", help="independently retained SHA-256 of the element baseline ZIP")
+    rescue_cmd.add_argument("--chunk-baseline-sha256", help="independently retained SHA-256 of the chunk baseline JSON")
     choices.add_argument("--status-trial", action="store_true",
                          help="trial a validated v3 write flag on a disposable copy before native-readable export")
     args = parser.parse_args(argv)
@@ -367,6 +369,12 @@ def main(argv: list[str] | None = None) -> int:
             source = str(args.source.absolute())
             if (args.element_baseline is None) != (args.element_baseline_sha256 is None):
                 raise RecoveryError("--element-baseline and --element-baseline-sha256 must be supplied together")
+            if (args.chunk_baseline is None) != (args.chunk_baseline_sha256 is None):
+                raise RecoveryError("--chunk-baseline and --chunk-baseline-sha256 must be supplied together")
+            if args.element_baseline_sha256 is not None and args.element_baseline is None:
+                raise RecoveryError("an element baseline digest cannot be supplied with another route")
+            if args.chunk_baseline_sha256 is not None and args.chunk_baseline is None:
+                raise RecoveryError("a chunk baseline digest cannot be supplied with another route")
             if args.replicas is not None:
                 report = run_route("replicas", args.output, args.report, source=source,
                                    dataset=args.dataset, manifest=str(args.replicas.absolute()))
@@ -378,6 +386,11 @@ def main(argv: list[str] | None = None) -> int:
                                    source=source, dataset=args.dataset,
                                    baseline=str(args.element_baseline.absolute()),
                                    baseline_sha256=args.element_baseline_sha256)
+            elif args.chunk_baseline is not None:
+                report = run_route("chunk_baseline", args.output, args.report,
+                                   source=source, dataset=args.dataset,
+                                   baseline=str(args.chunk_baseline.absolute()),
+                                   baseline_sha256=args.chunk_baseline_sha256)
             elif args.status_trial:
                 report = run_route("status", args.output, args.report, source=source,
                                    dataset=args.dataset)

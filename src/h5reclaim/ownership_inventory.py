@@ -43,6 +43,7 @@ class OwnershipInventory:
     links_seen: int
     complete: bool
     incomplete_reasons: tuple[str, ...]
+    link_targets_checked: int = 0
 
     def report(self) -> dict[str, object]:
         return {
@@ -51,6 +52,7 @@ class OwnershipInventory:
             "objects_seen": self.objects_seen,
             "sibling_datasets_seen": self.sibling_datasets_seen,
             "links_seen": self.links_seen,
+            "rooted_hard_link_targets_checked": self.link_targets_checked,
             "sibling_allocations_checked": len(self.allocations),
             "incomplete_reasons": list(self.incomplete_reasons),
             "scope": (
@@ -89,6 +91,8 @@ def inventory_other_allocations(
     seen: set[int] = set()
     objects = siblings = links = 0
     problems: list[str] = []
+    rooted_link_counts: dict[int, int] = {}
+    contradiction: str | None = None
 
     def incomplete(reason: str) -> None:
         if len(problems) < MAX_REASONS:
@@ -177,15 +181,31 @@ def inventory_other_allocations(
                             incomplete("rooted local path exceeds inventory length limit")
                             continue
                         child = item[name]
+                        child_info = h5py.h5o.get_info(child.id)
+                        child_address = int(child_info.addr)
+                        observed_links = rooted_link_counts.get(child_address, 0) + 1
+                        rooted_link_counts[child_address] = observed_links
+                        declared_links = int(child_info.rc)
+                        if declared_links < observed_links:
+                            contradiction = (
+                                f"rooted local hard links to {child_path[:128]} exceed "
+                                "its object-header link count"
+                            )
+                            break
                         pending.append((child_path, child))
-                    if links > max_links:
+                    if links > max_links or contradiction:
                         break
-                except (OSError, RuntimeError, ValueError, KeyError) as exc:
+                except (OSError, RuntimeError, ValueError, KeyError, AttributeError) as exc:
                     incomplete(f"cannot enumerate group {path[:128]}: {type(exc).__name__}")
+                if contradiction:
+                    break
     except (OSError, RuntimeError, ValueError, KeyError) as exc:
         incomplete(f"native file or root could not be opened: {type(exc).__name__}")
+    if contradiction:
+        raise FormatError(contradiction)
     return OwnershipInventory(tuple(sorted(ranges, key=lambda a: (a.start, a.end))),
-                              objects, siblings, links, not problems, tuple(problems))
+                              objects, siblings, links, not problems, tuple(problems),
+                              len(rooted_link_counts))
 
 
 def reject_sibling_overlap(
