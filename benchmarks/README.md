@@ -15,6 +15,13 @@ to reproduce the challenge values. The fixture creator first validates a
 healthy round trip; the benchmark then replaces payloads with challenge values
 known only to evaluation and checks the round trip again.
 
+The recovery subprocess is not passed the pristine path, mutation manifest,
+challenge seed, or expected chunk offsets. The `truth/`, `inputs/`, and
+`results/` directories nevertheless share a parent and are accessible to a
+program running with the same filesystem permissions. This is separation of
+program inputs and responsibilities, not an adversarial filesystem isolation
+boundary. The current recovery code does not read the truth directory.
+
 The evaluator compares each chunk marked `recovered` with the pristine values
 at the **same coordinate**. A mismatch that uniquely matches a different
 reference coordinate counts as wrong placement; other mismatches count as
@@ -29,5 +36,7 @@ read was impaired, or the recovery has no demonstrated gain. The end-to-end
 test additionally requires full exact recovery for this narrow fixture.
 
 The evaluator never imports the recovery package. It invokes its public CLI
-with a damaged path and dataset path, omitting the pristine path, mutation
-manifest, challenge seed, and generator settings.
+with a damaged path and dataset path. For evaluation against a different
+implementation that might inspect neighboring files, give that process access
+only to a separate copy of the damaged input, then score its results from the
+evaluator's private reference.
