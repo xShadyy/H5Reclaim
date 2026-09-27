@@ -204,14 +204,15 @@ class VDSExportTests(unittest.TestCase):
                 export_vds(vds, "/observations", root / "out.h5", root / "report.json",
                            _manifest(("source.h5", source)))
             self.assertFalse((root / "out.h5").exists())
-            # A source which itself depends on another file cannot be silently
-            # converted into a current native fill value.
+            # An unsupplied transitive dependency must stay unknown even when
+            # HDF5 would return the nested virtual dataset's fill value.
             nested = root / "nested.h5"
             _vds(nested, [("source.h5", "/data", (slice(None),), (slice(None),))], (4,))
             _vds(vds, [("nested.h5", "/observations", (slice(None),), (slice(None),))], (4,))
-            with self.assertRaisesRegex(UnsupportedCase, "transitive"):
-                export_vds(vds, "/observations", root / "out.h5", root / "report.json",
-                           _manifest(("nested.h5", nested)))
+            result = export_vds(vds, "/observations", root / "out.h5", root / "report.json",
+                                _manifest(("nested.h5", nested)))
+            self.assertEqual(result["accepted_elements"], 0)
+            self.assertEqual(result["mappings"][0]["nested_mappings"][0]["status"], "not_supplied")
 
 
 if __name__ == "__main__":

@@ -190,6 +190,9 @@ def export_vds(source: str | Path, dataset_path: str, output: str | Path,
                 if not 1 <= count <= MAX_MAPPINGS:
                     raise UnsupportedCase("VDS mapping count exceeds the supported range")
                 mappings = [_raw_mapping(creation, i, shape) for i in range(count)]
+                mapped_points = sum(len(mapping["virtual"]) for mapping in mappings)
+                if mapped_points > MAX_ELEMENTS * 4:
+                    raise UnsupportedCase("aggregate VDS selection exceeds the bounded point budget")
                 occupied: set[tuple[int, ...]] = set()
                 for mapping in mappings:
                     coords = set(mapping["virtual"])
@@ -197,14 +200,17 @@ def export_vds(source: str | Path, dataset_path: str, output: str | Path,
                         raise UnsupportedCase("overlapping VDS mappings have ambiguous precedence")
                     occupied.update(coords)
 
+                # Snapshot every explicitly pinned manifest entry so a nested
+                # VDS can only reach another independently supplied file.
+                # Declared HDF5 names are never interpreted as filesystem paths.
                 related: dict[str, dict[str, Any]] = {}
                 related_total = 0
-                for name in sorted({mapping["declared_name"] for mapping in mappings}):
-                    if name not in entries:
-                        related[name] = {"status": "not_supplied"}
-                        continue
+                for name in sorted(entries):
                     entry = entries[name]
                     path = Path(entry["path"])
+                    if path.resolve(strict=False) in (source.resolve(strict=True),
+                            output.resolve(strict=False), report_path.resolve(strict=False)):
+                        raise UnsupportedCase("related file aliases the source or a publication destination")
                     if not path.is_file():
                         related[name] = {"status": "file_unavailable", "path": str(path)}
                         continue
@@ -222,11 +228,14 @@ def export_vds(source: str | Path, dataset_path: str, output: str | Path,
                         related[name] = {"status": "hash_matched", "path": str(path),
                                          "sha256": observed, "identity": related_identity,
                                          "snapshot": snapshot, "size": copied_size}
+                for mapping in mappings:
+                    related.setdefault(mapping["declared_name"], {"status": "not_supplied"})
 
                 values = np.zeros(shape, dtype=dtype)
                 validity = np.zeros(shape, dtype="u1")
                 evidence: list[dict[str, Any]] = []
                 snapshots: dict[str, h5py.File] = {}
+                nested_budget = {"mappings": count, "points": mapped_points}
                 for mapping in mappings:
                     name = mapping["declared_name"]
                     item = related[name]
@@ -245,8 +254,8 @@ def export_vds(source: str | Path, dataset_path: str, output: str | Path,
                         snapshots[name] = stack.enter_context(h5py.File(item["snapshot"], "r"))
                     try:
                         data = _selected_dataset(snapshots[name], mapping["object_path"])
-                        if data.is_virtual or data.id.get_create_plist().get_external_count():
-                            raise UnsupportedCase("transitive source dependency is unsupported")
+                        if data.id.get_create_plist().get_external_count():
+                            raise UnsupportedCase("transitive external raw storage is unsupported")
                         if not data.id.get_type().equal(selected.id.get_type()):
                             raise UnsupportedCase("VDS source datatype differs from the virtual dataset")
                         actual_shape = tuple(int(length) for length in data.shape)
@@ -261,6 +270,23 @@ def export_vds(source: str | Path, dataset_path: str, output: str | Path,
                         if any(any(point[axis] >= extent for axis, extent in enumerate(actual_shape))
                                for point in source_coords):
                             raise UnsupportedCase("source selection exceeds the pinned dataset's current extent")
+                        if data.is_virtual:
+                            from .vds_nested import resolve_nested
+                            nested_values, nested_evidence = resolve_nested(
+                                data, source_coords, related, snapshots, stack,
+                                selected.id.get_type(), nested_budget)
+                            record["nested_mappings"] = nested_evidence
+                            record["source_sha256"] = item["sha256"]
+                            record["source_object_header_address"] = int(h5py.h5o.get_info(data.id).addr)
+                            record["storage_layout"] = "virtual"
+                            for virtual_coord, source_coord in zip(mapping["virtual"], source_coords):
+                                if source_coord in nested_values:
+                                    values[virtual_coord] = nested_values[source_coord]
+                                    validity[virtual_coord] = 1
+                                    record["accepted_elements"] += 1
+                            record["status"] = ("accepted" if record["accepted_elements"] ==
+                                                record["mapped_elements"] else "partial")
+                            continue
                         storage = _check_storage(data, item["size"])
                         record["ownership_inventory"] = _check_competing_owners(
                             item["snapshot"], data, storage)
