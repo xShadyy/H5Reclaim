@@ -27,6 +27,35 @@ Without additional files, `rescue` first attempts rooted chunked structural reco
 
 The compact/contiguous structural route can retain fully present elements at their justified offsets after physical tail truncation, and leaves incomplete elements unknown. It currently supports a rooted local numeric dataset of rank zero through four, canonical fixed-width integers or IEEE floats, and selected layout messages v3–v5. It does not restore missing bytes or claim historical authenticity for unchecksummed values. The readable fallback preserves bounded fixed-size local schema when native HDF5 can already read it; its report says `readable_export`.
 
+Every guided rescue reports `current_value_evidence` separately from
+`historical_integrity`. `/_h5reclaim/historical_status` uses 1 only when a
+selected route compared an accepted unit with a separately supplied,
+SHA-256-pinned prior capture; 0 means unknown historical equality. A present
+unchecksummed value can be currently readable while its historical status is
+0. Add `--strict-history` to refuse publication unless a prior chunk or
+element baseline, capsule, pinned replica, or parity route performs that
+comparison. Use the matching route option with its retained hash or manifest:
+
+```powershell
+$priorChunkSha = '<paste the digest retained before damage>'
+python -m h5reclaim rescue damaged.h5 --dataset /experiment/readings --chunk-baseline baseline.json --chunk-baseline-sha256 $priorChunkSha --strict-history --output verified.h5 --report evidence.json
+```
+
+An intact current checksum, plausible index, or operator hint is insufficient.
+Equality to a prior capture does not authenticate its date, provenance, or
+scientific correctness. Unknown output positions must still be ignored.
+
+The `scientific_context` report section inventories bounded attribute and
+unit names, small fixed unit strings, dimension-scale markers, and ancestor
+group attributes and link kinds when the selected source is openable and
+matches its rescue hash. It lists context absent from the selected derived
+output, including scale targets, siblings, aliases, and links. A damaged
+root, unreadable source, multi-file driver bundle, or source over 4 GiB is
+reported as `uninspected`; that status does not block value recovery. Native
+inspection has a 90-second, 1 GiB worker bound and does not follow soft or
+external links or dereference scale targets. Use `--no-context-audit` to skip
+this observation. The separate and embedded reports agree at publication.
+
 ### Salvage complete chunks before a physical tail cut
 
 When a chunked file was physically shortened, select the tail route explicitly:
@@ -101,7 +130,7 @@ For external raw storage or a virtual dataset, use the exact-name, pinned relate
 python -m h5reclaim rescue damaged.h5 --dataset /experiment/readings --related-files related.json --output rescued.h5 --report evidence.json
 ```
 
-The external raw route maps complete elements through ordered, explicitly supplied raw segments; missing bytes and the portion past physical EOF are unknown. The VDS route maps finite ALL/regular selections from pinned, local, native-readable numeric source datasets and marks missing or unallocated sources unknown instead of accepting virtual fill. It refuses overlapping mappings, dynamic source names, transitive dependencies, and unsupported selections. One selected **external link** can also name a pinned HDF5 target. The route traverses only local hard links inside that target, validates its selected native-readable dataset and materializes the values locally. It does not follow target-side soft/external links, recursive or transitive dependencies. Its evidence ranges refer to the target file, not the referring HDF5 container. These routes produce local selected datasets rather than preserving external or virtual storage configuration. Native HDF5 operations in guided rescue run in a deadline-bound child with plugin loading disabled. See [dependency bundles](dependency-bundles.md).
+The external raw route maps complete elements through ordered, explicitly supplied raw segments; missing bytes and the portion past physical EOF are unknown. The VDS route maps finite ALL/regular selections from pinned local numeric sources and marks missing or unallocated sources unknown instead of accepting virtual fill. One explicitly pinned nested VDS hop is supported, with both coordinate maps, leaf allocation and physical ownership checked. Overlapping mappings, dynamic names, a third VDS layer, and transitive external raw storage refuse. One selected **external link** can also name a pinned HDF5 target. The route traverses only local hard links inside that target, validates its selected native-readable dataset and materializes the values locally. It does not follow target-side soft/external links, recursive or transitive dependencies. Its evidence ranges refer to the target file, not the referring HDF5 container. These routes produce local selected datasets rather than preserving external or virtual storage configuration. Native HDF5 operations in guided rescue run in a deadline-bound child with plugin loading disabled. See [dependency bundles](dependency-bundles.md).
 
 ### Use an independently captured baseline and replicas
 
@@ -187,6 +216,43 @@ python -m h5reclaim rescue damaged.h5 --dataset /experiment/readings --parity pa
 Two damaged chunks in the same stripe remain unknown. Parity also needs surviving selected metadata and coordinate ownership; it cannot repair arbitrary index loss. The capture, baseline, and sidecar must be independently trustworthy.
 
 ### Capture the selected schema and physical map before damage
+
+For an intact supported dataset, the `protect` command captures a capsule,
+complete numeric chunk baseline, and two GF(256) parity shards per stripe in
+one atomically published ZIP. A complete nominal numeric chunk grid is
+required for the default parity option. Use `--capsule-only` for supported
+sparse or fixed-record chunked data without parity:
+
+```powershell
+python -m h5reclaim protect healthy.h5 --dataset /experiment/readings --output protection.zip
+# Record the printed manifest SHA-256 outside the ZIP and acquisition storage.
+$priorManifestSha = '<paste the printed digest retained before damage>'
+python -m h5reclaim verify-protection protection.zip --manifest-sha256 $priorManifestSha --source healthy.h5
+python -m h5reclaim drill-protection protection.zip healthy.h5 --manifest-sha256 $priorManifestSha
+```
+
+The disposable drill damages a copy's HDF5 root signature and checks exact
+capsule restoration against the still-intact acquisition. When parity is
+included it also damages up to two chunks in a separate copy and checks
+their exact reconstruction. No source or protection ZIP is changed. The
+`--source` comparison on `verify-protection` and the drill apply before an
+incident; after damage, verify the ZIP without `--source`, then recover
+directly from its pinned components:
+
+```powershell
+python -m h5reclaim rescue damaged.h5 --dataset /experiment/readings --protection-bundle protection.zip --protection-manifest-sha256 $priorManifestSha --strict-history --output restored.h5 --report restored.json
+# For damaged chunks in an otherwise surviving rooted index, choose parity:
+python -m h5reclaim rescue damaged.h5 --dataset /experiment/readings --protection-bundle protection.zip --protection-manifest-sha256 $priorManifestSha --protection-method erasure --strict-history --output parity-restored.h5 --report parity-restored.json
+```
+
+The capsule method uses captured physical offsets even if root metadata is
+lost. The erasure method needs surviving selected metadata and sufficient
+shards per stripe. Both reject a mismatched bundle pin and record durable
+bundle member hashes in the external and embedded reports. This capture is a
+command for an acquisition pipeline to schedule, not an unattended watcher.
+Store the ZIP and separately recorded manifest digest in independent failure
+domains before damage. The bundle has a local timestamp, but cannot prove
+when it was made or that the captured measurements were correct.
 
 For a complete, locally stored chunked dataset that is still intact, an
 independent capsule records exact schema, allocated chunk offsets, stored
@@ -375,7 +441,7 @@ For an external raw segment, virtual source, or external link, diagnosis reports
 python -m h5reclaim diagnose damaged.h5 --dataset /measurements --related-files related.json
 ```
 
-The **diagnosis validator** matches declared names exactly, hashes supplied files, checks fixed external byte ranges, and can inspect local target-object metadata. Diagnosis does not read values. The separate `rescue --related-files` route can export bounded, justified external raw or finite VDS values, including partial external byte ranges. It never infers paths, follows transitive dependencies, or treats a missing source's fill as a measurement. A matching hash pins supplied current bytes, not historical correctness. See [dependency bundles](dependency-bundles.md).
+The **diagnosis validator** matches declared names exactly, hashes supplied files, checks fixed external byte ranges, and can inspect local target-object metadata. Diagnosis does not read values. The separate `rescue --related-files` route can export bounded, justified external raw or finite VDS values, including partial external byte ranges. It never infers paths, follows beyond one pinned nested VDS hop, or treats a missing source's fill as a measurement. A matching hash pins supplied current bytes, not historical correctness. See [dependency bundles](dependency-bundles.md).
 
 ### Optional scientist hints
 
@@ -449,7 +515,7 @@ quotas. Nested reference or variable-length/heap-backed members are refused.
 The broad native-readable route above and the structural route provide
 different evidence; check the report `mode` and per-region integrity.
 
-Logical data is limited to 512 MiB in 1 MiB blocks, with 2 MiB stored chunks and at most 8,192 grid entries. Supported compiled-in filters include DEFLATE, shuffle, Fletcher32, NBIT, SCALEOFFSET and SZIP when the linked HDF5 library provides both SZIP directions. SCALEOFFSET can be lossy at acquisition. Bounded top-level object and region references to the selected dataset are remapped and checked by logical target and selection. Outside or dangling references, nested reference graphs, variable-length heap values, plugin filters, and arbitrary bit representations are refused. External/VDS values use the separate pinned-bundle routes above. Native reads run in a child process with a 900-second deadline and disabled dynamic filter plugin loading. POSIX applies a 3 GiB address-space cap and disables core dumps; Windows has the deadline but no enforced worker memory cap. This is process isolation for crashes and resource bounds, not a security sandbox for hostile native code. This route cannot repair an inaccessible index or verify values before damage.
+Logical data is limited to 512 MiB in 1 MiB blocks, with 2 MiB stored chunks and at most 8,192 grid entries. Supported compiled-in filters include DEFLATE, shuffle, Fletcher32, NBIT, SCALEOFFSET and SZIP when the linked HDF5 library provides both SZIP directions. SCALEOFFSET can be lossy at acquisition. Bounded top-level object and region references to the selected dataset are remapped and checked by logical target and selection. Outside or dangling references, nested reference graphs, variable-length heap values, plugin filters, and arbitrary bit representations are refused. External/VDS values use the separate pinned-bundle routes above. Native reads run in a child process with a 900-second deadline and disabled dynamic filter plugin loading. POSIX applies a 3 GiB address-space cap and disables core dumps; Windows assigns a 3 GiB memory-limited Job Object before resuming the worker and kills its process tree on timeout. Windows tests are configured in CI but were not run in this Linux verification. This is process isolation for crashes and resource bounds, not a security sandbox for hostile native code. This route cannot repair an inaccessible index or verify values before damage.
 
 For a larger, **currently native-readable** one-dimensional primitive numeric
 dataset, use the separate streaming route:
