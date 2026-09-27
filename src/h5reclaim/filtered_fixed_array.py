@@ -21,10 +21,10 @@ from .modern_indexes import (
     MAX_CHUNK_BYTES, MAX_CHUNKS, MAX_READ_BYTES, ModernChunk, ModernH5File,
     ModernIndex, lookup3,
 )
+from .modern_link_repair import candidate_addresses
 
 
 MAX_REPAIR_SCAN_BYTES = 512 << 20
-REPAIR_SCAN_BLOCK = 4 << 20
 
 
 def _uint(raw: bytes) -> int:
@@ -45,7 +45,7 @@ def _reconstruct_data_block_pointer(
     therefore cannot be repaired by this route.
     """
     sb = reader.superblock
-    if reader.size > MAX_REPAIR_SCAN_BYTES:
+    if reader.size > MAX_REPAIR_SCAN_BYTES and not getattr(reader, "large_sparse_scan", False):
         raise UnsupportedFormat("fixed-array pointer reconstruction scan exceeds 512 MiB limit")
     offsize = sb.offset_size
     page_capacity = 1 << layout_page_bits
@@ -58,31 +58,22 @@ def _reconstruct_data_block_pointer(
         raise UnsupportedFormat("fixed-array data block exceeds bounded read limit")
     wanted_checksum = _uint(header[-4:])
     matches: list[int] = []
-    previous = b""
-    for start in range(0, min(reader.size, sb.eof_address), REPAIR_SCAN_BLOCK):
-        data = reader._read_absolute(start, min(REPAIR_SCAN_BLOCK, sb.eof_address - start))
-        window = previous + data
-        base = start - len(previous)
-        at = window.find(b"FADB")
-        while at >= 0:
-            absolute = base + at
-            candidate = absolute - sb.base_address
-            if (0 <= candidate < 1 << (8 * offsize)
-                    and absolute + block_size <= sb.eof_address
-                    and not any(absolute < end and begin < absolute + block_size
-                                for begin, end, _kind in reader.metadata_ranges)):
-                repaired = bytearray(header)
-                repaired[pointer:pointer+offsize] = candidate.to_bytes(offsize, "little")
-                if lookup3(repaired[:-4]) == wanted_checksum:
-                    raw = reader._read_absolute(absolute, prefix_size if paged else block_size)
-                    if (raw[:4] == b"FADB" and raw[4] == 0 and raw[5] == int(filtered)
-                            and _uint(raw[6:6+offsize]) == root
-                            and lookup3(raw[:-4]) == _uint(raw[-4:])):
-                        matches.append(candidate)
-                        if len(matches) > 1:
-                            raise FormatError("fixed-array pointer reconstruction is ambiguous")
-            at = window.find(b"FADB", at + 1)
-        previous = window[-3:]
+    for candidate in candidate_addresses(reader, b"FADB"):
+        absolute = sb.base_address + candidate
+        if (0 <= candidate < 1 << (8 * offsize)
+                and absolute + block_size <= sb.eof_address
+                and not any(absolute < end and begin < absolute + block_size
+                            for begin, end, _kind in reader.metadata_ranges)):
+            repaired = bytearray(header)
+            repaired[pointer:pointer+offsize] = candidate.to_bytes(offsize, "little")
+            if lookup3(repaired[:-4]) == wanted_checksum:
+                raw = reader._read_absolute(absolute, prefix_size if paged else block_size)
+                if (raw[:4] == b"FADB" and raw[4] == 0 and raw[5] == int(filtered)
+                        and _uint(raw[6:6+offsize]) == root
+                        and lookup3(raw[:-4]) == _uint(raw[-4:])):
+                    matches.append(candidate)
+                    if len(matches) > 1:
+                        raise FormatError("fixed-array pointer reconstruction is ambiguous")
     if not matches:
         raise FormatError("fixed-array header checksum mismatch; no uniquely verified data-block pointer")
     return matches[0]
@@ -120,7 +111,7 @@ def read_fixed_array_variants(
     filters, shape, chunks = tuple(filters), tuple(shape), tuple(chunks)
     if layout_version not in (4, 5) or not 1 <= len(chunks) <= 4:
         raise UnsupportedFormat("fixed array requires a version-4/5 layout of rank one through four")
-    if (not isinstance(count, int) or count < 1 or count > min(MAX_CHUNKS, max_chunks)
+    if (not isinstance(count, int) or count < 1 or count > min(reader.max_chunks, max_chunks)
             or count != len(coordinates)):
         raise UnsupportedFormat("fixed-array chunk capacity exceeds parser limit or coordinate grid")
     if (not isinstance(chunk_bytes, int) or chunk_bytes != prod(chunks) * element_size

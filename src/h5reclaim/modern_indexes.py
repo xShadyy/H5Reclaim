@@ -117,8 +117,15 @@ class ModernIndex:
 class ModernH5File:
     """A read-only, file-size and declared-EOF bounded modern-format reader."""
 
-    def __init__(self, path: str | Path):
+    def __init__(self, path: str | Path, *, large_sparse_scan: bool = False,
+                 max_chunks: int = MAX_CHUNKS):
+        if not 1 <= max_chunks <= 65536:
+            raise ValueError("modern parser chunk bound must be in 1..65536")
+        if max_chunks > MAX_CHUNKS and not large_sparse_scan:
+            raise ValueError("increased modern parser chunk bound requires explicit large mode")
         self.path = Path(path)
+        self.large_sparse_scan = large_sparse_scan
+        self.max_chunks = max_chunks
         self._file: BinaryIO = self.path.open("rb")
         try:
             self.size = self._file.seek(0, 2)
@@ -305,7 +312,7 @@ class ModernH5File:
             raise FormatError("maximum shape contradicts current dataset dimensions")
         grid = tuple((length + chunk - 1) // chunk for length, chunk in zip(shape, chunks))
         count = prod(grid)
-        if max_chunks < 1 or max_chunks > MAX_CHUNKS or count > max_chunks:
+        if max_chunks < 1 or max_chunks > self.max_chunks or count > max_chunks:
             raise UnsupportedFormat("modern index chunk count exceeds limit")
         chunk_bytes = prod(chunks) * element_size
         if chunk_bytes > MAX_CHUNK_BYTES:
