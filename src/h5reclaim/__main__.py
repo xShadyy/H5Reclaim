@@ -128,16 +128,23 @@ def _render_inspect(summary: dict) -> str:
     filter_names = {3: "Fletcher32", 1: "DEFLATE"}
     filters = ", ".join(filter_names.get(item, f"filter {item}")
                         for item in dataset["filters"]) or "none"
+    if index.get("root_level") is None:
+        index_text = (
+            f"Index: {index['type']} | layout version {index.get('layout_version', 'unknown')} | "
+            "intact anchored structure"
+        )
+    else:
+        index_text = (
+            f"Index: {index['type']} | root level {index['root_level']} | "
+            f"{index['reachable_leaves']} reachable leaves | {index['broken_links']} broken links"
+        )
     lines = [
         "H5Reclaim inspection",
         f"Source: {_display_path(summary['source']['path'], 240)}",
         f"Dataset: {_display_path(dataset['path'])}",
         f"Shape: {_dimensions(dataset['shape'])} | dtype {dataset['dtype']} | "
         f"chunks {_dimensions(dataset['chunks'])} | filters {filters}",
-        (f"Index: {index['type']} | " + (
-            f"root level {index['root_level']} | " if index.get('root_level') is not None else ""
-        ) + f"{index.get('reachable_leaves', 0)} reachable leaves | "
-            f"{index['broken_links']} broken links"),
+        index_text,
         f"Result: {summary['outcome']} | {counts['recovered']}/{total} chunks accepted "
         f"({summary['reconstructed_chunks']} via reconstructed link)",
     ]
@@ -248,7 +255,7 @@ def main(argv: list[str] | None = None) -> int:
     survey_cmd = commands.add_parser("survey", help="inventory local datasets without reading values")
     survey_cmd.add_argument("source", type=Path)
     survey_cmd.add_argument("--json", action="store_true", help="print the complete machine-readable report")
-    inspect_cmd = commands.add_parser("inspect", help="inspect the supported dataset and B-tree")
+    inspect_cmd = commands.add_parser("inspect", help="inspect a supported dataset and chunk index")
     inspect_cmd.add_argument("source", type=Path)
     inspect_cmd.add_argument("--dataset", required=True)
     inspect_cmd.add_argument("--hints", type=Path, help="optional operator claims checked against observed metadata")
@@ -260,7 +267,7 @@ def main(argv: list[str] | None = None) -> int:
     recover_cmd.add_argument("--output", required=True, type=Path)
     recover_cmd.add_argument("--report", required=True, type=Path)
     export_cmd = commands.add_parser(
-        "export-readable", help="copy a fully native-readable numeric dataset without claiming structural repair"
+        "export-readable", help="copy bounded currently readable local values with explicit sparse validity"
     )
     export_cmd.add_argument("source", type=Path)
     export_cmd.add_argument("--dataset", help="selected dataset path (or provide it in --hints)")
