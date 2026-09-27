@@ -96,7 +96,13 @@ def _child(request_path: Path, response_path: Path) -> int:
                                   published_output=request["published_output"])
         elif route == "structural":
             from .recovery import recover
-            recover(Path(args["source"]), args["dataset"], Path(output), Path(report))
+            if args.get("hints"):
+                from .hints import load_hints
+                observed_hints = load_hints(Path(args["hints"]))
+            else:
+                observed_hints = None
+            recover(Path(args["source"]), args["dataset"], Path(output), Path(report),
+                    hints=observed_hints)
         else:
             from .parity_sidecar import restore_from_parity
             restore_from_parity(args["source"], args["dataset"], args["manifest"], output, report)

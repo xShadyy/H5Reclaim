@@ -677,7 +677,11 @@ def main(argv: list[str] | None = None) -> int:
                 summary["operator_hints"] = _hint_report(hints, comparisons)
             print(json.dumps(summary, indent=2, sort_keys=True) if args.json else _render_inspect(summary))
         elif args.command == "recover":
-            report = recover(args.source, args.dataset, args.output, args.report, hints=hints)
+            report = run_route(
+                "structural", args.output, args.report,
+                source=str(args.source.absolute()), dataset=args.dataset,
+                hints=str(args.hints.absolute()) if args.hints else "",
+            )
             counts = report["counts"]
             total = sum(counts.values())
             print(f"H5Reclaim recovery | {report['outcome']}")
