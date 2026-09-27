@@ -49,3 +49,24 @@ Some cases have a hard information limit: erased unique measurement bytes,
 all lost coordinate anchors, or a missing external source cannot be recreated
 from a lone damaged file. The correct output there is an unknown map, an
 unassigned fragment, or a refusal, even if native HDF5 returns a fill value.
+
+## Other failure causes reviewed
+
+| Cause or acquisition condition | Practical evidence to gather | Current boundary |
+| --- | --- | --- |
+| Torn or interrupted writes, SWMR writer crash, concurrent readers | Capture the writer state, file locking and SWMR mode, stable copies at different times, superblock flags, EOA and EOF | A clean status-trial open proves only current readability. Never treat a file still changing under the reader as a stable recovered acquisition. |
+| Lost file signature, altered user block, shifted container bytes | Known original wrapper or independently documented signature offset and full-file copies | A fabricated signature may make arbitrary bytes look parseable. Automatic guessing cannot authenticate the object graph. |
+| Metadata cache image, free-space manager, old object copies, repacking | Separate acquisition copy, write history, earlier container version, allocation map | Stale or freed objects cannot be assigned coordinates solely because their checksums or shapes look right. The status-only trial does not remove a cache image or rebuild free-space records. |
+| Filesystem bitrot, disk-sector overwrite, zeroed ranges, partial upload, remote transfer | Independent copy or chunk checksums made before failure, transfer log, storage-layer checksums | HDF5 metadata checksums and filters catch some changes, but an unchecksummed value may remain readable and historically wrong. |
+| Plugin filter absent, encrypted or proprietary filters, lossy transforms | Original decoder and configuration, valid encryption keys, declared filter pipeline and masks | A missing decoder is a dependency problem; a checksum cannot decode or restore the payload. A lossy transform can prevent bit-exact comparison to values before encoding. |
+| Multi, Subfiling, remote or application-specific file drivers | Driver configuration and every physical member with immutable hashes | The supported Family and Split manifests do not describe these mappings. Guessing member order or virtual addresses is unsafe. |
+| Soft and external links, VDS, external raw, missing referenced objects | Explicit dependency graph and pinned files, source selections and physical coverage | Current routes cover limited bounded mappings. A missing source can appear as fill; recursive or dynamic references require a separate proof. |
+| Application schema error, wrong units, stale calibration, in-place valid overwrite | Instrument logs, acquisition metadata, units, independent baseline or replicated measurement | A well-formed HDF5 file may contain wrong scientific values. Format repair cannot infer scientific truth. |
+
+This list groups mechanisms for testing; it does not enumerate every possible
+combination, plugin, datatype, file driver, or application error. The
+[HDF5 file-locking and SWMR notes](https://support.hdfgroup.org/documentation/hdf5/latest/_file_lock.html)
+describe live-writer status, and the
+[h5clear guide](https://support.hdfgroup.org/documentation/hdf5/latest/_h5_t_o_o_l__c_r__u_g.html)
+describes its distinct status, cache-image, and EOA operations. Each such
+operation needs its own copied-file trial and evidence rules.
