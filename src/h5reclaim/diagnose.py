@@ -57,14 +57,15 @@ def _signature(image: Path, size: int) -> dict[str, Any]:
     """Probe only HDF5's documented superblock locations, with tiny reads."""
     with image.open("rb") as handle:
         offset = 0
-        while offset + len(HDF5_SIGNATURE) + 1 <= size:
+        while offset + len(HDF5_SIGNATURE) <= size:
             handle.seek(offset)
             if handle.read(len(HDF5_SIGNATURE)) == HDF5_SIGNATURE:
+                version = handle.read(1)
                 return {
                     "present": True,
                     "byte_offset": offset,
                     # Observed byte, not a validated or supported version.
-                    "superblock_version_byte": int.from_bytes(handle.read(1), "little"),
+                    "superblock_version_byte": version[0] if version else None,
                 }
             offset = 512 if offset == 0 else offset * 2
     return {"present": False, "byte_offset": None, "superblock_version_byte": None}
@@ -100,7 +101,7 @@ def _choose_route(
         if selected["support"]["status"] == "candidate":
             return (
                 "inspect_anchored_index",
-                "Selected metadata fits the narrow anchored-index strategy. Inspect actual chunks before recovery; this is not a successful recovery claim.",
+                "Selected metadata fits a supported version-1 chunk index. Inspect actual chunks before export; this is not a successful recovery claim.",
                 selected,
             )
         if selected["support"]["status"] == "indeterminate":

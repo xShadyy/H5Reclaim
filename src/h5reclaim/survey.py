@@ -186,14 +186,21 @@ def _probe_index(source: Path, entries: list[dict[str, Any]]) -> None:
                         raise FormatError("raw chunk element size disagrees with HDF5 metadata")
                     root = reader.read_tree(layout.root_address, rank=rank,
                                             element_size=element_size)
-                    if root.level != 1:
-                        raise UnsupportedFormat("requires a level-one version-1 B-tree root")
+                    if root.level not in (0, 1):
+                        raise UnsupportedFormat("requires a level-zero or level-one version-1 B-tree root")
                     walk = reader.walk_tree(layout.root_address, max_nodes=MAX_NODES,
                                             rank=rank, element_size=element_size)
-                    if len(walk.broken_links) > 1:
-                        raise UnsupportedFormat("more than one broken child pointer")
-                    if any(gap.parent_address != root.address for gap in walk.broken_links):
-                        raise UnsupportedFormat("broken pointer below the root")
+                    if root.level == 0:
+                        if (
+                            len(walk.nodes) != 1 or walk.broken_links
+                            or root.left_sibling is not None or root.right_sibling is not None
+                        ):
+                            raise FormatError("level-zero root is not a complete leaf")
+                    else:
+                        if len(walk.broken_links) > 1:
+                            raise UnsupportedFormat("more than one broken child pointer")
+                        if any(gap.parent_address != root.address for gap in walk.broken_links):
+                            raise UnsupportedFormat("broken pointer below the root")
                     entry["index"] = {
                         "type": "v1_raw_data_btree",
                         "root_level": root.level,

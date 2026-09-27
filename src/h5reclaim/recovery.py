@@ -17,10 +17,11 @@ import h5py
 import numpy as np
 
 from .format import FormatError, H5File
+from .hints import DatasetHints, compare_hints, require_no_conflicts
 from .metadata import DatasetSpec, UnsupportedCase, read_dataset_spec
 
 
-VERSION = "0.3.3"
+VERSION = "0.4.0"
 _WINDOWS_STAT = os.name == "nt"
 STATUS_CODES = {
     "recovered": 1,
@@ -243,67 +244,78 @@ def _analyze_snapshot(
         if layout.chunk_shape != spec.chunks or layout.element_size != element_size:
             raise FormatError("raw layout disagrees with selected dataset metadata")
         root = reader.read_tree(layout.root_address, rank=rank, element_size=element_size)
-        if root.level != 1:
-            raise UnsupportedCase("this release requires a level-one v1 B-tree root")
+        if root.level not in (0, 1):
+            raise UnsupportedCase("this release requires a level-zero or level-one v1 B-tree root")
         walk = reader.walk_tree(
             layout.root_address, rank=rank, element_size=element_size, max_nodes=MAX_NODES
         )
-        if len(walk.broken_links) > 1:
-            raise UnsupportedCase("this release handles at most one broken child link")
-        for broken in walk.broken_links:
-            if broken.parent_address != root.address:
-                raise UnsupportedCase("only a broken root-to-leaf link is supported")
-
-        root_entries = {entry.address: i for i, entry in enumerate(root.entries) if entry.address is not None}
         leaves: dict[int, tuple[Any, str, dict[str, Any]]] = {}
-        for node in walk.nodes:
-            if node.address == root.address:
-                continue
-            if node.level != 0 or node.address not in root_entries:
-                raise FormatError("unexpected reachable B-tree node or level")
-            if node.address in leaves:
-                raise FormatError("duplicate reachable leaf")
-            leaves[node.address] = (
-                node,
-                "intact_tree",
-                {"parent_address": root.address, "parent_slot": root_entries[node.address]},
+        if root.level == 0:
+            # A level-zero root directly owns its chunk entries. A missing
+            # payload address has no neighboring parent link to reconstruct;
+            # read_tree rejects it instead of searching unowned disk bytes.
+            if (
+                len(walk.nodes) != 1 or walk.broken_links
+                or root.left_sibling is not None or root.right_sibling is not None
+            ):
+                raise FormatError("level-zero root is not a complete leaf")
+            leaves[root.address] = (
+                root, "intact_tree", {"root_address": root.address, "root_level": 0},
             )
+        else:
+            if len(walk.broken_links) > 1:
+                raise UnsupportedCase("this release handles at most one broken child link")
+            for broken in walk.broken_links:
+                if broken.parent_address != root.address:
+                    raise UnsupportedCase("only a broken root-to-leaf link is supported")
 
-        candidates = reader.find_missing_child_candidates(
-            layout.root_address, rank=rank, element_size=element_size
-        )
-        for broken in walk.broken_links:
-            matching = [
-                candidate
-                for candidate in candidates
-                if candidate.parent_address == broken.parent_address
-                and candidate.entry_index == broken.entry_index
-            ]
-            if len(matching) == 1:
-                candidate = matching[0]
-                node = candidate.node
+            root_entries = {
+                entry.address: i for i, entry in enumerate(root.entries)
+                if entry.address is not None
+            }
+            for node in walk.nodes:
+                if node.address == root.address:
+                    continue
+                if node.level != 0 or node.address not in root_entries:
+                    raise FormatError("unexpected reachable B-tree node or level")
                 if node.address in leaves:
-                    raise FormatError("candidate is already reachable from the root")
+                    raise FormatError("duplicate reachable leaf")
                 leaves[node.address] = (
-                    node,
-                    "reconstructed_link",
-                    {
-                        "parent_address": broken.parent_address,
-                        "parent_slot": broken.entry_index,
-                        "left_anchor": _anchor_address(candidate.left_anchor),
-                        "right_anchor": _anchor_address(candidate.right_anchor),
-                        "rule": "parent interval and reciprocal links through both reachable siblings",
-                    },
+                    node, "intact_tree",
+                    {"parent_address": root.address, "parent_slot": root_entries[node.address]},
                 )
-            else:
-                unresolved.append(
-                    {
+
+            candidates = reader.find_missing_child_candidates(
+                layout.root_address, rank=rank, element_size=element_size
+            )
+            for broken in walk.broken_links:
+                matching = [
+                    candidate for candidate in candidates
+                    if candidate.parent_address == broken.parent_address
+                    and candidate.entry_index == broken.entry_index
+                ]
+                if len(matching) == 1:
+                    candidate = matching[0]
+                    node = candidate.node
+                    if node.address in leaves:
+                        raise FormatError("candidate is already reachable from the root")
+                    leaves[node.address] = (
+                        node, "reconstructed_link",
+                        {
+                            "parent_address": broken.parent_address,
+                            "parent_slot": broken.entry_index,
+                            "left_anchor": _anchor_address(candidate.left_anchor),
+                            "right_anchor": _anchor_address(candidate.right_anchor),
+                            "rule": "parent interval and reciprocal links through both reachable siblings",
+                        },
+                    )
+                else:
+                    unresolved.append({
                         "parent_address": broken.parent_address,
                         "parent_slot": broken.entry_index,
                         "reason": "no unique two-sided anchored candidate",
                         "candidate_count": len(matching),
-                    }
-                )
+                    })
 
         coordinates: set[tuple[int, ...]] = set()
         ranges: list[tuple[int, int, tuple[int, ...]]] = []
@@ -417,7 +429,7 @@ def _analyze_snapshot(
         "index": {
             "type": "v1_raw_data_btree",
             "root_address": root_address,
-            "root_level": 1,
+            "root_level": root.level,
             "reachable_leaves": reachable_leaves,
             "broken_links": len(unresolved) + sum(
                 leaf[1] == "reconstructed_link" for leaf in leaves.values()
@@ -435,8 +447,16 @@ def _analyze_snapshot(
                 if spec.filters else
                 "one selected dataset; fixed rank-two little-endian uint32; no filters"
             ),
-            "v1 B-tree with level-one root; at most one broken root-to-leaf pointer",
-            "detached leaf requires reciprocal sibling links and parent key range",
+            (
+                "v1 B-tree with intact level-zero root; no missing payload pointers reconstructed"
+                if root.level == 0 else
+                "v1 B-tree with level-one root; at most one broken root-to-leaf pointer"
+            ),
+            (
+                "the selected object header owns the direct level-zero chunk index"
+                if root.level == 0 else
+                "detached leaf requires reciprocal sibling links and parent key range"
+            ),
         ],
         "integrity_note": (
             "Structural placement is supported by the stated links and keys. "
@@ -474,10 +494,29 @@ def _validate_paths(source: Path, output: Path, report: Path) -> None:
         raise RecoveryError("output and report paths must differ")
 
 
-def recover(source: Path, dataset_path: str, output: Path, report_path: Path) -> dict[str, Any]:
+def recover(
+    source: Path, dataset_path: str, output: Path, report_path: Path, *,
+    hints: DatasetHints | None = None,
+) -> dict[str, Any]:
     source, output, report_path = Path(source), Path(output), Path(report_path)
     _validate_paths(source, output, report_path)
     analysis = analyze(source, dataset_path)
+    if hints is not None:
+        comparisons = compare_hints(
+            hints, observed_dataset=analysis.spec,
+            input_sha256=analysis.report["source"]["sha256_before"],
+        )
+        require_no_conflicts(comparisons)
+        analysis.report["operator_hints"] = {
+            "trust_level": hints.trust_level,
+            "comparisons": [
+                {"field": item.field, "asserted": item.asserted,
+                 "observed": item.observed, "status": item.status}
+                for item in comparisons
+            ],
+            "note": hints.note,
+            "warning": "Matching hints do not prove the origin or historical value of measurements.",
+        }
     report_text = json.dumps(analysis.report, indent=2, sort_keys=True) + "\n"
     # Private temporary directories keep HDF5's pathname reopen away from
     # other users of a shared output directory. The context managers clean up

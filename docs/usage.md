@@ -1,6 +1,13 @@
 # Current usage and supported cases
 
-H5Reclaim is an experimental command-line tool for one structural HDF5 recovery case: a child pointer in a version-1 raw-data chunk B-tree is lost, while the dataset description, neighboring leaves, and their reciprocal sibling links survive. It exports chunks whose coordinates are supported by that evidence into a **new** HDF5 file. The source is opened for reading and its identity and SHA-256 are checked during recovery. A bounded private snapshot lets h5py and the raw parser inspect the same bytes; it temporarily needs disk space up to the source's size, capped at 128 MiB.
+H5Reclaim is an experimental command-line tool with read-only diagnosis, a
+native-readable numeric export, and one structural HDF5 recovery method. That
+method handles a lost child pointer in a version-1 chunk B-tree when the
+dataset description and reciprocal neighboring links survive. It exports only
+chunks whose coordinates are supported by that evidence into a **new** HDF5
+file. Source identity and SHA-256 are checked during each operation. A bounded
+private snapshot lets the readers inspect stable bytes and temporarily needs
+disk space up to the source's size, capped at 128 MiB.
 
 This is a narrow implementation, not a general HDF5 repair utility. Structural evidence identifies where bytes belong. The rank-one floating-point path verifies each chunk's stored Fletcher32 checksum; the unfiltered rank-two path has no independent payload checksum. Neither establishes historical authenticity of a scientific measurement.
 
@@ -33,16 +40,25 @@ The ZIP includes four untouched, hash-pinned scientific HDF5 files from gravitat
 ```sh
 python benchmarks/run_real_corpus.py
 python benchmarks/run_gwosc_recovery.py
+python benchmarks/run_damage_catalog.py
 ```
 
-The first command verifies the files and inventories 251 actual datasets: one is a recovery **candidate** under the current rules, while 250 are explicitly unsupported. It does not read values or claim recovery. The second command makes a damaged **copy** of the original 16 kHz GWOSC file in a temporary trial directory, confirms a native-reader failure, invokes the public recovery CLI on that copy, and independently compares every output float bit at the original sample coordinate with the untouched file. Its readable summary prints the trial directory and important result counts; it keeps detailed JSON evidence and recovered data there. In the recorded native Windows run, one broken root pointer made 57 of 128 chunks unavailable or incorrect to native reads; H5Reclaim reconstructed all 57, and all 128 output chunks were bit exact. This tests one controlled failure in authentic data, not a naturally damaged file or every HDF5 layout. Add `--json` to either command for the complete machine-readable summary on standard output. See [corpus provenance and coverage](../corpus/README.md) and [benchmark details](../benchmarks/README.md).
+The first command verifies the files and inventories 251 actual datasets: two are structural export **candidates** under the current rules, while 249 are explicitly unsupported. It does not read values or claim recovery. The second command makes a damaged **copy** of the original 16 kHz GWOSC file in a temporary trial directory, confirms a native-reader failure, invokes the public recovery CLI on that copy, and independently compares every output float bit at the original sample coordinate with the untouched file. Its readable summary prints the trial directory and important result counts; it keeps detailed JSON evidence and recovered data there. In the recorded native Windows run of an earlier release, one broken root pointer made 57 of 128 chunks unavailable or incorrect to native reads; H5Reclaim reconstructed all 57, and all 128 output chunks were bit exact. This tests one controlled failure in authentic data, not a naturally damaged file or every HDF5 layout. Add `--json` to either command for the complete machine-readable summary on standard output. See [corpus provenance and coverage](../corpus/README.md) and [benchmark details](../benchmarks/README.md).
+
+The third command runs ten controlled damage and refusal cases on copies of
+the pinned corpus. It gives a readable summary and keeps detailed evidence in
+the printed work directory. Add `--json` for its full report. It includes
+partial recovery with an explicitly marked corrupt chunk and cases that
+refuse safely. These deliberately chosen cases cannot estimate an overall
+recovery percentage.
 
 ### What the commands do
 
 | Command | Reads and creates | What success establishes |
 | --- | --- | --- |
-| `python benchmarks/run_real_corpus.py` | Verifies the pinned size and SHA-256 of four bundled originals, then reads their dataset metadata and chunk-index structures. It makes temporary private snapshots, which are removed; it does not change the originals or read their measurement values. | The 251-dataset support inventory still matches the pinned baseline: 1 candidate and 250 unsupported. No data has been recovered. |
+| `python benchmarks/run_real_corpus.py` | Verifies the pinned size and SHA-256 of four bundled originals, then reads their dataset metadata and chunk-index structures. It makes temporary private snapshots, which are removed; it does not change the originals or read their measurement values. | The 251-dataset support inventory still matches the pinned baseline: 2 candidates and 249 unsupported. No data has been recovered. |
 | `python benchmarks/run_gwosc_recovery.py` | Verifies the authentic 16 kHz original and its 128 chunk-index records, makes a separate damaged copy, and changes one verified root child pointer there. It compares ordinary HDF5 reads, runs `python -m h5reclaim recover` on the damaged copy in a subprocess, then checks recovered values, status, evidence, attributes, and hashes against the untouched original. It leaves the recovered HDF5, damage manifest, and detailed JSON reports in a new temporary work directory. | The output of this one controlled trial has exactly matched the reference at every sample coordinate. The number of chunks native HDF5 could not read correctly is an observed result, not a predicted count for other damage. |
+| `python benchmarks/run_damage_catalog.py` | Verifies the four originals; damages disposable copies by selected index, payload, and header faults; invokes the public recovery command on each copy; checks accepted values, unavailable statuses, refusal, and file hashes. It keeps `catalog.json` and trial artifacts in the printed directory. | Ten specified cases produced their expected results on this corpus. Correct refusals are not counted as recovered data, and this catalog is not a representative sample of real-world failures. |
 | `python -m unittest discover -s tests -q` | Python's standard `unittest` module discovers `test*.py` in `tests` and executes the checks; `-q` suppresses normal per-test names. Individual tests may create disposable files in temporary directories. | `OK (skipped=1)` after `Ran 50 tests` means 49 passed and one was skipped. The skipped case in the reported Windows run needs symbolic-link privileges. This command does not recover a file supplied by the user. |
 
 For a retained GWOSC trial at a location you choose, pass
@@ -78,6 +94,77 @@ error. `inspect` and `recover` also exit 2 on an unsupported or failed attempt.
 
 Unfamiliar structures are classified with reasons, not silently converted. A contiguous dataset has no chunk index to reconnect; a different tree family, datatype, filter, or partially filled edge chunk needs its own verified decoding and ownership rules. Changing its shape to match the supported case would risk inventing measurements. The GWOSC rank-one adapter is an example of adding a specific real structure after checking its original bytes and surviving index against HDF5's own chunk information.
 
+## Diagnose, then select an evidence-based route
+
+```sh
+h5reclaim diagnose path/to/input.h5
+h5reclaim diagnose path/to/input.h5 --dataset /experiment/readings --json
+```
+
+`diagnose` reads a bounded snapshot, checks for an HDF5 signature at documented
+locations, and inventories metadata when the HDF5 library can open it. It does
+not read measurement values or attempt repair. It prints a condition, a
+suggested next action, and questions that may help identify the dataset and
+missing external files. A recognized signature with unreadable metadata is
+reported as limited; it does not authorize carving plausible bytes into
+scientific coordinates. A `candidate` suggests trying `inspect`, not guaranteed
+recovery. `--json` returns the complete triage report. Exit 0 means triage
+completed, 1 means evidence or inventory was limited, and 2 means diagnosis
+itself failed.
+
+If every value in an explicitly selected **local** dataset can still be read
+normally, you can export that dataset independently of the structural recovery
+method:
+
+```sh
+h5reclaim export-readable path/to/input.h5 --dataset /experiment/readings --output recovered-readables.h5 --report readable-report.json
+```
+
+This makes a new, bitwise round-trip-checked copy of the values the standard
+HDF5 library currently returns. It does **not** reconstruct a broken index or
+establish the values before damage. It refuses sparse or apparently missing
+chunks whose native reads could silently return fill values. It accepts only
+bounded fully allocated local primitive numeric datasets of rank one through
+four with compact, contiguous, or chunked storage and built-in DEFLATE,
+shuffle, or Fletcher32 filters. It refuses external/virtual storage, custom
+filters, references, variable-length/compound data, and files too large for
+its limits. The output contains one selected dataset, not a replacement for
+every object and scientific relationship in the original file.
+
+### Optional scientist-provided hints
+
+If you know the expected structure from an acquisition log, put it in a JSON
+file. Only the dataset path is required; other fields are optional:
+
+```json
+{
+  "schema_version": 1,
+  "dataset": {
+    "path": "/experiment/readings",
+    "shape": [512, 512],
+    "chunks": [16, 16],
+    "dtype": "<u4",
+    "filters": []
+  }
+}
+```
+
+Pass `--hints hints.json` to `diagnose`, `inspect`, `recover`, or
+`export-readable`. The two export commands can take the dataset path from the
+hints file when `--dataset` is omitted. You may add `source_sha256` containing
+the **damaged input's** hash to prevent applying hints to another copy. The
+size-limited parser rejects malformed, duplicate, or unknown fields.
+Contradictions with observed metadata or the input hash stop export before an
+output is published. Values that cannot be observed remain `unobserved` in
+diagnosis. A matching hint is an operator assertion consistent with metadata,
+not proof that a payload belongs to that dataset or contains the historical
+measurement. Hints cannot override missing structural evidence or turn a
+refused recovery into a complete result.
+
+See [the generalization plan](generalization-plan.md) for additional format
+families, evidence rules, and what would be required to measure broader
+real-world coverage.
+
 ## Reproduce the synthetic experiment (optional)
 
 The commands below use separate paths for pristine truth, damaged input, recovered output, and the mutation manifest. Keep the pristine file and manifest outside the inputs available to a recovery run.
@@ -104,6 +191,10 @@ For an independent trial with evaluator-only random values and exact placement c
 ```sh
 python benchmarks/run_recovery.py --work-dir work/trial
 ```
+
+The default output is a readable result and file locations. Add `--json` for
+the complete machine-readable evaluation, which is also saved to
+`truth/evaluation.json` in the work directory.
 
 The directory must be new or empty. See [benchmark details](../benchmarks/README.md). Tests run with `python -m unittest discover -s tests -v` after installation.
 
@@ -152,8 +243,8 @@ wrong; read the report's integrity note and chunk status.
 | --- | --- |
 | Dataset | One explicitly selected local, fixed-size rank-two canonical little-endian `uint32` dataset **or** rank-one canonical little-endian IEEE `float64` dataset; dimensions divisible by chunks; other local datasets may coexist |
 | Storage | Fully aligned chunks; rank two unfiltered, rank one exactly Fletcher32 followed by DEFLATE; no virtual or external storage |
-| Index | Superblock v0/v1, v1 object header (inline or one bounded continuation), v3 chunked layout, type-1 version-1 B-tree with a level-one root |
-| Damage | Zero or one undefined root-to-interior-leaf pointer; a detached leaf is accepted only with two reachable reciprocal siblings and matching parent key bounds |
+| Index | Superblock v0/v1, v1 object header (inline or one bounded continuation), v3 chunked layout, type-1 version-1 B-tree with an intact level-zero root or a level-one root |
+| Damage | In a level-one root, zero or one undefined root-to-interior-leaf pointer; a detached leaf requires two reachable reciprocal siblings and matching parent key bounds. A missing direct payload pointer in a level-zero root is refused. |
 | Limits | Source at most 128 MiB, dataset at most 1,048,576 elements, at most 4,096 chunks and 4,096 traversed nodes, chunk at most 1 MiB |
 
 An index that is healthy also works as an inspection and export control case. Other metadata versions, filter orders, datatypes, partial edge chunks, a destroyed root, additional broken links, and arbitrary stale/deallocated structures are outside this release. Files containing multiple datasets are allowed when a supported dataset is explicitly selected and its own object header anchors its chunk index. Detached structures cannot be attributed across datasets by shape or plausible bytes alone. Unsupported or contradictory structures produce an error or an explicit partial result; a plausible `TREE` signature or payload shape alone never assigns ownership.
@@ -162,7 +253,7 @@ The damaged file must still permit HDF5 to resolve the selected dataset's metada
 
 ## Reading an output
 
-The recovered dataset keeps the selected path. `/_h5reclaim/chunk_status` is a two-dimensional map indexed by chunk row and column. The map is embedded in the output file, not only in the JSON report.
+The recovered dataset keeps the selected path. `/_h5reclaim/chunk_status` is a map indexed by chunk coordinate, one-dimensional for rank-one data and two-dimensional for rank-two data. The map is embedded in the output file, not only in the JSON report.
 
 | Code | Status | Meaning |
 | --- | --- | --- |
@@ -175,7 +266,7 @@ The recovered dataset keeps the selected path. `/_h5reclaim/chunk_status` is a t
 
 This release can produce codes 1, 2, and 6 in completed outputs. A chunk without code 1 reads as zero from the new HDF5 dataset because zero is its storage fill value. **That zero is not a recovered measurement.** Check the status map before using values. Dataset attributes point to the map and state whether every chunk was recovered.
 
-The output preserves recovered values, shape, chunking, and canonical datatype for the selected dataset. On the rank-one path it also copies bounded primitive scalar dataset attributes and reports which were copied or omitted; the output is uncompressed. It does not reproduce arbitrary attributes, dimension scales, links, other objects, or the original file's full scientific context. The JSON report and output warning record this limit. Check the original metadata separately before interpreting measurements.
+The output preserves recovered values, shape, chunking, and canonical datatype for the selected dataset. On the rank-one path it also copies bounded fixed-size primitive scalar attributes and reports which were copied or omitted; the output is uncompressed. Heap-backed variable-length strings are omitted because their reported attribute storage size does not bound the memory needed to read them. In the GWOSC strain trial, three numeric attributes are copied and four string attributes are listed as omitted. It does not reproduce arbitrary attributes, dimension scales, links, other objects, or the original file's full scientific context. The JSON report and output warning record this limit. Check the original metadata separately before interpreting measurements.
 
 The JSON report includes source hashes, selected object and index addresses, counts, an `execution_state`, unresolved links, and one mapping per accepted chunk with its leaf, payload address, route (`intact_tree` or `reconstructed_link`), and evidence. An identical copy is embedded at `/_h5reclaim/report_json`, so a finalized output retains its provenance if the companion JSON file is separated. `complete` means every chunk has code 1. A finished partial attempt has `execution_state: "finished"` and `complete: false`.
 

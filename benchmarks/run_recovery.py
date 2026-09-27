@@ -338,6 +338,34 @@ def result_exit_code(summary: dict[str, Any]) -> int:
     )
 
 
+def _human_summary(summary: dict[str, Any]) -> str:
+    total = summary["expected_chunks"]
+    directory = Path(summary["work_dir"])
+    result = "PASS" if result_exit_code(summary) == 0 else "FAIL"
+    return "\n".join([
+        "H5Reclaim | Synthetic controlled recovery trial",
+        "=" * 47,
+        f"RESULT: {result}",
+        "",
+        f"Damage: one verified index pointer changed in a separate copy",
+        f"Native unreadable or incorrect: {summary['native_unavailable_chunks']}/{total} chunks",
+        f"H5Reclaim recovered: {summary['recovered_chunks']}/{total} chunks",
+        f"Recovered native failures: {summary['recovered_from_native_unavailable_chunks']}",
+        f"Reconstructed links: {summary['reconstructed_link_mappings']} chunk mappings",
+        f"Wrong coordinates: {summary['wrong_placement_chunks']}",
+        f"Incorrect values: {summary['incorrect_values_chunks']}",
+        f"Missing regions: {summary['missing_region_chunks']}",
+        "Sources: reference and damaged copy unchanged",
+        "",
+        f"Recovered data: {directory / 'results' / 'recovered.h5'}",
+        f"Recovery report: {directory / 'results' / 'recovery.json'}",
+        f"Full evaluation: {directory / 'truth' / 'evaluation.json'}",
+        "",
+        "Scope: one controlled synthetic fault; no general recovery rate follows.",
+        "For machine-readable output, rerun with --json.",
+    ])
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--work-dir", type=Path, help="new or empty directory to retain trial files")
@@ -347,6 +375,7 @@ def main() -> int:
     parser.add_argument("--chunk-cols", type=int, default=16)
     parser.add_argument("--python", default=sys.executable, help="interpreter for child processes")
     parser.add_argument("--seed", type=int, help="challenge seed, recorded only after recovery")
+    parser.add_argument("--json", action="store_true", help="print the full machine-readable evaluation")
     args = parser.parse_args()
     work_dir = args.work_dir or Path(tempfile.mkdtemp(prefix="h5reclaim-trial-"))
     try:
@@ -357,7 +386,7 @@ def main() -> int:
         )
     except (BenchmarkError, OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
         parser.exit(2, f"benchmark failed: {exc}\nwork directory: {work_dir}\n")
-    print(json.dumps(summary, indent=2, sort_keys=True))
+    print(json.dumps(summary, indent=2, sort_keys=True) if args.json else _human_summary(summary))
     return result_exit_code(summary)
 
 

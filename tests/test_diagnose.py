@@ -61,6 +61,15 @@ class DiagnosisTests(unittest.TestCase):
             self.assertIsNone(report["selection"])
             self.assertIn("external_or_virtual_dependencies", {q["key"] for q in report["questions"]})
 
+    def test_exactly_eight_signature_bytes_report_truncated_hdf5(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "truncated.h5"
+            source.write_bytes(diagnosis_module.HDF5_SIGNATURE)
+            report = diagnosis_module.diagnose(source)
+            self.assertEqual(report["condition"], "metadata_unreadable")
+            self.assertTrue(report["format_signature"]["present"])
+            self.assertIsNone(report["format_signature"]["superblock_version_byte"])
+
     def test_real_file_with_corrupt_superblock_reports_unreadable_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "damaged.h5"
@@ -132,17 +141,16 @@ class DiagnosisTests(unittest.TestCase):
             })
             self.assertFalse(report["recovery_attempted"])
 
-    def test_authentic_gwosc_4khz_index_variant_is_explicitly_refused(self) -> None:
+    def test_authentic_gwosc_4khz_intact_index_is_a_candidate(self) -> None:
         source = (
             Path(__file__).resolve().parents[1]
             / "corpus/files/H-H1_GWOSC_4KHZ_R1-1126259447-32.hdf5"
         )
         report = diagnosis_module.diagnose(source, "/strain/Strain")
-        self.assertEqual(report["next_action"], "investigate_index_variant")
-        self.assertEqual(report["selection"]["support"]["status"], "unsupported")
-        self.assertIn("index_unsupported", {
-            item["code"] for item in report["selection"]["support"]["reasons"]
-        })
+        self.assertEqual(report["next_action"], "inspect_anchored_index")
+        self.assertEqual(report["selection"]["support"]["status"], "candidate")
+        self.assertEqual(report["selection"]["index"]["root_level"], 0)
+        self.assertFalse(report["recovery_attempted"])
 
 
 if __name__ == "__main__":

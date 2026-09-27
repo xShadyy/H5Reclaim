@@ -17,9 +17,9 @@
       "representative_dataset": "/strain/Strain",
       "expected_observation": {
         "dataset_count": 15,
-        "candidate_count": 0,
-        "representative_support": "unsupported",
-        "representative_reason_codes": ["index_unsupported"]
+        "candidate_count": 1,
+        "representative_support": "candidate",
+        "representative_reason_codes": []
       }
     },
     {

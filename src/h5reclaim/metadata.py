@@ -87,6 +87,15 @@ def _safe_scalar_attributes(dataset: h5py.Dataset) -> tuple[tuple[tuple[str, Any
             if datatype.get_class() not in (h5py.h5t.INTEGER, h5py.h5t.FLOAT, h5py.h5t.STRING):
                 omitted.append(name)
                 continue
+            # A variable-length string stores a heap reference in the
+            # attribute record. Its reported storage size does not bound the
+            # bytes h5py would allocate when dereferencing that heap object.
+            if datatype.get_class() == h5py.h5t.STRING and datatype.is_variable_str():
+                omitted.append(name)
+                continue
+            if datatype.get_size() > 4096:
+                omitted.append(name)
+                continue
             if attr.get_storage_size() > 4096:
                 omitted.append(name)
                 continue

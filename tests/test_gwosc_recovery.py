@@ -88,7 +88,8 @@ class RealSourceTests(unittest.TestCase):
             self.assertTrue(report["complete"])
             self.assertEqual(report["counts"]["recovered"], 128)
             self.assertEqual(report["dataset"]["filters"], [3, 1])
-            self.assertEqual(report["dataset"]["attributes_omitted"], [])
+            self.assertEqual(set(report["dataset"]["attributes_omitted"]),
+                             {"Xlabel", "Xunits", "Ylabel", "Yunits"})
             self.assertEqual(json.loads(report_path.read_text()), report)
             with h5py.File(SOURCE, "r") as truth, h5py.File(output, "r") as result:
                 original = truth["/strain/Strain"]

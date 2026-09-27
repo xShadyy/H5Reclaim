@@ -1,5 +1,37 @@
 # Independent broken-link benchmark
 
+## Real-data damage catalog
+
+From the repository root, run:
+
+```sh
+python benchmarks/run_damage_catalog.py
+```
+
+The command verifies the sizes and SHA-256 hashes of all four bundled,
+unchanged scientific files, then runs ten documented cases on disposable
+copies. On the 16 kHz GWOSC strain dataset, it tests one missing index link,
+one corrupted compressed payload, both together, two missing links, and a
+damaged selected object header. On the 4 kHz GWOSC strain dataset it checks
+exact export from an intact level-zero root, marks one corrupted payload
+unavailable, and safely refuses to guess a missing direct payload pointer.
+The two other authentic scientific layouts exercise safe refusal. It calls
+the public recovery command with the trial copy alone, checks accepted values
+bit for bit at their original coordinates, checks missing-region labels, and
+verifies originals and trial inputs were preserved. The original file is
+accessible only to the evaluator for scoring; it is not an input to the
+recovery subprocess.
+
+The terminal prints a readable ten-case summary. `--json` prints the full
+evaluation, and a `catalog.json` is kept in the displayed work directory in
+either mode. Use `--work-dir path/to/new-or-empty-directory` to keep trial
+files at a chosen location. A refusal is a correct result for cases without
+sufficient supported evidence. The intact 4 kHz case verifies value export,
+not repair of a damaged index. The fault classes and positions are fixed and
+documented; they are neither a random sample of real failures nor a measure
+of a 99% recovery rate. The two non-GWOSC cases test safe refusal, not
+recovery of their measurements.
+
 ## Authentic GWOSC file, controlled damage
 
 The repository includes the untouched 16 kHz Hanford strain file from GWOSC.
@@ -65,6 +97,10 @@ Run from the repository root in an environment with h5py and NumPy:
 ```sh
 python benchmarks/run_recovery.py --work-dir work/trial
 ```
+
+The default terminal output is a readable result with key counts and file
+locations. Add `--json` to print the full evaluation, which is always saved
+in `truth/evaluation.json`.
 
 The work directory must be new or empty. `truth/pristine.h5` contains the
 reference, `truth/challenge.json` records a random value seed, and

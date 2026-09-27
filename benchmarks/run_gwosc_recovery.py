@@ -269,9 +269,17 @@ def _evaluate(
             raise TrialError("output dtype, shape, or embedded status map differs from original")
         status = statuses[...]
         source_attributes = set(clean.attrs)
-        if not source_attributes <= set(recovered.attrs):
-            raise TrialError("output omitted a source measurement attribute")
-        for name in source_attributes:
+        safe_attributes = {
+            name for name in source_attributes
+            if not (
+                clean.attrs.get_id(name).get_type().get_class() == h5py.h5t.STRING
+                and clean.attrs.get_id(name).get_type().is_variable_str()
+            )
+        }
+        omitted_attributes = source_attributes - safe_attributes
+        if not safe_attributes <= set(recovered.attrs) or omitted_attributes & set(recovered.attrs):
+            raise TrialError("output attribute selection differs from bounded-copy policy")
+        for name in safe_attributes:
             if not np.array_equal(np.asarray(clean.attrs[name]), np.asarray(recovered.attrs[name])):
                 raise TrialError(f"output changed scientific attribute {name!r}")
         embedded = result_file["/_h5reclaim/report_json"][()]
@@ -318,8 +326,8 @@ def _evaluate(
         or selected.get("dtype") != "<f8"
         or selected.get("filters") != [h5py.h5z.FILTER_FLETCHER32, h5py.h5z.FILTER_DEFLATE]
         or selected.get("object_address") != details["source_object_address"]
-        or set(selected.get("attributes_copied", [])) != source_attributes
-        or selected.get("attributes_omitted") != []
+        or set(selected.get("attributes_copied", [])) != safe_attributes
+        or set(selected.get("attributes_omitted", [])) != omitted_attributes
     ):
         raise TrialError("recovery report selected different dataset metadata")
     index = report.get("index", {})
@@ -391,7 +399,8 @@ def _evaluate(
         "wrong_bit_chunks": len(wrong_coordinates),
         "missing_region_chunks": expected_count - counts["recovered"],
         "every_original_coordinate_exact": True,
-        "scientific_dataset_attributes_preserved": sorted(source_attributes),
+        "scientific_dataset_attributes_preserved": sorted(safe_attributes),
+        "scientific_dataset_attributes_omitted": sorted(omitted_attributes),
         "status_counts": {label: counts[label] for label in STATUS.values()},
         "limits": "A controlled pointer mutation in one authentic file; no inference about unrelated damage or HDF5 layouts.",
     }
@@ -436,6 +445,7 @@ def _human_summary(summary: dict[str, Any]) -> str:
     reconstructed = summary["reconstructed_link_chunks"]
     directory = Path(summary["work_dir"])
     attributes = summary["scientific_dataset_attributes_preserved"]
+    omitted = summary["scientific_dataset_attributes_omitted"]
     return "\n".join([
         "H5Reclaim | GWOSC controlled recovery trial",
         "=" * 43,
@@ -449,7 +459,7 @@ def _human_summary(summary: dict[str, Any]) -> str:
         f"Detached branch:    {reconstructed}/{native} affected chunks reconstructed",
         f"Value comparison:   {total - summary['wrong_bit_chunks']}/{total} exact float64 bit matches",
         f"Unknown regions:    {summary['missing_region_chunks']}",
-        f"Science attributes: {len(attributes)} preserved and checked",
+        f"Science attributes: {len(attributes)} preserved and checked; {len(omitted)} heap-backed strings omitted",
         "Chunk checksums:    Fletcher32 verified for every exported chunk",
         "Source files:       original and damaged copy unchanged during recovery",
         "",

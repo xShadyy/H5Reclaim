@@ -2,6 +2,74 @@
 
 Updated: 2026-09-27
 
+## Version 0.4.0: triage, bounded native export, and another authentic index shape
+
+`h5reclaim diagnose SOURCE [--dataset PATH]` checks a stable snapshot's HDF5
+signature and inventories metadata if possible. It reports limited evidence
+when the header is truncated or the library cannot read metadata. It does not
+read measurements, scan for plausible payloads, or attempt recovery. The
+readable terminal summary has an optional full `--json` form. `survey` remains
+the detailed local-dataset inventory.
+
+`h5reclaim export-readable` uses the standard HDF5 reader on a fully allocated,
+local, primitive numeric dataset and copies its **current readable** values
+into a new file. It verifies a bitwise readback, checks source preservation,
+and identifies the operation as `readable_export` in an external and embedded
+report. This route covers bounded compact, contiguous, and chunked layouts,
+including some newer indexes, if native reads actually succeed. It accepts
+only rank one through four, standard fixed-width numeric representation,
+built-in DEFLATE/shuffle/Fletcher32 filters, a source and logical size no
+larger than 128 MiB, blocks no larger than 1 MiB, stored chunks no larger
+than 2 MiB, and at most 8,192 allocated chunks. It refuses sparse reads that
+could silently return fill, unsupported types, plugins, external/virtual
+storage, and invalid allocation addresses. A successful copy is not
+structural repair and does not verify historical scientific measurements.
+
+Optional `--hints hints.json` accepts a bounded scientist assertion about
+dataset path, shape, chunks, datatype, filters, and/or damaged-input SHA-256.
+Observed conflicts stop export; fields not observable from the damaged file
+remain explicitly unverified. Hints do not establish chunk ownership or
+authorize reconstructing an unknown layout. The two export commands can take
+their selected dataset path from the hints file.
+
+Structural export now also accepts a completely intact, direct level-zero
+version-1 raw-data B-tree root, with no attempt to infer a missing direct
+payload pointer. The authentic 4 kHz GWOSC strain file supplies this layout:
+64/64 chunks exported at exact original float64 bit values, zero reconstructed
+links. Its corrupt-DEFLATE copy produces 63 exact accepted chunks and one
+explicit `decode_failed` chunk; a missing direct pointer refuses without
+publishing an output. The existing 16 kHz broken-link case still recovered
+128/128 bit-exact chunks, including 57 behind the reconstructed link.
+
+The corpus survey verifies four original hashes and inventories 251 datasets:
+two structural candidates and 249 unsupported. `run_damage_catalog.py`
+checks ten chosen cases on disposable authentic-file copies, including
+payload corruption, combined index/payload damage, multiple broken links,
+header damage, intact direct indexing, and unsupported layouts. It scores
+accepted chunks against evaluator-only original values at the original
+coordinates; a refusal is not counted as recovered data. This deliberately
+constructed catalog has no representative fault distribution, and none of
+these results supports a 99% claim. See
+[the generalization plan](generalization-plan.md) for specific remaining
+format families, fault classes, evidence gates, and statistical requirements.
+
+For bounded metadata reads, this release omits variable-length string
+attributes before dereferencing them. Their small on-disk attribute record
+can reference a much larger heap value. In the 16 kHz GWOSC trial, three
+fixed-size numeric attributes are copied and checked; four heap-backed
+strings are explicitly listed as omitted. Users need the original metadata
+or an independent record to restore those descriptions. Other links, scales,
+objects, and scientific context are also outside the selected-dataset export.
+
+The current Linux run passed 94 discovered tests and the corpus survey,
+16 kHz controlled recovery benchmark, and ten-case catalog. The earlier
+Windows PowerShell evidence below applies to the preceding version; this
+new release has not been rerun on that computer. The next concrete recovery
+milestone is an evidence-backed deeper version-1 tree or a documented newer
+chunk-index family, with positive and misleading-negative cases from real
+files. No software can recreate uniquely overwritten measurements without
+redundancy or independent evidence.
+
 ## Version 0.3.3: vary the supported damage position
 
 The fixture damage tool accepts `--child-index` to change a specified,

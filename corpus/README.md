@@ -4,8 +4,8 @@
 
 | File | Research context | Representative dataset | Structural feature |
 | --- | --- | --- | --- |
-| `H-H1_GWOSC_4KHZ_R1-1126259447-32.hdf5` | GWOSC Hanford detector data around GW150914 | `/strain/Strain` | One-dimensional, compressed floating-point strain; its chunk tree has a level-zero root outside the current recovery procedure |
-| `H-H1_GWOSC_16KHZ_R1-1126259447-32.hdf5` | Same GWOSC event at 16 kHz | `/strain/Strain` | The supported metadata and level-one chunk-tree shape give one survey candidate |
+| `H-H1_GWOSC_4KHZ_R1-1126259447-32.hdf5` | GWOSC Hanford detector data around GW150914 | `/strain/Strain` | One-dimensional, compressed floating-point strain; its intact level-zero chunk-tree root directly indexes 64 chunks |
+| `H-H1_GWOSC_16KHZ_R1-1126259447-32.hdf5` | Same GWOSC event at 16 kHz | `/strain/Strain` | Supported metadata and a level-one chunk tree; an interior index link has two neighbors for the controlled recovery trial |
 | `fast_feedback_raw_data.h5` | Experimental superconducting-qubit error correction | `/circuit_0/result/hard_measurements/36` | Nested groups and many contiguous, differently typed datasets |
 | `PACE22_FMITALON_005.h5` | Aircraft cloud and aerosol measurements from PaCE 2022 | `/20220922_101405/columns/dataframe` | Contiguous compound table with floating-point fields |
 
@@ -36,9 +36,11 @@ On Windows PowerShell, run `py -3 -m venv .venv`, then `./.venv/Scripts/python.e
 
 ## What this checks
 
-The current survey classifies 250 datasets as unsupported and one dataset in the 16 kHz GWOSC file as a candidate. That is a useful finding about **real input coverage**. The files have different storage layouts, ranks, types, and filters. The 4 kHz GWOSC strain has a level-zero chunk-tree root, while the current recovery procedure requires a level-one root. Do not count `candidate` as recovered data: the inventory does not read measurement values or attempt repair.
+The current survey classifies 249 datasets as unsupported and two GWOSC strain datasets as candidates. That is a useful finding about **real input coverage**. The files have different storage layouts, ranks, types, and filters. The 4 kHz strain has an intact level-zero chunk-tree root. It can be exported from its directly indexed chunks when metadata remains readable, but there is no safe detached-link reconstruction for a broken pointer in that root. Do not count `candidate` as recovered data: the inventory does not read measurement values or attempt repair.
 
-Run `python benchmarks/run_gwosc_recovery.py` for the separate controlled recovery trial on the authentic 16 kHz file. It changes one verified pointer in a copy, confirms 57 native-reader failures or wrong chunks, and compares all 128 recovered chunks against original float64 bits at the same coordinates. It also checks the seven source strain attributes and unchanged source hashes. The output omits the original `/meta` and `/quality` datasets; it is a recovery artifact rather than a replacement research file.
+Run `python benchmarks/run_gwosc_recovery.py` for the separate controlled recovery trial on the authentic 16 kHz file. It changes one verified pointer in a copy, confirms 57 native-reader failures or wrong chunks, and compares all 128 recovered chunks against original float64 bits at the same coordinates. It checks bounded scalar attributes that are safe to copy, reports omitted attributes, and verifies unchanged source hashes. The output omits the original `/meta` and `/quality` datasets; it is a recovery artifact rather than a replacement research file.
+
+Run `python benchmarks/run_damage_catalog.py` for controlled trials on both GWOSC layouts and safe-refusal checks on the two other scientific layouts. The authentic 4 kHz file has an intact direct chunk index; it yields 64 exact chunks in the baseline trial and 63 exact chunks plus one explicitly failed payload in a corruption trial. A missing direct payload pointer is refused because there is no justified chunk location to reconstruct.
 
 All bundled originals are intact. None is evidence that an actual researcher's damaged file has been restored. A scored recovery experiment needs a disposable damaged copy, the pristine original as evaluator-only truth, a verified native-reader failure, an independent coordinate-by-coordinate comparison, and a report of unsupported or ambiguous regions. Keep those trials and their results separate from this format-coverage survey. Authentic intact data plus artificial index damage tests a specific failure mode against real bytes; natural corruptions and real users are additional evidence that must be evaluated separately.
 
