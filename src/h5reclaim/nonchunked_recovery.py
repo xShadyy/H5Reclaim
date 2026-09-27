@@ -313,6 +313,36 @@ def _other_contiguous_extent(reader: H5File | ModernH5File, layout: bytes,
     raise UnsupportedFormat("other rooted dataset has an unknown storage layout")
 
 
+def _header_generation(reader: H5File | ModernH5File, address: int) -> int:
+    """Object-header generation is per object, not determined by superblock age.
+
+    Authentic files can have a v0 superblock and both v1 and v2 object
+    headers in the same rooted namespace. A four-byte probe here does not
+    grant ownership; the selected parser still validates the whole header.
+    """
+    prefix = reader.read_at(address, 4)
+    if prefix[0] == 1:
+        return 1
+    if prefix == b"OHDR":
+        return 2
+    raise FormatError("rooted object has no supported object-header signature")
+
+
+def _object_messages(reader: H5File | ModernH5File, address: int,
+                     generation: int):
+    return _old_messages(reader, address) if generation == 1 else _messages(reader, address)
+
+
+def _group_links(reader: H5File | ModernH5File, address: int,
+                 cached: tuple[int, int] | None, generation: int,
+                 *, older_superblock: bool):
+    if generation == 1:
+        if not older_superblock:
+            raise UnsupportedFormat("v1 symbol-table group under modern superblock unsupported")
+        return _old_group(reader, address, cached)
+    return _compact_links(reader, address)
+
+
 def _refuse_competing_rooted_allocations(reader: H5File | ModernH5File,
                                          root: int, root_cached: tuple[int, int] | None,
                                          selected_address: int, selected_start: int,
@@ -343,15 +373,16 @@ def _refuse_competing_rooted_allocations(reader: H5File | ModernH5File,
             # this limitation must be disclosed with the partial result.
             beyond_physical_eof += 1
             continue
-        messages = (_old_messages(reader, address) if older else _messages(reader, address))
+        generation = _header_generation(reader, address)
+        messages = _object_messages(reader, address, generation)
         layout = _unique(messages, 8)
-        group = (_unique(messages, 0x11) is not None if older else
+        group = (_unique(messages, 0x11) is not None if generation == 1 else
                  _unique(messages, 2) is not None or _unique(messages, 10) is not None)
         if group and layout is not None:
             raise FormatError("rooted object declares both group links and dataset storage")
         if group:
-            children = (_old_group(reader, address, cached) if older else
-                        _compact_links(reader, address))
+            children = _group_links(reader, address, cached, generation,
+                                    older_superblock=older)
             links_seen += len(children)
             if links_seen > MAX_OWNERSHIP_LINKS:
                 raise UnsupportedFormat("rooted ownership inventory exceeds link limit")
@@ -362,7 +393,8 @@ def _refuse_competing_rooted_allocations(reader: H5File | ModernH5File,
             if len(layout.data) >= 2 and layout.data[0] in (3, 4, 5) and layout.data[1] == 2:
                 chunked_sibling_seen = True
                 continue
-            extent = _other_contiguous_extent(reader, layout.data, older=older)
+            extent = _other_contiguous_extent(reader, layout.data,
+                                              older=generation == 1)
             if extent is not None and selected_start < extent[1] and extent[0] < selected_end:
                 raise FormatError("selected payload overlaps another rooted dataset allocation")
     if chunked_sibling_seen:
@@ -407,8 +439,9 @@ def read_nonchunked_spec(snapshot: Path, dataset_path: str) -> NonchunkedSpec:
         address = root
         chain = []
         for part in parts:
-            links = (_old_group(reader, address, cached) if older else
-                     _compact_links(reader, address))
+            generation = _header_generation(reader, address)
+            links = _group_links(reader, address, cached, generation,
+                                 older_superblock=older)
             if part not in links:
                 raise UnsupportedFormat(f"selected component {part!r} has no rooted hard link")
             step = links[part]
@@ -421,21 +454,23 @@ def read_nonchunked_spec(snapshot: Path, dataset_path: str) -> NonchunkedSpec:
                 "index_record_offset": step.index_record_offset,
             })
             address, cached = step.object_address, step.cached_group
-        messages = _old_messages(reader, address) if older else _messages(reader, address)
+        selected_generation = _header_generation(reader, address)
+        messages = _object_messages(reader, address, selected_generation)
         if _unique(messages, 7) is not None:
             raise UnsupportedFormat("external raw storage requires its own dependency route")
         space, datatype, layout = (_unique(messages, kind) for kind in (1, 3, 8))
         if space is None or datatype is None or layout is None:
             raise UnsupportedFormat("selected object lacks required dataset metadata")
-        shape = _dataspace(space.data, reader.superblock.length_size, older=older)
-        dtype = _datatype(datatype.data, older=older)
+        old_header = selected_generation == 1
+        shape = _dataspace(space.data, reader.superblock.length_size, older=old_header)
+        dtype = _datatype(datatype.data, older=old_header)
         expected = prod(shape) * np.dtype(dtype).itemsize
         if expected <= 0 or expected > MAX_DATA_BYTES:
             raise UnsupportedFormat("dataset bytes exceed bounded nonchunked route")
         if _unique(messages, 11) is not None:
             raise UnsupportedFormat("unexpected filter pipeline on compact/contiguous dataset")
         storage, data_address, absolute, stored = _layout(
-            layout.data, older=older, osize=reader.superblock.offset_size,
+            layout.data, older=old_header, osize=reader.superblock.offset_size,
             lsize=reader.superblock.length_size, expected_size=expected,
             base=reader.superblock.base_address, declared_eof=reader.superblock.eof_address,
             message_offset=layout.absolute_offset,
@@ -536,12 +571,18 @@ def analyze_nonchunked_snapshot(
         "metadata_resolution": {
             "route": spec.metadata_route, "superblock_root_address": spec.root_address,
             "selected_hard_link_chain": list(spec.link_chain),
+            "object_header_generations_seen": {
+                "v1": len({(start, stop) for start, stop, kind in spec.metadata_ranges
+                           if kind == "rooted older object header"}),
+                "v2": len({(start, stop) for start, stop, kind in spec.metadata_ranges
+                           if kind == "rooted object header"}),
+            },
             "checksum_status": ("traversed v2/3 superblock and v2 object headers checked"
                                 if "unchecksummed" not in spec.metadata_route else
-                                "older graph has no structural checksums"),
+                                "older root and symbol-table links lack checksums; any v2 object headers were checked"),
             "warning": (
-                "Older group and object-header metadata lacks checksums; internal consistency "
-                "does not prove historical ownership."
+                "Older root and symbol-table links lack checksums; internal consistency "
+                "does not prove historical ownership. Traversed v2 object headers are checked."
                 if "unchecksummed" in spec.metadata_route else
                 "Checksummed modern metadata establishes an internally consistent selected "
                 "path, not historical authenticity."

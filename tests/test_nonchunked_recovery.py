@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,9 +14,11 @@ import numpy as np
 
 from h5reclaim.format import FormatError, UnsupportedFormat
 from h5reclaim.hints import DatasetHints, HintsError
-from h5reclaim.metadata_fallback import _messages
+from h5reclaim.metadata_fallback import _messages, _old_messages
 from h5reclaim.modern_indexes import ModernH5File, lookup3
-from h5reclaim.nonchunked_recovery import export_nonchunked, read_nonchunked_spec
+from h5reclaim.nonchunked_recovery import (
+    _TruncatedOldReader, export_nonchunked, read_nonchunked_spec,
+)
 
 
 def _compact(handle: h5py.File, name: str, values: np.ndarray) -> None:
@@ -228,6 +231,53 @@ class NonchunkedRecoveryTests(unittest.TestCase):
         )
         self.assertEqual([comparison["status"] for comparison in
                           report["operator_hints"]["comparisons"]], ["matches"] * 3)
+
+    def test_authentic_qubit_mixed_headers_native_failure_and_sibling_conflict(self) -> None:
+        corpus = Path(__file__).resolve().parents[1] / "corpus"
+        original = corpus / "files" / "fast_feedback_raw_data.h5"
+        manifest = json.loads((corpus / "manifest.json").read_text())
+        pinned = next(entry["sha256"] for entry in manifest["entries"]
+                      if entry["id"] == "zenodo_qubit_feedback")
+        self.assertEqual(hashlib.sha256(original.read_bytes()).hexdigest(), pinned)
+        path = "/circuit_0/result/hard_measurements/36"
+        sibling = "/circuit_0/result/hard_measurements/38"
+        with h5py.File(original) as handle:
+            expected = handle[path][:]
+            object_address = h5py.h5o.get_info(handle[path].id).addr
+            source_offset = handle[path].id.get_offset()
+            sibling_offset = handle[sibling].id.get_offset()
+        with _TruncatedOldReader(original) as reader:
+            messages = _old_messages(reader, object_address)
+            fill = next(message for message in messages if message.kind == 5)
+            layout = next(message for message in messages if message.kind == 8)
+        shutil.copyfile(original, self.source)
+        with self.source.open("r+b") as stream:
+            stream.seek(fill.absolute_offset)
+            stream.write(b"\xff")
+        before = hashlib.sha256(self.source.read_bytes()).hexdigest()
+        with h5py.File(self.source) as handle:
+            with self.assertRaises((KeyError, OSError)):
+                _ = handle[path]
+        report = export_nonchunked(self.source, path, self.output, self.report_path)
+        self.assertEqual(report["counts"], {"recovered": 2000, "unknown": 0})
+        self.assertEqual(report["mappings"][0]["source_absolute_offset"], source_offset)
+        self.assertTrue(report["metadata_resolution"]["allocation_conflict_check"]["complete"])
+        self.assertGreater(report["metadata_resolution"]["object_header_generations_seen"]["v1"], 0)
+        self.assertGreater(report["metadata_resolution"]["object_header_generations_seen"]["v2"], 0)
+        with h5py.File(self.output) as recovered:
+            self.assertEqual(recovered[path][:].tobytes(), expected.tobytes())
+            self.assertTrue(np.all(recovered["/_h5reclaim/element_status"][:] == 1))
+        self.assertEqual(hashlib.sha256(self.source.read_bytes()).hexdigest(), before)
+
+        conflict = self.base / "conflict.h5"
+        shutil.copyfile(self.source, conflict)
+        with conflict.open("r+b") as stream:
+            stream.seek(layout.absolute_offset + 2)
+            stream.write(int(sibling_offset).to_bytes(8, "little"))
+        with self.assertRaisesRegex(FormatError, "overlaps another rooted dataset allocation"):
+            export_nonchunked(conflict, path, self.base / "refused.h5",
+                              self.base / "refused.json")
+        self.assertFalse((self.base / "refused.h5").exists())
 
 
 if __name__ == "__main__":
