@@ -73,7 +73,8 @@ structural routes retain their smaller limits.
 
 Selected modern index repairs also extend beyond the prior FAHD-to-FADB
 link. An extensible-array header to index block, index block to a data or
-secondary block, version-2 B-tree header to root, or internal node to child
+secondary block, secondary block to a data block, version-2 B-tree header to
+root, or internal node to child
 can be tried when the **original** parent checksum uniquely determines one
 pointer substitution within the bounded scan. A checked child, complete
 traversal, coordinate and physical-range checks, and ownership checks must
