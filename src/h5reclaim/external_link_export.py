@@ -150,6 +150,10 @@ def export_external_link(
                     "target_size_bytes": target_size,
                     "target_snapshot_sha256": sha256_file(snapshot),
                 }
+                # Offsets and the sibling-ownership inventory in the nested
+                # report refer to this target file, never the link container.
+                report["dataset"]["storage_file"] = "external_link_target"
+                report["dataset"]["storage_file_sha256"] = target_hash
                 report["limits"] += (
                     " The external link was resolved only through an explicit pinned target. "
                     "The exported path is materialized locally; unrelated objects and the "
