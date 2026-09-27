@@ -12,11 +12,12 @@ import numpy as np
 from h5reclaim.format import UnsupportedFormat
 from h5reclaim.metadata import UnsupportedCase
 from h5reclaim.recovery import recover
+from tools.make_broken_link_fixture import make_damage
 
 
 class SupportEnvelopeTests(unittest.TestCase):
-    def test_rejects_filtered_edge_chunk_wrong_dtype_and_multiple_datasets(self) -> None:
-        for case in ("filtered", "edge", "float", "big_endian", "multiple"):
+    def test_rejects_filtered_edge_chunk_and_wrong_dtype(self) -> None:
+        for case in ("filtered", "edge", "float", "big_endian"):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 source = root / "source.h5"
@@ -33,8 +34,6 @@ class SupportEnvelopeTests(unittest.TestCase):
                         chunks=(2, 2) if case == "edge" else (1, 1),
                         compression="gzip" if case == "filtered" else None,
                     )
-                    if case == "multiple":
-                        handle.create_dataset("distractor", data=np.arange(4, dtype="<u4"))
                 before = source.read_bytes()
                 output, report = root / "recovered.h5", root / "report.json"
                 with self.assertRaises(UnsupportedCase):
@@ -42,6 +41,32 @@ class SupportEnvelopeTests(unittest.TestCase):
                 self.assertEqual(source.read_bytes(), before)
                 self.assertFalse(output.exists())
                 self.assertFalse(report.exists())
+
+    def test_selected_nested_dataset_with_identical_shape_distractor(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pristine, damaged = root / "pristine.h5", root / "damaged.h5"
+            shape = (512, 512)
+            selected_values = np.arange(shape[0] * shape[1], dtype="<u4").reshape(shape)
+            with h5py.File(pristine, "x", libver=("earliest", "v108")) as handle:
+                group = handle.require_group("lab/run")
+                selected = group.create_dataset(
+                    "measurements", data=selected_values, chunks=(16, 16)
+                )
+                selected.attrs["units"] = "counts"
+                handle.create_dataset(
+                    "distractor", data=selected_values + 123456, chunks=(16, 16)
+                )
+            make_damage(pristine, damaged, root / "mutation.json", "/lab/run/measurements")
+            output, report = root / "recovered.h5", root / "report.json"
+            result = recover(damaged, "/lab/run/measurements", output, report)
+            self.assertEqual(result["outcome"], "complete")
+            self.assertGreater(result["reconstructed_chunks"], 0)
+            self.assertIn("not preserved", result["metadata_note"])
+            with h5py.File(output, "r") as handle:
+                np.testing.assert_array_equal(handle["/lab/run/measurements"][...], selected_values)
+                self.assertNotIn("/distractor", handle)
+                self.assertNotIn("units", handle["/lab/run/measurements"].attrs)
 
     def test_latest_layout_is_explicitly_unsupported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

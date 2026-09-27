@@ -14,8 +14,8 @@ from h5reclaim.format import FormatError, H5File, UnsupportedFormat
 BASE = 512
 OBJECT = 0x100
 ROOT = 0x200
-LEAVES = (0x300, 0x400, 0x500)
-PAYLOADS = (0x900, 0x910, 0x920)
+LEAVES = (0xD00, 0x1900, 0x2500)
+PAYLOADS = (0x3100, 0x3110, 0x3120)
 UNDEFINED = 0xFFFFFFFFFFFFFFFF
 
 
@@ -29,17 +29,18 @@ def _node(
     end: int,
     left: int = UNDEFINED,
     right: int = UNDEFINED,
+    end_size: int = 0,
 ) -> bytes:
     result = bytearray(b"TREE" + bytes((1, level)) + struct.pack("<HQQ", len(entries), left, right))
     for column, address in entries:
         result += _key(column) + struct.pack("<Q", address)
-    result += _key(end, size=0)
+    result += _key(end, size=end_size)
     return bytes(result)
 
 
 def _sample(*, broken: bool = False, userblock: bool = True) -> bytearray:
     base = BASE if userblock else 0
-    output = bytearray(base + 0x1000)
+    output = bytearray(base + 0x4000)
     superblock = bytearray(24 + 32)
     superblock[:8] = b"\x89HDF\r\n\x1a\n"
     superblock[8] = 0
@@ -65,6 +66,7 @@ def _sample(*, broken: bool = False, userblock: bool = True) -> bytearray:
             index * 2 + 2,
             LEAVES[index - 1] if index else UNDEFINED,
             LEAVES[index + 1] if index < 2 else UNDEFINED,
+            end_size=8 if index < 2 else 0,
         )
         output[base + address : base + address + len(leaf)] = leaf
         output[base + PAYLOADS[index] : base + PAYLOADS[index] + 8] = struct.pack(

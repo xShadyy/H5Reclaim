@@ -18,6 +18,7 @@ import numpy as np
 from h5reclaim.format import KEY_SIZE, FormatError, H5File
 from h5reclaim.metadata import UnsupportedCase
 from h5reclaim.recovery import RecoveryError, STATUS_CODES, analyze, recover
+from h5reclaim import recovery as recovery_module
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -240,6 +241,47 @@ class BrokenLinkSafetyTests(unittest.TestCase):
                 recover(source, "/measurements", output, report)
 
             self.assertEqual(digest(source), before)
+            self.assertFalse(output.exists())
+            self.assertFalse(report.exists())
+
+    def test_chunk_pointer_into_index_metadata_is_not_exported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            image = bytearray(self.damaged.read_bytes())
+            with H5File(self.damaged) as reader:
+                root = reader.read_tree(self.manifest["btree_root_address"])
+                leaf = reader.read_tree(root.entries[0].address)
+                pointer = leaf.entries[0].pointer_offset
+                image[pointer : pointer + reader.superblock.offset_size] = root.address.to_bytes(
+                    reader.superblock.offset_size, "little"
+                )
+            source = self._altered_file(folder, image)
+            before = digest(source)
+            output, report = folder / "result.h5", folder / "report.json"
+            with self.assertRaisesRegex(FormatError, "overlaps .* B-tree node"):
+                recover(source, "/measurements", output, report)
+            self.assertEqual(digest(source), before)
+            self.assertFalse(output.exists())
+            self.assertFalse(report.exists())
+
+    def test_replaced_input_path_is_refused_even_with_identical_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            source = folder / "source.h5"
+            source.write_bytes(self.damaged.read_bytes())
+            replacement = folder / "replacement.h5"
+            replacement.write_bytes(source.read_bytes())
+            real_analysis = recovery_module._analyze_snapshot
+
+            def replace_after_snapshot(*args: object) -> object:
+                result = real_analysis(*args)
+                os.replace(replacement, source)
+                return result
+
+            output, report = folder / "result.h5", folder / "report.json"
+            with patch("h5reclaim.recovery._analyze_snapshot", side_effect=replace_after_snapshot):
+                with self.assertRaisesRegex(RecoveryError, "identity"):
+                    recover(source, "/measurements", output, report)
             self.assertFalse(output.exists())
             self.assertFalse(report.exists())
 

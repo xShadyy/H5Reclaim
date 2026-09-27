@@ -41,16 +41,6 @@ def read_dataset_spec(source: Path, dataset_path: str) -> DatasetSpec:
             if not Path(selected.file.filename).samefile(source):
                 raise UnsupportedCase("external dataset links are not supported")
 
-            dataset_addresses: set[int] = set()
-
-            def collect(_name: str, obj: h5py.Group | h5py.Dataset) -> None:
-                if isinstance(obj, h5py.Dataset):
-                    dataset_addresses.add(int(h5py.h5o.get_info(obj.id).addr))
-
-            handle.visititems(collect)
-            if len(dataset_addresses) != 1:
-                raise UnsupportedCase("this release requires exactly one dataset")
-
             shape = selected.shape
             chunks = selected.chunks
             if len(shape) != 2 or chunks is None or len(chunks) != 2:
@@ -65,13 +55,20 @@ def read_dataset_spec(source: Path, dataset_path: str) -> DatasetSpec:
                 raise UnsupportedCase("chunk exceeds the current 1 MiB limit")
 
             datatype = selected.id.get_type()
+            # Recovery copies on-disk bytes directly into a canonical <u4
+            # output. A four-byte HDF5 integer can still have fewer than 32
+            # significant bits, a shifted bit field, or nonstandard padding.
+            # Those representations must not be interpreted as plain uint32.
             if (
                 datatype.get_class() != h5py.h5t.INTEGER
                 or datatype.get_size() != 4
                 or datatype.get_sign() != h5py.h5t.SGN_NONE
                 or datatype.get_order() != h5py.h5t.ORDER_LE
+                or datatype.get_precision() != 32
+                or datatype.get_offset() != 0
+                or datatype.get_pad() != (h5py.h5t.PAD_ZERO, h5py.h5t.PAD_ZERO)
             ):
-                raise UnsupportedCase("expected little-endian unsigned 32-bit integers")
+                raise UnsupportedCase("expected canonical little-endian unsigned 32-bit integers")
 
             creation = selected.id.get_create_plist()
             if creation.get_nfilters() != 0:
@@ -87,5 +84,5 @@ def read_dataset_spec(source: Path, dataset_path: str) -> DatasetSpec:
             )
     except UnsupportedCase:
         raise
-    except (OSError, RuntimeError, ValueError) as exc:
+    except (OSError, RuntimeError, ValueError, KeyError, TypeError) as exc:
         raise UnsupportedCase(f"HDF5 could not open selected dataset metadata: {exc}") from exc

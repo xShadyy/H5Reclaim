@@ -5,10 +5,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import h5py
 import numpy as np
@@ -17,7 +19,7 @@ from .format import FormatError, H5File
 from .metadata import DatasetSpec, UnsupportedCase, read_dataset_spec
 
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 STATUS_CODES = {
     "recovered": 1,
     "allocation_unknown": 2,
@@ -54,6 +56,7 @@ class Analysis:
     records: list[ChunkRecord]
     status: np.ndarray
     report: dict[str, Any]
+    source_identity: tuple[int, int, int, int, int]
 
 
 def sha256_file(path: Path) -> str:
@@ -64,28 +67,83 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _identity(info: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def _verify_source(source: Path, identity: tuple[int, int, int, int, int], digest: str) -> None:
+    """Reject a replaced or changed source, including changes during verification."""
+    if _identity(source.stat()) != identity:
+        raise RecoveryError("input identity or metadata changed during recovery")
+    if sha256_file(source) != digest or _identity(source.stat()) != identity:
+        raise RecoveryError("input bytes changed during recovery")
+
+
 def _anchor_address(value: Any) -> int:
     return int(getattr(value, "address", value))
 
 
-def analyze(source: Path, dataset_path: str) -> Analysis:
-    """Analyze a damaged file without accessing fixture truth or writing to it."""
-
+@contextmanager
+def source_snapshot(
+    source: Path,
+) -> Iterator[tuple[Path, str, tuple[int, int, int, int, int], int]]:
+    """Make one bounded private image for consistent HDF5 and raw-parser reads."""
     source = Path(source)
     if not source.is_file():
         raise RecoveryError(f"input is not a regular file: {source}")
-    size = source.stat().st_size
-    if size > MAX_SOURCE_BYTES:
-        raise UnsupportedCase(f"input exceeds the {MAX_SOURCE_BYTES}-byte limit")
-    before_hash = sha256_file(source)
-    spec = read_dataset_spec(source, dataset_path)
+    with source.open("rb") as original:
+        file_info = os.fstat(original.fileno())
+        identity = _identity(file_info)
+        if not stat.S_ISREG(file_info.st_mode) or _identity(source.stat()) != identity:
+            raise RecoveryError("input changed while it was being opened")
+        if file_info.st_size > MAX_SOURCE_BYTES:
+            raise UnsupportedCase(f"input exceeds the {MAX_SOURCE_BYTES}-byte limit")
+        with tempfile.TemporaryDirectory(prefix="h5reclaim-source-") as directory:
+            snapshot = Path(directory) / "source.h5"
+            digest = hashlib.sha256()
+            total = 0
+            with snapshot.open("xb") as target:
+                while block := original.read(1024 * 1024):
+                    total += len(block)
+                    if total > MAX_SOURCE_BYTES:
+                        raise UnsupportedCase(f"input exceeds the {MAX_SOURCE_BYTES}-byte limit")
+                    target.write(block)
+                    digest.update(block)
+            if total != file_info.st_size:
+                raise RecoveryError("input size changed while making a read-only snapshot")
+            source_hash = digest.hexdigest()
+            yield snapshot, source_hash, identity, total
+
+
+def analyze(source: Path, dataset_path: str) -> Analysis:
+    """Parse one stable private copy; never mix metadata and payload from path reopens."""
+    source = Path(source)
+    with source_snapshot(source) as (snapshot, source_hash, identity, size):
+        analysis = _analyze_snapshot(
+            snapshot, dataset_path, source, source_hash, identity, size
+        )
+        if sha256_file(snapshot) != source_hash:
+            raise RecoveryError("private source snapshot changed during analysis")
+        _verify_source(source, identity, source_hash)
+        return analysis
+
+
+def _analyze_snapshot(
+    snapshot: Path,
+    dataset_path: str,
+    source: Path,
+    before_hash: str,
+    identity: tuple[int, int, int, int, int],
+    size: int,
+) -> Analysis:
+    spec = read_dataset_spec(snapshot, dataset_path)
     grid = spec.chunk_grid
     if grid[0] * grid[1] > MAX_CHUNKS:
         raise UnsupportedCase(f"dataset exceeds the {MAX_CHUNKS}-chunk limit")
 
     records: list[ChunkRecord] = []
     unresolved: list[dict[str, Any]] = []
-    with H5File(source) as reader:
+    with H5File(snapshot) as reader:
         layout = reader.read_dataset_layout(spec.object_address)
         if layout.chunk_shape != spec.chunks or layout.element_size != 4:
             raise FormatError("raw layout disagrees with selected dataset metadata")
@@ -187,13 +245,15 @@ def analyze(source: Path, dataset_path: str) -> Analysis:
         for previous, current in zip(ordered_ranges, ordered_ranges[1:]):
             if previous[1] > current[0]:
                 raise FormatError("accepted chunk payload ranges overlap")
+        for start, end, coordinate in ordered_ranges:
+            for meta_start, meta_end, kind in reader.metadata_ranges:
+                if start < meta_end and meta_start < end:
+                    raise FormatError(
+                        f"chunk {coordinate} overlaps parsed {kind} at byte {meta_start}"
+                    )
 
         root_address = root.address
         reachable_leaves = sum(node.level == 0 for node in walk.nodes)
-
-    after_hash = sha256_file(source)
-    if after_hash != before_hash or source.stat().st_size != size:
-        raise RecoveryError("input changed during analysis; no result can be trusted")
 
     status = np.full(grid, STATUS_CODES["allocation_unknown"], dtype="u1")
     for record in records:
@@ -225,7 +285,7 @@ def analyze(source: Path, dataset_path: str) -> Analysis:
             "path": str(source),
             "size_bytes": size,
             "sha256_before": before_hash,
-            "sha256_after": after_hash,
+            "sha256_after": before_hash,
         },
         "dataset": {
             "path": spec.path,
@@ -258,8 +318,13 @@ def analyze(source: Path, dataset_path: str) -> Analysis:
             "Unfiltered payload bytes have no independent checksum here; "
             "historical measurement integrity is not established."
         ),
+        "metadata_note": (
+            "Only the selected dataset's values, shape, chunking, and datatype are exported. "
+            "Original attributes, dimension scales, links, sibling objects, and scientific "
+            "context are not preserved."
+        ),
     }
-    return Analysis(spec, records, status, report)
+    return Analysis(spec, records, status, report, identity)
 
 
 def _validate_paths(source: Path, output: Path, report: Path) -> None:
@@ -315,15 +380,19 @@ def recover(source: Path, dataset_path: str, output: Path, report_path: Path) ->
                     data.attrs["h5reclaim_integrity"] = "not_checked_no_checksum"
                     data.attrs["h5reclaim_warning"] = (
                         "Check chunk_status before using values; unallocated output chunks "
-                        "read as fill zero but are not known measurements."
+                        "read as fill zero but are not known measurements. Original scientific "
+                        "metadata and sibling objects are not preserved."
                     )
                     meta.attrs["source_sha256"] = analysis.report["source"]["sha256_before"]
                     meta.attrs["report_schema_version"] = 1
                     handle.flush()
 
                 report_temp.write_text(report_text, encoding="utf-8")
-                if sha256_file(source) != analysis.report["source"]["sha256_before"]:
-                    raise RecoveryError("input changed before output publication")
+                _verify_source(
+                    source,
+                    analysis.source_identity,
+                    analysis.report["source"]["sha256_before"],
+                )
                 _validate_paths(source, output, report_path)
                 os.link(output_temp, output)
                 published_output = True

@@ -118,6 +118,11 @@ class H5File:
         try:
             self.size = self._file.seek(0, 2)
             self.superblock = self._parse_superblock()
+            sb = self.superblock
+            superblock_size = (28 if sb.version == 1 else 24) + 4 * sb.offset_size
+            self.metadata_ranges: list[tuple[int, int, str]] = [
+                (sb.signature_offset, sb.signature_offset + superblock_size, "superblock")
+            ]
         except BaseException:
             self._file.close()
             raise
@@ -253,6 +258,8 @@ class H5File:
             raise FormatError("object header message count mismatch")
         if layout is None:
             raise FormatError("selected object has no layout message")
+        start = self.absolute(object_address)
+        self.metadata_ranges.append((start, start + 16 + size, "selected object header"))
         return layout
 
     def _parse_layout(self, data: bytes) -> DatasetLayout:
@@ -305,6 +312,13 @@ class H5File:
         if left == address or right == address or (left is not None and left == right):
             raise FormatError(f"invalid sibling link at B-tree node {address}")
         prefix_length = 8 + 2 * offsize
+        # Version-1 nodes reserve 2K child slots and 2K+1 key slots even
+        # when only a prefix is used. Their entire allocation is metadata.
+        allocated_length = prefix_length + 2 * self.superblock.istore_k * (
+            KEY_SIZE + offsize
+        ) + KEY_SIZE
+        if allocated_length > self.superblock.eof_address - self.absolute(address):
+            raise FormatError(f"B-tree node at {address} crosses HDF5 end-of-file")
         content = self.read_at(address + prefix_length, used * (KEY_SIZE + offsize) + KEY_SIZE)
         entries: list[ChildEntry] = []
         previous_offset: tuple[int, int, int] | None = None
@@ -334,6 +348,8 @@ class H5File:
                 if key.stored_size > self.superblock.eof_address - physical:
                     raise FormatError(f"chunk at {target} crosses HDF5 end-of-file")
             entries.append(ChildEntry(key, target, pointer_offset))
+        start = self.absolute(address)
+        self.metadata_ranges.append((start, start + allocated_length, "B-tree node"))
         return TreeNode(address, level, left, right, tuple(entries), final)
 
     def walk_tree(self, root_address: int, *, max_nodes: int = MAX_TREE_NODES) -> TreeWalk:
@@ -345,7 +361,7 @@ class H5File:
         visited: dict[int, TreeNode] = {}
         broken: list[BrokenChild] = []
         stack: list[
-            tuple[int, int | None, tuple[int, int, int] | None, tuple[int, int, int] | None]
+            tuple[int, int | None, ChunkKey | None, ChunkKey | None]
         ] = [(root_address, None, None, None)]
         while stack:
             address, expected_level, lower, upper = stack.pop()
@@ -356,9 +372,9 @@ class H5File:
             node = self.read_tree(address)
             if expected_level is not None and node.level != expected_level:
                 raise FormatError(f"B-tree level mismatch at {address}")
-            if lower is not None and node.entries[0].key.offsets != lower:
+            if lower is not None and node.entries[0].key != lower:
                 raise FormatError(f"B-tree lower bound mismatch at {address}")
-            if upper is not None and node.final_key.offsets != upper:
+            if upper is not None and node.final_key != upper:
                 raise FormatError(f"B-tree upper bound mismatch at {address}")
             visited[address] = node
             if node.level:
@@ -372,7 +388,7 @@ class H5File:
                         )
                     else:
                         stack.append(
-                            (entry.address, node.level - 1, entry.key.offsets, end_key.offsets)
+                            (entry.address, node.level - 1, entry.key, end_key)
                         )
         ordered_broken = tuple(sorted(broken, key=lambda b: (b.parent_address, b.entry_index)))
         return TreeWalk(tuple(visited.values()), ordered_broken)
@@ -407,8 +423,8 @@ class H5File:
                 node.level != parent.level - 1
                 or node.left_sibling != left_addr
                 or node.right_sibling != right_addr
-                or node.entries[0].key.offsets != gap.key_start.offsets
-                or node.final_key.offsets != gap.key_end.offsets
+                or node.entries[0].key != gap.key_start
+                or node.final_key != gap.key_end
             ):
                 continue
             candidates.append(MissingChildCandidate(parent.address, i, node, left_addr, right_addr))
