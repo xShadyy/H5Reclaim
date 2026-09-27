@@ -44,6 +44,15 @@ class DependencyError(ValueError):
     """The explicitly supplied file manifest is invalid or contradictory."""
 
 
+def _manifest_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    values: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in values:
+            raise DependencyError(f"duplicate related-file manifest key: {key[:128]}")
+        values[key] = value
+    return values
+
+
 def _short(value: object, limit: int = MAX_ERROR_CHARS) -> str:
     return " ".join(str(value).split())[:limit]
 
@@ -229,7 +238,7 @@ def load_dependency_manifest(path: str | Path) -> dict[str, Any]:
             raw = handle.read(MAX_MANIFEST_BYTES + 1)
         if len(raw) > MAX_MANIFEST_BYTES:
             raise DependencyError("related-file manifest exceeds 64 KiB")
-        document = json.loads(raw.decode("utf-8"))
+        document = json.loads(raw.decode("utf-8"), object_pairs_hook=_manifest_pairs)
     except (UnicodeError, json.JSONDecodeError) as exc:
         raise DependencyError(f"invalid related-file manifest: {_short(exc)}") from exc
     if not isinstance(document, dict) or set(document) != {"schema_version", "files"}:

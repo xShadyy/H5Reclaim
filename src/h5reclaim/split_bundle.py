@@ -60,13 +60,22 @@ class SplitMap:
     checksum_validated: bool
 
 
+def _manifest_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise RecoveryError(f"duplicate Split manifest key: {key[:128]}")
+        result[key] = value
+    return result
+
+
 def _load_manifest(value: str | Path | dict[str, Any]) -> tuple[Path, str, Path, str]:
     if isinstance(value, (str, Path)):
         with Path(value).open("rb") as handle:
             raw = handle.read(MAX_MANIFEST_BYTES + 1)
         if len(raw) > MAX_MANIFEST_BYTES:
             raise RecoveryError("Split manifest exceeds 64 KiB")
-        value = json.loads(raw)
+        value = json.loads(raw, object_pairs_hook=_manifest_pairs)
     if (not isinstance(value, dict) or set(value) != {"schema_version", "driver", "members"}
             or type(value["schema_version"]) is not int or value["schema_version"] != 1
             or value["driver"] != "split"):

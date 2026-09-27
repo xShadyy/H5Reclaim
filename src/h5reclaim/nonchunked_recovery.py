@@ -37,6 +37,8 @@ from .hints import DatasetHints, HintsError, compare_hints, require_no_conflicts
 
 MAX_ELEMENTS = 1_048_576
 MAX_DATA_BYTES = 8 * MAX_ELEMENTS
+MAX_OWNERSHIP_OBJECTS = 8192
+MAX_OWNERSHIP_LINKS = 32768
 STATUS_CODES = {"unknown": 0, "recovered": 1}
 
 
@@ -160,6 +162,7 @@ class NonchunkedSpec:
     metadata_ranges: tuple[tuple[int, int, str], ...]
     omitted_auxiliary_metadata: tuple[str, ...]
     truncated_source: bool
+    uninspected_rooted_objects: int
 
     @property
     def element_size(self) -> int:
@@ -277,6 +280,100 @@ def _check_path(dataset_path: str) -> list[str]:
     return parts
 
 
+def _other_contiguous_extent(reader: H5File | ModernH5File, layout: bytes,
+                             *, older: bool) -> tuple[int, int] | None:
+    """Read an unrelated dataset's allocation without interpreting its type.
+
+    The physical range comes from its own rooted layout message. The selected
+    payload cannot be assigned while another rooted object also claims any of
+    those bytes. An unknown layout is refused, never assumed nonoverlapping.
+    """
+    osize, lsize = reader.superblock.offset_size, reader.superblock.length_size
+    if len(layout) < 2 or layout[0] not in (3, 4, 5):
+        raise UnsupportedFormat("other rooted dataset has an unsupported storage layout")
+    if layout[1] == 0:  # Compact bytes live inside its parsed object header.
+        return None
+    if layout[1] == 1:
+        length = 2 + osize + lsize
+        if len(layout) != length and not (older and len(layout) == (length + 7) // 8 * 8
+                                         and not any(layout[length:])):
+            raise FormatError("other rooted contiguous layout length is contradictory")
+        address = _uint(layout[2:2 + osize])
+        stored = _uint(layout[2 + osize:length])
+        if address == reader.superblock.undefined_address:
+            return None
+        absolute = reader.superblock.base_address + address
+        if absolute >= reader.superblock.eof_address or stored > reader.superblock.eof_address - absolute:
+            raise FormatError("other rooted contiguous allocation exceeds declared EOF")
+        return absolute, absolute + stored
+    if layout[1] == 2:
+        raise UnsupportedFormat("other rooted chunked dataset needs independent allocation inventory")
+    if layout[1] == 3:  # Virtual storage has no payload in this file.
+        return None
+    raise UnsupportedFormat("other rooted dataset has an unknown storage layout")
+
+
+def _refuse_competing_rooted_allocations(reader: H5File | ModernH5File,
+                                         root: int, root_cached: tuple[int, int] | None,
+                                         selected_address: int, selected_start: int,
+                                         selected_end: int, *, older: bool) -> int:
+    """Boundedly follow the local namespace, refusing competing allocations.
+
+    The selected path alone cannot distinguish a redirect to a sibling's data.
+    A partial or unsupported namespace inventory is not evidence of exclusive
+    ownership, so it fails closed rather than trusting a solitary pointer.
+    """
+    pending = [(root, root_cached, 0)]
+    visited: dict[int, tuple[int, int] | None] = {}
+    links_seen = 0
+    beyond_physical_eof = 0
+    chunked_sibling_seen = False
+    while pending:
+        address, cached, depth = pending.pop()
+        if address in visited:
+            if older and cached is not None and visited[address] not in (None, cached):
+                raise FormatError("rooted hard links disagree about a cached group")
+            continue
+        if len(visited) >= MAX_OWNERSHIP_OBJECTS or depth > MAX_DEPTH:
+            raise UnsupportedFormat("rooted ownership inventory exceeds object or depth limit")
+        visited[address] = cached
+        if address != selected_address and reader.absolute(address) >= reader.size:
+            # A physically truncated tail may remove an unrelated sibling's
+            # object header. Its allocation claims cannot be inspected, and
+            # this limitation must be disclosed with the partial result.
+            beyond_physical_eof += 1
+            continue
+        messages = (_old_messages(reader, address) if older else _messages(reader, address))
+        layout = _unique(messages, 8)
+        group = (_unique(messages, 0x11) is not None if older else
+                 _unique(messages, 2) is not None or _unique(messages, 10) is not None)
+        if group and layout is not None:
+            raise FormatError("rooted object declares both group links and dataset storage")
+        if group:
+            children = (_old_group(reader, address, cached) if older else
+                        _compact_links(reader, address))
+            links_seen += len(children)
+            if links_seen > MAX_OWNERSHIP_LINKS:
+                raise UnsupportedFormat("rooted ownership inventory exceeds link limit")
+            for step in children.values():
+                if step is not None:
+                    pending.append((step.object_address, step.cached_group, depth + 1))
+        elif layout is not None and address != selected_address:
+            if len(layout.data) >= 2 and layout.data[0] in (3, 4, 5) and layout.data[1] == 2:
+                chunked_sibling_seen = True
+                continue
+            extent = _other_contiguous_extent(reader, layout.data, older=older)
+            if extent is not None and selected_start < extent[1] and extent[0] < selected_end:
+                raise FormatError("selected payload overlaps another rooted dataset allocation")
+    if chunked_sibling_seen:
+        from .ownership_inventory import inventory_other_allocations, reject_sibling_overlap
+        inventory = inventory_other_allocations(reader.path, selected_address)
+        reject_sibling_overlap([(selected_start, selected_end, ())], inventory)
+        if not inventory.complete:
+            raise UnsupportedFormat("chunked sibling allocations cannot be completely inventoried")
+    return beyond_physical_eof
+
+
 def read_nonchunked_spec(snapshot: Path, dataset_path: str) -> NonchunkedSpec:
     """Resolve a selected dataset through surviving local hard links only."""
     parts = _check_path(dataset_path)
@@ -306,6 +403,7 @@ def read_nonchunked_spec(snapshot: Path, dataset_path: str) -> NonchunkedSpec:
             root, cached = _old_root_address(reader)
         else:
             root, cached = reader.superblock.root_object_address, None
+        root_cached = cached
         address = root
         chain = []
         for part in parts:
@@ -342,6 +440,10 @@ def read_nonchunked_spec(snapshot: Path, dataset_path: str) -> NonchunkedSpec:
             base=reader.superblock.base_address, declared_eof=reader.superblock.eof_address,
             message_offset=layout.absolute_offset,
         )
+        uninspected = (_refuse_competing_rooted_allocations(
+            reader, root, root_cached, address, absolute, absolute + stored,
+            older=older,
+        ) if absolute is not None else 0)
         _validate_metadata_ranges(reader.metadata_ranges)
         if absolute is not None:
             end = absolute + stored
@@ -371,6 +473,7 @@ def read_nonchunked_spec(snapshot: Path, dataset_path: str) -> NonchunkedSpec:
             metadata_ranges=tuple(reader.metadata_ranges),
             omitted_auxiliary_metadata=omitted,
             truncated_source=(reader.superblock.eof_address > reader.size),
+            uninspected_rooted_objects=uninspected,
         )
 
 
@@ -447,6 +550,17 @@ def analyze_nonchunked_snapshot(
                 {"start": start, "end": stop, "kind": kind}
                 for start, stop, kind in spec.metadata_ranges
             ],
+            "allocation_conflict_check": {
+                "scope": "bounded rooted local hard-link graph and observed sibling allocations",
+                "complete": spec.uninspected_rooted_objects == 0,
+                "uninspected_objects_beyond_physical_eof": spec.uninspected_rooted_objects,
+                "note": (
+                    "Headers lost beyond physical EOF may have had allocation claims; "
+                    "this inventory cannot exclude those historical claims."
+                    if spec.uninspected_rooted_objects else
+                    "No competing rooted allocation was observed within the bounded supported graph."
+                ),
+            },
         },
         "allocation": {
             "source_address": spec.source_address,
@@ -454,6 +568,7 @@ def analyze_nonchunked_snapshot(
             "declared_size_bytes": spec.stored_size,
             "physically_available_size_bytes": available,
             "declared_eof_past_physical_file": spec.truncated_source,
+            "rooted_objects_beyond_physical_eof": spec.uninspected_rooted_objects,
         },
         "counts": {"recovered": recovered, "unknown": spec.elements - recovered},
         "validity": {"dataset": "/_h5reclaim/element_status", "codes": STATUS_CODES,

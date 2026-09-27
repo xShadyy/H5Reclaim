@@ -34,17 +34,26 @@ MAX_MEMBERS = 64
 MAX_BUNDLE_BYTES = 4 * 1024 * 1024 * 1024
 
 
+def _manifest_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise RecoveryError(f"duplicate Family manifest key: {key[:128]}")
+        result[key] = value
+    return result
+
+
 def _manifest(value: str | Path | dict[str, Any]) -> tuple[int, list[dict[str, Any]]]:
     if isinstance(value, (str, Path)):
         with Path(value).open("rb") as handle:
             raw = handle.read(64 * 1024 + 1)
         if len(raw) > 64 * 1024:
             raise RecoveryError("family manifest exceeds 64 KiB")
-        value = json.loads(raw.decode("utf-8"))
+        value = json.loads(raw.decode("utf-8"), object_pairs_hook=_manifest_pairs)
     if not isinstance(value, dict) or set(value) != {"schema_version", "member_size", "members"}:
         raise RecoveryError("family manifest needs schema_version, member_size, and members")
     size, members = value["member_size"], value["members"]
-    if value["schema_version"] != 1 or type(size) is not int or not 512 <= size <= MAX_BUNDLE_BYTES:
+    if type(value["schema_version"]) is not int or value["schema_version"] != 1 or type(size) is not int or not 512 <= size <= MAX_BUNDLE_BYTES:
         raise RecoveryError("invalid family manifest version or member_size")
     if not isinstance(members, list) or not 1 <= len(members) <= MAX_MEMBERS:
         raise RecoveryError("family manifest needs 1 through 64 members")
