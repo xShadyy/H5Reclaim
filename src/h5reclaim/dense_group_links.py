@@ -24,6 +24,7 @@ MAX_NODE_SIZE = 1 << 20
 MAX_BLOCK_SIZE = 1 << 20
 MAX_METADATA_BYTES = 64 << 20
 MAX_NAME_BYTES = 2048
+MAX_INDIRECT_DEPTH = 8
 
 
 def _uint(raw: bytes) -> int:
@@ -241,51 +242,67 @@ def _tree_records(reader: ModernH5File, index_address: int, id_length: int,
 
 def _direct_block(reader: ModernH5File, heap: _Heap, offset: int,
                   pending: list[tuple[int, int, str]],
-                  cache: dict[int, tuple[int, int, bytes]]) -> tuple[int, int, bytes]:
+                  cache: dict[int, tuple[int, int, bytes]],
+                  indirect_cache: dict[int, tuple[int, int, bytes]]) -> tuple[int, int, bytes]:
     if heap.root_rows == 0:
         address, size, block_offset = heap.root_address, heap.start_size, 0
     else:
-        rows = heap.root_rows
         max_rows = (heap.max_direct.bit_length() - heap.start_size.bit_length()) + 2
-        if rows > max_rows:
-            raise UnsupportedFormat("indirect fractal-heap descendant is outside bounded route")
-        count = rows*heap.table_width
-        iblock_len = 5 + reader.superblock.offset_size + heap.offset_width + count*reader.superblock.offset_size + 4
-        if iblock_len > MAX_BLOCK_SIZE:
-            raise UnsupportedFormat("fractal-heap indirect block exceeds limit")
-        if heap.root_address not in cache:
-            _reserve(reader, pending, heap.root_address, iblock_len, "dense root FHIB")
-            iblock = reader.read_at(heap.root_address, iblock_len)
-            if (iblock[:4] != b"FHIB" or iblock[4] != 0
-                or _uint(iblock[5:5+reader.superblock.offset_size]) != heap.address
-                or _uint(iblock[5+reader.superblock.offset_size:
-                                5+reader.superblock.offset_size+heap.offset_width]) != 0
-                or lookup3(iblock[:-4]) != _uint(iblock[-4:])):
-                raise FormatError("dense root FHIB signature, back-pointer, offset, or checksum invalid")
-            cache[heap.root_address] = (-1, -1, iblock)
-        iblock = cache[heap.root_address][2]
-        cursor = 5 + reader.superblock.offset_size + heap.offset_width
-        heap_cursor = 0
-        slot = None
-        for row in range(rows):
-            block_size = heap.start_size if row < 2 else heap.start_size << (row-1)
-            if block_size > MAX_BLOCK_SIZE:
-                raise UnsupportedFormat("fractal-heap direct block exceeds limit")
-            for col in range(heap.table_width):
-                if heap_cursor <= offset < heap_cursor + block_size:
-                    slot = (cursor, block_size, heap_cursor)
-                    break
-                cursor += reader.superblock.offset_size
-                heap_cursor += block_size
-            if slot is not None:
-                break
-        if slot is None:
-            raise FormatError("managed heap ID lies outside root indirect coverage")
-        pointer, size, block_offset = slot
-        address = _uint(iblock[pointer:pointer+reader.superblock.offset_size])
-        if address == reader.superblock.undefined_address:
-            raise FormatError("managed heap ID references unallocated direct block")
-    if address in cache and cache[address][0] != -1:
+        osize = reader.superblock.offset_size
+
+        def follow(address: int, rows: int, first_offset: int,
+                   depth: int) -> tuple[int, int, int]:
+            if depth > MAX_INDIRECT_DEPTH or rows < 1 or rows > 16:
+                raise UnsupportedFormat("fractal-heap indirect depth or rows exceed limit")
+            count = rows*heap.table_width
+            length = 5 + osize + heap.offset_width + count*osize + 4
+            if length > MAX_BLOCK_SIZE:
+                raise UnsupportedFormat("fractal-heap indirect block exceeds limit")
+            cached = indirect_cache.get(address)
+            if cached is not None:
+                if cached[:2] != (first_offset, rows):
+                    raise FormatError("fractal-heap indirect block reused at conflicting offset")
+                iblock = cached[2]
+            else:
+                _reserve(reader, pending, address, length,
+                         "dense root FHIB" if depth == 0 else
+                         "dense child FHIB" if depth == 1 else "dense descendant FHIB")
+                iblock = reader.read_at(address, length)
+                prefix = 5+osize
+                if (iblock[:4] != b"FHIB" or iblock[4] != 0
+                    or _uint(iblock[5:prefix]) != heap.address
+                    or _uint(iblock[prefix:prefix+heap.offset_width]) != first_offset
+                    or lookup3(iblock[:-4]) != _uint(iblock[-4:])):
+                    label = "root" if depth == 0 else "child"
+                    raise FormatError(f"dense {label} FHIB signature, back-pointer, offset, or checksum invalid")
+                indirect_cache[address] = (first_offset, rows, iblock)
+            pointer = 5 + osize + heap.offset_width
+            logical = first_offset
+            for row in range(rows):
+                block_size = heap.start_size if row < 2 else heap.start_size << (row-1)
+                for _col in range(heap.table_width):
+                    target = _uint(iblock[pointer:pointer+osize])
+                    pointer += osize
+                    if logical <= offset < logical+block_size:
+                        if target == reader.superblock.undefined_address:
+                            raise FormatError("managed heap ID references unallocated block")
+                        if row < max_rows:
+                            return target, block_size, logical
+                        # An indirect entry spans `block_size` bytes. Its own
+                        # doubling table covers precisely that logical range.
+                        child_rows = (block_size.bit_length()
+                                      - heap.start_size.bit_length()
+                                      - heap.table_width.bit_length() + 2)
+                        if not 1 <= child_rows < rows:
+                            raise FormatError("fractal-heap child indirect rows contradict parent")
+                        return follow(target, child_rows, logical, depth+1)
+                    logical += block_size
+            raise FormatError("managed heap ID lies outside indirect coverage")
+
+        address, size, block_offset = follow(heap.root_address, heap.root_rows, 0, 0)
+    if size > MAX_BLOCK_SIZE:
+        raise UnsupportedFormat("fractal-heap direct block exceeds limit")
+    if address in cache:
         actual_offset, actual_size, raw = cache[address]
         if (actual_offset, actual_size) != (block_offset, size):
             raise FormatError("fractal-heap direct block reused at conflicting offset")
@@ -308,7 +325,8 @@ def _direct_block(reader: ModernH5File, heap: _Heap, offset: int,
 def _link_from_id(reader: ModernH5File, heap: _Heap,
                   identifier: bytes, key_hash: int, record_offset: int,
                   pending: list[tuple[int, int, str]],
-                  cache: dict[int, tuple[int, int, bytes]]) -> DenseLink:
+                  cache: dict[int, tuple[int, int, bytes]],
+                  indirect_cache: dict[int, tuple[int, int, bytes]]) -> DenseLink:
     if len(identifier) != heap.id_length or identifier[0] != 0:
         raise UnsupportedFormat("dense link heap ID is not a bounded managed ID")
     width = heap.offset_width
@@ -318,7 +336,8 @@ def _link_from_id(reader: ModernH5File, heap: _Heap,
         raise UnsupportedFormat("dense link record exceeds managed-object limit")
     if offset+size > heap.managed_space:
         raise FormatError("dense link heap ID exceeds managed space")
-    block_offset, block_size, block = _direct_block(reader, heap, offset, pending, cache)
+    block_offset, block_size, block = _direct_block(reader, heap, offset, pending, cache,
+                                                   indirect_cache)
     first_data = 5 + reader.superblock.offset_size + heap.offset_width + 4
     relative = offset-block_offset
     if relative < first_data or relative+size > block_size:
@@ -411,6 +430,7 @@ def read_dense_group_links(
     if len(indexed) != heap.managed_count:
         raise FormatError("dense heap managed-object count differs from name index")
     cache: dict[int, tuple[int, int, bytes]] = {}
+    indirect_cache: dict[int, tuple[int, int, bytes]] = {}
     links: list[DenseLink] = []
     names: set[str] = set()
     ids: set[bytes] = set()
@@ -418,7 +438,8 @@ def read_dense_group_links(
         if identifier in ids:
             raise FormatError("dense name index repeats a heap object ID")
         ids.add(identifier)
-        link = _link_from_id(reader, heap, identifier, key_hash, physical, pending, cache)
+        link = _link_from_id(reader, heap, identifier, key_hash, physical,
+                             pending, cache, indirect_cache)
         if link.name in names:
             raise FormatError("dense group has duplicate name")
         names.add(link.name)

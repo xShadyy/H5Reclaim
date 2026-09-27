@@ -843,8 +843,11 @@ def read_dataset_spec_fallback(
             for message in selected if message.kind in (5, 12, 13, 17, 21)
         )
         _validate_metadata_ranges(reader.metadata_ranges)
+        route = ("checksummed_modern_dense_hard_links"
+                 if any(step.index_record_offset is not None for step in chain)
+                 else "checksummed_modern_compact_hard_links")
         result = FallbackMetadata(spec, source_hash, root, tuple(chain),
-                                  tuple(reader.metadata_ranges), omitted)
+                                  tuple(reader.metadata_ranges), omitted, route=route)
     after = snapshot.stat()
     if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
         after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns

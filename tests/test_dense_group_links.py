@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import hashlib
 from pathlib import Path
 
 import h5py
 import numpy as np
 
-from h5reclaim.dense_group_links import read_dense_group_links
+from h5reclaim.dense_group_links import _read_heap, read_dense_group_links
 from h5reclaim.format import FormatError
 from h5reclaim.metadata_fallback import _messages
 from h5reclaim.modern_indexes import ModernH5File, lookup3
+from h5reclaim.recovery import recover
 
 
 class DenseGroupTests(unittest.TestCase):
@@ -29,6 +31,16 @@ class DenseGroupTests(unittest.TestCase):
                                      data=(np.arange(4, dtype="<u4") + n).reshape(2, 2),
                                      chunks=(2, 2))
             return h5py.h5o.get_info(group.id).addr
+
+    def _create_nested(self, count: int, name_size: int) -> tuple[int, int, np.ndarray]:
+        expected = np.arange(8, dtype="<u4")
+        with h5py.File(self.path, "w", libver="latest") as handle:
+            group = handle.create_group("lab")
+            selected = group.create_dataset("science", data=expected, chunks=(8,))
+            target = h5py.h5o.get_info(selected.id).addr
+            for n in range(count):
+                group[f"soft_{n:04d}_" + "x" * name_size] = h5py.SoftLink("/lab/science")
+            return h5py.h5o.get_info(group.id).addr, target, expected
 
     def _info(self, reader: ModernH5File, group_address: int):
         message = [m for m in _messages(reader, group_address) if m.kind == 2][0]
@@ -57,6 +69,84 @@ class DenseGroupTests(unittest.TestCase):
                     if count >= 40:
                         self.assertTrue(any(kind == "dense root FHIB"
                                             for _, _, kind in reader.metadata_ranges))
+
+    def test_child_and_descendant_indirect_blocks_match_native_links(self):
+        for count, name_size, expected_label in (
+            (3000, 200, "dense child FHIB"),
+            (3800, 1200, "dense descendant FHIB"),
+        ):
+            with self.subTest(count=count):
+                address, target, _ = self._create_nested(count, name_size)
+                with ModernH5File(self.path) as reader:
+                    links = self._read(reader, address)
+                    self.assertEqual(len(links), count + 1)
+                    self.assertEqual([link.object_address for link in links
+                                      if link.name == "science"], [target])
+                    self.assertEqual(sum(link.object_address is None for link in links), count)
+                    self.assertTrue(any(kind == expected_label for _, _, kind
+                                        in reader.metadata_ranges))
+
+    def test_child_indirect_offset_contradiction_refuses_after_valid_checksum(self):
+        address, _, _ = self._create_nested(3000, 200)
+        with ModernH5File(self.path) as reader:
+            self._read(reader, address)
+            child_start, child_end, _ = next(entry for entry in reader.metadata_ranges
+                                             if entry[2] == "dense child FHIB")
+            offset_byte = child_start + 5 + reader.superblock.offset_size
+        raw = bytearray(self.path.read_bytes())
+        raw[offset_byte] ^= 1
+        raw[child_end-4:child_end] = lookup3(raw[child_start:child_end-4]).to_bytes(4, "little")
+        self.path.write_bytes(raw)
+        with ModernH5File(self.path) as reader:
+            with self.assertRaisesRegex(FormatError, "child FHIB"):
+                self._read(reader, address)
+
+    def test_redirected_child_pointer_refuses_even_with_repaired_parent_checksum(self):
+        address, _, _ = self._create_nested(3000, 200)
+        with ModernH5File(self.path) as reader:
+            self._read(reader, address)
+            children = [entry for entry in reader.metadata_ranges
+                        if entry[2] == "dense child FHIB"]
+            root_start, root_end, _ = next(entry for entry in reader.metadata_ranges
+                                           if entry[2] == "dense root FHIB")
+            self.assertGreaterEqual(len(children), 2)
+            old, replacement = (child[0] for child in children[:2])
+            width = reader.superblock.offset_size
+        raw = bytearray(self.path.read_bytes())
+        location = raw.find(old.to_bytes(width, "little"), root_start, root_end-4)
+        self.assertGreaterEqual(location, root_start)
+        raw[location:location+width] = replacement.to_bytes(width, "little")
+        raw[root_end-4:root_end] = lookup3(raw[root_start:root_end-4]).to_bytes(4, "little")
+        self.path.write_bytes(raw)
+        with ModernH5File(self.path) as reader:
+            with self.assertRaisesRegex(FormatError, "indirect block reused|child FHIB"):
+                self._read(reader, address)
+
+    def test_nested_dense_group_recovers_selected_native_inaccessible_dataset(self):
+        address, target, expected = self._create_nested(3000, 200)
+        with ModernH5File(self.path) as reader:
+            message = next(m for m in _messages(reader, target) if m.kind == 5)
+        raw = bytearray(self.path.read_bytes())
+        raw[message.absolute_offset] = 255  # Invalid optional fill message blocks native open.
+        flags = raw[target + 5]
+        size_width = 1 << (flags & 3)
+        prefix = 6 + (16 if flags & 0x20 else 0) + (4 if flags & 0x10 else 0) + size_width
+        chunk_size = int.from_bytes(raw[target+prefix-size_width:target+prefix], "little")
+        end = target + prefix + chunk_size
+        raw[end:end+4] = lookup3(raw[target:end]).to_bytes(4, "little")
+        self.path.write_bytes(raw)
+        digest = hashlib.sha256(raw).hexdigest()
+        with h5py.File(self.path) as handle:
+            with self.assertRaises((KeyError, OSError)):
+                handle["/lab/science"]
+        output, report_path = self.path.with_name("recovered.h5"), self.path.with_name("report.json")
+        report = recover(self.path, "/lab/science", output, report_path)
+        self.assertEqual(report["counts"]["recovered"], 1)
+        self.assertEqual(report["metadata_resolution"]["route"],
+                         "checksummed_modern_dense_hard_links")
+        with h5py.File(output) as handle:
+            np.testing.assert_array_equal(handle["/lab/science"][:], expected)
+        self.assertEqual(hashlib.sha256(self.path.read_bytes()).hexdigest(), digest)
 
     def test_unrelated_soft_link_remains_explicitly_nonhard(self):
         group_address = self._create()
