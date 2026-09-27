@@ -10,6 +10,7 @@ from pathlib import Path
 import h5py
 import numpy as np
 
+from h5reclaim.format import H5File
 from h5reclaim.metadata import UnsupportedCase, read_dataset_spec
 from h5reclaim.schema_codec import (
     ChunkDecodeError, FilterDescriptor, MissingFilterDecoder,
@@ -18,6 +19,27 @@ from h5reclaim.schema_codec import (
 
 
 class SchemaCodecTests(unittest.TestCase):
+    def test_legacy_index_keys_own_edge_coordinates_for_other_widths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            for dtype in ("u1", ">i2", "<f4", ">f8"):
+                with self.subTest(dtype=dtype):
+                    source = Path(directory) / "legacy.h5"
+                    values = np.arange(30, dtype=dtype).reshape(5, 6)
+                    with h5py.File(source, "w", libver=("earliest", "v108")) as handle:
+                        handle.create_dataset("data", data=values, chunks=(4, 4))
+                    spec = read_dataset_spec(source, "/data")
+                    with H5File(source) as reader:
+                        layout = reader.read_dataset_layout(spec.object_address, rank=2)
+                        self.assertEqual(layout.element_size, np.dtype(dtype).itemsize)
+                        walk = reader.walk_tree(
+                            layout.root_address, rank=2, element_size=layout.element_size
+                        )
+                        positions = {
+                            entry.key.offsets[:2] for node in walk.nodes
+                            if node.level == 0 for entry in node.entries
+                        }
+                        self.assertEqual(positions, {(0, 0), (0, 4), (4, 0), (4, 4)})
+
     def test_numeric_endianness_edge_chunks_and_built_in_filter_pipeline(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             for file_dtype in ("u1", "<u2", ">i4", "<f4", ">f8"):

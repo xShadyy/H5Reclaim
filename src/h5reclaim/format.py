@@ -2,7 +2,7 @@
 
 This module accepts v0/v1 superblocks, bounded v1 object headers with a v3
 chunked layout, and v1 type-1 B-tree nodes for declared rank-one or rank-two
-datasets. Addresses exposed
+datasets with one-, two-, four-, or eight-byte fixed-width elements. Addresses exposed
 by HDF5 metadata are relative to the superblock base; pointer_offset is an
 absolute byte offset in the source file. Parsing a plausible TREE signature
 does not establish that a node belongs to a dataset.
@@ -308,8 +308,8 @@ class H5File:
         )
         if any(value == 0 for value in dimensions):
             raise FormatError("zero chunk dimension or datatype element size")
-        if (rank, dimensions[-1]) not in ((1, 8), (2, 4)):
-            raise UnsupportedFormat("only rank-one eight-byte or rank-two four-byte elements")
+        if rank not in (1, 2) or dimensions[-1] not in (1, 2, 4, 8):
+            raise UnsupportedFormat("only rank-one/two fixed-width 1/2/4/8-byte elements")
         if any(data[fields_end:]):
             raise FormatError("nonzero layout message padding")
         return DatasetLayout(root, dimensions[:-1], dimensions[-1], 3)
@@ -325,7 +325,7 @@ class H5File:
 
     def read_tree(self, address: int, *, rank: int = 2, element_size: int = 4) -> TreeNode:
         """Decode used entries of an explicitly declared type-1 v1 B-tree node."""
-        if (rank, element_size) not in ((1, 8), (2, 4)):
+        if rank not in (1, 2) or element_size not in (1, 2, 4, 8):
             raise UnsupportedFormat("unsupported rank and datatype-element-size pair")
         key_size = 8 + 8 * (rank + 1)
         header = self.read_at(address, 8 + 2 * self.superblock.offset_size)
@@ -356,7 +356,7 @@ class H5File:
             start = i * (key_size + offsize)
             key = self._key(content[start : start + key_size], rank=rank)
             # HDF5's terminal, unallocated key can use the datatype-element
-            # size as its final coordinate (4 for uint32, 8 for float64).
+            # size as its final coordinate.
             if key.offsets[-1] != 0 and not (
                 i == used and key.stored_size == 0 and key.offsets[-1] == element_size
             ):
