@@ -1,5 +1,25 @@
 # Recovery benchmarks
 
+## Version 0.11 focused checks
+
+The public CLI checks cover a prospective protection ZIP, its separate
+manifest pin, a disposable root-loss/parity drill, direct strict capsule
+recovery after root signature damage, current versus historical status, and
+source scientific-context omissions. Nested VDS tests check one explicitly
+pinned transitive hop, sparse/missing leaves, overlap refusal and a third
+layer refusal. Windows Job Object behavior has mock call-order tests and real
+Windows tests configured in CI. The incident evaluator has constructed
+self-checks for wrong accepted unchecksummed values, withheld filtered
+corruption, refusals and partial truth; no self-check is a natural incident.
+
+```sh
+python -m unittest tests.test_v11_cli_routes tests.test_strict_history_cli tests.test_protection_bundle tests.test_vds_nested tests.test_scientific_context tests.test_windows_worker_limits benchmarks.test_incident_intake -q
+```
+
+The full release verification uses `python -m unittest discover -s tests -q`
+and the separately discovered benchmark self-checks. See
+[incident intake](INCIDENT_INTAKE.md) for the damaged-only submission protocol.
+
 ## Operator-declared incidents
 
 The two-stage [incident intake and independent scoring protocol](INCIDENT_INTAKE.md)
