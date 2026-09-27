@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 import json
 import shutil
@@ -91,6 +92,41 @@ class DependencyIntegrationTests(unittest.TestCase):
             self.assertTrue(result["trial_was_disposable"])
             self.assertFalse(result["source_modified"])
             self.assertEqual(flagged.read_bytes(), before)
+
+    def test_diagnose_cli_accepts_explicit_related_file_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            source = folder / "parent.h5"
+            raw = folder / "different-local-name.bin"
+            raw.write_bytes(b"1234567890abcdef")
+            with h5py.File(source, "x") as handle:
+                handle.create_dataset(
+                    "external", shape=(4,), dtype="<i4",
+                    external=[("declared-data.bin", 0, 16)],
+                )
+            source_before = source.read_bytes()
+            manifest = folder / "related.json"
+            manifest.write_text(json.dumps({
+                "schema_version": 1,
+                "files": [{
+                    "declared_name": "declared-data.bin", "path": str(raw),
+                    "sha256": hashlib.sha256(raw.read_bytes()).hexdigest(),
+                }],
+            }), encoding="utf-8")
+            stdout = io.StringIO()
+            with patch.object(h5py.Dataset, "__getitem__", side_effect=AssertionError("value read")), \
+                    contextlib.redirect_stdout(stdout):
+                exit_code = main([
+                    "diagnose", str(source), "--dataset", "/external",
+                    "--related-files", str(manifest), "--json",
+                ])
+            report = json.loads(stdout.getvalue())
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(report["next_action"], "resolve_external_or_virtual_dependencies")
+            self.assertTrue(report["dependency_validation"]["all_declared_present_and_hash_matched"])
+            self.assertFalse(report["dependency_validation"]["values_read"])
+            self.assertFalse(report["recovery_attempted"])
+            self.assertEqual(source.read_bytes(), source_before)
 
 
 if __name__ == "__main__":
