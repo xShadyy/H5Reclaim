@@ -2,6 +2,14 @@
 
 Updated: 2026-09-27
 
+## Version 0.10.1: documentation correction
+
+The generalization plan now matches the v0.10.0 implementation of one
+corroborated older internal subtree link, the selected chunk-dimension
+metadata trial, and the bounded large structural route. Recovery logic is
+unchanged apart from the reported version. The 521-test v0.10.0 verification
+record below applies to those unchanged recovery paths.
+
 ## Version 0.10.0: additional bounded metadata and integrity checks
 
 `rescue --metadata-trial dimension` extends the disposable, original-checksum
