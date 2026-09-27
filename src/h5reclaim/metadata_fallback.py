@@ -1,10 +1,11 @@
-"""Read-only, rooted modern metadata fallback for a selected local dataset.
+"""Read-only, rooted metadata fallback for a selected local dataset.
 
 This module is deliberately narrower than HDF5's object graph. It follows
-compact, local hard links from a checksummed v2/v3 superblock root through
-checksummed v2 object headers. It parses the selected dataset's own dataspace,
-datatype, layout, and filter metadata before returning a DatasetSpec. A user
-hint or an unreferenced OHDR signature cannot establish ownership.
+rooted local hard links in older symbol tables or modern compact/dense groups
+and parses the selected dataset's own dataspace, datatype, layout, and filter
+metadata before returning a DatasetSpec. A user hint or an unreferenced
+object-header signature cannot establish ownership. Older metadata has no
+checksum; its link, field, and allocation checks do not prove historical bytes.
 
 Format: https://support.hdfgroup.org/documentation/hdf5/latest/_f_m_t4.html
 sections II.A, IV.A.1.b, IV.A.3.b-d, IV.A.3.g, IV.A.3.i/l/q.
@@ -525,22 +526,6 @@ def _dataspace(raw: bytes, lsize: int, *, older_padding: bool = False,
     if not allow_growing and maximum != shape:
         raise UnsupportedFormat("older fallback requires fixed extents")
     return shape, maximum
-
-
-def _dtype(raw: bytes, rank: int) -> str:
-    if rank == 2:
-        if (len(raw) != 12 or raw[0] >> 4 not in (1, 2, 3, 4)
-            or raw[0] & 15 != 0 or raw[1:4] != b"\x00\x00\x00"
-            or raw[4:8] != b"\x04\x00\x00\x00"
-            or raw[8:12] != b"\x00\x00\x20\x00"):
-            raise UnsupportedFormat("fallback datatype is not canonical little-endian uint32")
-        return "<u4"
-    if (len(raw) != 20 or raw[0] >> 4 not in (1, 2, 3, 4)
-        or raw[0] & 15 != 1 or raw[1:4] != b"\x20\x3f\x00"
-        or raw[4:8] != b"\x08\x00\x00\x00"
-        or raw[8:20] != b"\x00\x00\x40\x00\x34\x0b\x00\x34\xff\x03\x00\x00"):
-        raise UnsupportedFormat("fallback datatype is not canonical little-endian IEEE float64")
-    return "<f8"
 
 
 def _numeric_dtype(raw: bytes) -> str:
