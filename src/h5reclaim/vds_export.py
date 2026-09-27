@@ -26,7 +26,10 @@ import numpy as np
 
 from .dependency_routes import load_dependency_manifest
 from .metadata import UnsupportedCase
-from .readable_export import _canonical_numeric, _check_storage, _range_sha256, _selected_dataset
+from .readable_export import (
+    _canonical_numeric, _check_competing_owners, _check_storage,
+    _range_sha256, _selected_dataset,
+)
 from .recovery import (
     RecoveryError, VERSION, _validate_paths, _verify_source, sha256_file,
     source_snapshot,
@@ -259,6 +262,8 @@ def export_vds(source: str | Path, dataset_path: str, output: str | Path,
                                for point in source_coords):
                             raise UnsupportedCase("source selection exceeds the pinned dataset's current extent")
                         storage = _check_storage(data, item["size"])
+                        record["ownership_inventory"] = _check_competing_owners(
+                            item["snapshot"], data, storage)
                         record["source_object_header_address"] = int(h5py.h5o.get_info(data.id).addr)
                         record["storage_layout"] = storage.layout
                         record["source_sha256"] = item["sha256"]

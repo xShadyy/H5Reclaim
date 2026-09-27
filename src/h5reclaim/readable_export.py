@@ -28,6 +28,8 @@ import numpy as np
 
 from .hints import DatasetHints, HintsError, compare_hints, require_no_conflicts
 from .metadata import UnsupportedCase
+from .ownership_inventory import inventory_other_allocations, reject_sibling_overlap
+from .format import FormatError
 from .recovery import (
     RecoveryError,
     VERSION,
@@ -372,6 +374,35 @@ def _check_storage(dataset: h5py.Dataset, snapshot_size: int,
     raise UnsupportedCase("dataset layout is not a local compact, contiguous, or chunked layout")
 
 
+def _check_competing_owners(snapshot: Path, dataset: h5py.Dataset,
+                            storage: StorageInspection) -> dict[str, Any]:
+    """Refuse native reads whose source bytes also belong to a rooted sibling.
+
+    Native HDF5 accepts an index pointer redirected into another dataset's
+    allocation. A successful readback of that value does not establish the
+    selected dataset's ownership of those bytes. Enumeration is bounded; if
+    it could not finish, the absence of a competing owner is unestablished.
+    """
+    selected_address = int(h5py.h5o.get_info(dataset.id).addr)
+    inventory = inventory_other_allocations(snapshot, selected_address)
+    if storage.layout == "chunked":
+        selected = [(address, address + size, origin)
+                    for origin, address, size, _mask in storage.records]
+    elif storage.layout == "contiguous":
+        address = dataset.id.get_offset()
+        selected = [(int(address), int(address) + int(dataset.id.get_storage_size()), ())]
+    else:
+        selected = []
+    try:
+        reject_sibling_overlap(selected, inventory)
+    except FormatError as exc:
+        raise UnsupportedCase(str(exc)) from exc
+    if not inventory.complete:
+        raise UnsupportedCase("competing-owner inventory is incomplete: "
+                              + "; ".join(inventory.incomplete_reasons))
+    return inventory.report()
+
+
 def _blocks(shape: tuple[int, ...], itemsize: int,
             max_elements: int | None = None) -> Iterator[tuple[slice, ...]]:
     dimensions = [1] * len(shape)
@@ -481,6 +512,7 @@ def _export_readable_local(source: str | Path, dataset_path: str, output: str | 
                 if logical_bytes > MAX_DATA_BYTES:
                     raise UnsupportedCase("selected logical data exceeds the 512 MiB limit")
                 storage = _check_storage(selected, source_size, file_itemsize)
+                ownership_inventory = _check_competing_owners(snapshot, selected, storage)
                 if (reference_kind and storage.layout == "chunked" and selected.chunks is not None
                         and prod(selected.chunks) > MAX_REFERENCE_ELEMENTS_PER_BLOCK):
                     raise UnsupportedCase("reference chunk exceeds the per-block element limit")
@@ -629,6 +661,7 @@ def _export_readable_local(source: str | Path, dataset_path: str, output: str | 
                                     "are checked against the output"
                                 ) if h5py.h5z.FILTER_SCALEOFFSET in observed_filters else None,
                             },
+                            "ownership_inventory": ownership_inventory,
                             "accepted_elements": accepted_elements,
                             "unknown_elements": prod(shape) - accepted_elements,
                             "validity_map": "/_h5reclaim/validity" if storage.layout == "chunked" else None,
