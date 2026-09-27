@@ -13,19 +13,42 @@ This one command verifies the original's SHA-256, checks all 128 raw B-tree
 chunk records against h5py, creates a separate damaged copy, and changes one
 verified interior root child pointer in that copy. It checks that ordinary
 HDF5 reads fail or differ for the affected chunks and that unaffected chunks
-remain exact. It invokes recovery in a subprocess with only the damaged input,
-then compares every output `float64` bit pattern at the corresponding sample
+remain exact. It invokes recovery in a subprocess with the damaged input,
+dataset path, and new output paths. The subprocess receives neither the
+pristine reference nor the mutation manifest. The evaluator then compares
+every output `float64` bit pattern at the corresponding sample
 coordinate against the untouched original. It checks output status, evidence
 mappings, Fletcher32 verification labels, selected scalar attributes, embedded
-and external reports, and both file hashes. Trial files and JSON evidence are
-left in the path printed by the command. Use `--work-dir path/to/new-dir` to
-choose an empty location.
+and external reports, and both file hashes. The default console output is a
+readable pass summary with native-reader failures, recovered and reconstructed
+chunks, exact float64 bit matches, and the trial file paths. Add `--json` for
+the complete evaluation summary on standard output. Either way, trial files
+and JSON evidence are left in the displayed work directory. Use `--work-dir
+path/to/new-dir` to choose a new or empty location; the default temporary
+directory is retained.
+
+The retained directory contains `inputs/damaged.hdf5`,
+`results/recovered.hdf5`, `results/recovery.json`,
+`truth/mutation.json`, and `truth/evaluation.json`. The recovered HDF5 file
+includes `/_h5reclaim/chunk_status` and an embedded copy of the recovery
+report. The independent evaluator's `truth/evaluation.json` records the
+scored counts and source hash checks. The `results/recovery.json` file records
+the recovery tool's per-chunk provenance. The original research file remains
+in `corpus/files/`; the evaluator reads it only as the reference.
 
 The recorded trial had 57 native-unavailable or incorrect chunks. H5Reclaim
 reconstructed those 57 and exported all 128 chunks with zero wrong bits. The
 scientific file's bytes are authentic; the pointer damage is controlled for
 evaluation. This says nothing about unrelated layouts, organically damaged
 files, or repairs to the original file. See [corpus sources](../corpus/README.md).
+
+For a quick metadata coverage check across all four original files, run
+`python benchmarks/run_real_corpus.py`. Its readable output summarizes the
+verified originals and support classifications; `--json` returns every
+machine-readable result. This corpus survey does not damage a copy, read
+measurements, or attempt recovery. `python -m unittest discover -s tests -q`
+runs Python's discovered tests in quiet mode; success does not independently
+score a naturally damaged user file.
 
 ## Synthetic random-value trial
 

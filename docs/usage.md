@@ -17,12 +17,14 @@ h5reclaim --help
 
 `python -m venv .venv` creates an isolated Python environment; the next line activates it. `python -m pip install -e .` installs **this local checkout** in editable mode and makes the `h5reclaim` command available. It does not download H5Reclaim from PyPI. Pip may download the declared h5py/NumPy dependencies and build requirements; with those already installed and `--no-deps --no-build-isolation`, an offline editable installation is possible. On Windows PowerShell, activate with `.venv\Scripts\Activate.ps1`. The first experiment ran on Python 3.12.14, h5py 3.12.1, HDF5 1.14.4, and NumPy 2.3.5. The current tests were also checked with h5py 3.16.0, HDF5 2.0.0, and NumPy 2.5.3.
 
-Version 0.3.1 corrects a Windows source snapshot check that could reject an
-unchanged input before HDF5 inspection. The project includes a regression that
-simulates differing pathname and open-handle metadata, and its GitHub Actions
-workflow runs the tests and real-data commands on Windows and Linux. The fix
-has passed Linux tests and a simulated Windows case; a native Windows run of
-this revision remains to be confirmed.
+Version 0.3.1 corrected a Windows source snapshot check that could reject an
+unchanged input before HDF5 inspection. A native Windows PowerShell run supplied
+by a user has since completed the controlled GWOSC trial with 128/128 chunks
+bit exact, including all 57 behind the lost pointer. The same environment ran
+50 discovered tests successfully, with one skipped because that Windows
+account lacked symbolic-link privileges. This evidence covers that computer
+and controlled input; it is not a claim that all Windows configurations or
+damaged HDF5 files work.
 
 ## Run the bundled real-data trial
 
@@ -33,7 +35,25 @@ python benchmarks/run_real_corpus.py
 python benchmarks/run_gwosc_recovery.py
 ```
 
-The first command verifies the files and inventories 251 actual datasets: one is a recovery **candidate** under the current rules, while 250 are explicitly unsupported. It does not read values or claim recovery. The second command makes a damaged **copy** of the original 16 kHz GWOSC file in a temporary trial directory, confirms a native-reader failure, invokes the public recovery CLI on that copy, and independently compares every output float bit at the original sample coordinate with the untouched file. It prints the trial directory and keeps the evidence there. In the recorded run, one broken root pointer made 57 of 128 chunks unavailable or incorrect to native reads; H5Reclaim reconstructed all 57, and all 128 output chunks were bit exact. This tests one controlled failure in authentic data, not a naturally damaged file or every HDF5 layout. See [corpus provenance and coverage](../corpus/README.md) and [benchmark details](../benchmarks/README.md).
+The first command verifies the files and inventories 251 actual datasets: one is a recovery **candidate** under the current rules, while 250 are explicitly unsupported. It does not read values or claim recovery. The second command makes a damaged **copy** of the original 16 kHz GWOSC file in a temporary trial directory, confirms a native-reader failure, invokes the public recovery CLI on that copy, and independently compares every output float bit at the original sample coordinate with the untouched file. Its readable summary prints the trial directory and important result counts; it keeps detailed JSON evidence and recovered data there. In the recorded native Windows run, one broken root pointer made 57 of 128 chunks unavailable or incorrect to native reads; H5Reclaim reconstructed all 57, and all 128 output chunks were bit exact. This tests one controlled failure in authentic data, not a naturally damaged file or every HDF5 layout. Add `--json` to either command for the complete machine-readable summary on standard output. See [corpus provenance and coverage](../corpus/README.md) and [benchmark details](../benchmarks/README.md).
+
+### What the commands do
+
+| Command | Reads and creates | What success establishes |
+| --- | --- | --- |
+| `python benchmarks/run_real_corpus.py` | Verifies the pinned size and SHA-256 of four bundled originals, then reads their dataset metadata and chunk-index structures. It makes temporary private snapshots, which are removed; it does not change the originals or read their measurement values. | The 251-dataset support inventory still matches the pinned baseline: 1 candidate and 250 unsupported. No data has been recovered. |
+| `python benchmarks/run_gwosc_recovery.py` | Verifies the authentic 16 kHz original and its 128 chunk-index records, makes a separate damaged copy, and changes one verified root child pointer there. It compares ordinary HDF5 reads, runs `python -m h5reclaim recover` on the damaged copy in a subprocess, then checks recovered values, status, evidence, attributes, and hashes against the untouched original. It leaves the recovered HDF5, damage manifest, and detailed JSON reports in a new temporary work directory. | The output of this one controlled trial has exactly matched the reference at every sample coordinate. The number of chunks native HDF5 could not read correctly is an observed result, not a predicted count for other damage. |
+| `python -m unittest discover -s tests -q` | Python's standard `unittest` module discovers `test*.py` in `tests` and executes the checks; `-q` suppresses normal per-test names. Individual tests may create disposable files in temporary directories. | `OK (skipped=1)` after `Ran 50 tests` means 49 passed and one was skipped. The skipped case in the reported Windows run needs symbolic-link privileges. This command does not recover a file supplied by the user. |
+
+For a retained GWOSC trial at a location you choose, pass
+`--work-dir path/to/new-or-empty-directory`. Do not reuse a populated trial
+directory. The default directory is in the operating system's temporary
+location but is deliberately kept after the command so the evidence can be
+inspected. `truth/evaluation.json` contains the complete independent score;
+`results/recovery.json` contains H5Reclaim's own per-chunk recovery report;
+`results/recovered.hdf5` contains the selected recovered strain dataset and
+`/_h5reclaim/chunk_status`. The trial does not reconstruct the original file's
+other datasets, links, and research context.
 
 ## Survey a file before recovery
 
@@ -41,7 +61,20 @@ The first command verifies the files and inventories 251 actual datasets: one is
 h5reclaim survey path/to/input.h5
 ```
 
-The JSON inventory lists each local dataset's selectable path, shape, datatype, storage layout, chunk dimensions, filters, and support reasons. It reads metadata and index nodes, never dataset values or chunk payloads. It does not resolve soft or external HDF5 links. `candidate` means a recovery attempt fits the observed metadata, not that its payload is intact or that the attempt will succeed. Select a candidate with `--dataset /its/path` for `inspect` or `recover`. Exit code 0 means the inventory completed, 1 means traversal was partial due to a declared limit or unreadable link, and 2 means the source could not be surveyed. The output remains JSON in each case.
+The default readable inventory shows support totals, candidates first, and up
+to five dataset entries with brief reasons. Add `--json` for the **complete**
+inventory of each local dataset's selectable path, shape, datatype, storage
+layout, chunk dimensions, filters, and support reasons. It reads metadata and
+index nodes, never dataset values or chunk payloads. It does not resolve soft
+or external HDF5 links. `candidate` means a recovery attempt fits the observed
+metadata, not that its payload is intact or that the attempt will succeed.
+Select a candidate with `--dataset /its/path` for `inspect` or `recover`.
+`inspect` prints a readable selected-dataset and chunk-index summary; add
+`--json` to retain its complete structured summary. Exit code 0 means the
+inventory completed, 1 means traversal was partial due to a declared limit or
+unreadable link, and 2 means the source could not be surveyed. JSON mode gives
+a structured error on failure; ordinary mode prints a concise error to standard
+error. `inspect` and `recover` also exit 2 on an unsupported or failed attempt.
 
 Unfamiliar structures are classified with reasons, not silently converted. A contiguous dataset has no chunk index to reconnect; a different tree family, datatype, filter, or partially filled edge chunk needs its own verified decoding and ownership rules. Changing its shape to match the supported case would risk inventing measurements. The GWOSC rank-one adapter is an example of adding a specific real structure after checking its original bytes and surviving index against HDF5's own chunk information.
 

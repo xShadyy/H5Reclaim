@@ -2,6 +2,36 @@
 
 Updated: 2026-09-27
 
+## Version 0.3.2: readable command summaries
+
+`h5reclaim survey` and `h5reclaim inspect` now present a concise readable
+summary by default. The corpus survey and controlled GWOSC recovery benchmark
+also show a readable result, relevant counts, and the location of trial files.
+Each of these four commands accepts `--json` for its complete machine-readable
+summary; the GWOSC trial always saves independent scoring to
+`truth/evaluation.json` and the recovery program saves its separate detailed
+report to `results/recovery.json`. The new presentation changes no supported
+HDF5 layouts or recovery decisions. A readable survey displays at most five
+datasets, putting candidates first, while its JSON includes every inventoried
+entry and support reason. `recover` already printed a short completion summary
+and still writes its detailed JSON report and status map.
+
+A user supplied a native Windows PowerShell run of the bundled GWOSC trial
+after the 0.3.1 snapshot fix: 128/128 chunks recovered, 57 via the
+reconstructed link, 57 ordinary HDF5 reads failed or returned incorrect
+chunks, and no wrong float64 bits or missing regions. The original file's
+SHA-256 before and after matched; the damaged copy's SHA-256 was unchanged
+during recovery. The same environment reported `Ran 50 tests` and
+`OK (skipped=1)` from `python -m unittest discover -s tests -q`: 49 passed,
+one was skipped. That test skips when a Windows account lacks the privilege
+to create a symbolic link. These are results from the user environment for
+the controlled input. They do not establish behavior for arbitrary corrupted
+research files or every Windows setup.
+
+The updated 0.3.2 tree passed 56 discovered tests on Linux after the readable
+output changes. That count includes new command-output checks; the 50-test
+Windows result above came from the earlier package that the user ran.
+
 ## Version 0.3.1: Windows source snapshot fix
 
 On Windows, both bundled commands could stop before inspecting HDF5 with
@@ -19,9 +49,9 @@ The Linux run passed 50 tests, verified all four original corpus hashes and
 the 1-candidate/250-unsupported baseline, and recovered all 128 GWOSC chunks
 in the controlled trial with 57 via the severed link and no wrong bits.
 A test simulates discrepant Windows `stat` and `fstat` metadata. A GitHub
-Actions workflow runs the tests and both bundled commands on Windows and Linux
-after the code is uploaded to GitHub. A native Windows result has not yet been
-observed for this revision.
+Actions workflow is configured to run the tests and both bundled commands on
+Windows and Linux after the code is uploaded to GitHub. The native Windows
+result subsequently supplied by a user is recorded above.
 
 ## Version 0.3.0: authentic scientific data
 
@@ -56,7 +86,7 @@ and both original and damaged-input SHA-256 hashes were checked. This is one
 controlled corruption against authentic experiment data. No organically
 damaged research file or broad real-world recovery has been demonstrated.
 
-The current suite passes 47 tests (`PYTHONPATH=src python -m unittest discover
+At the time of 0.3.0, the suite passed 47 tests (`PYTHONPATH=src python -m unittest discover
 -s tests -q`), including real bundled-source tests and negative checksum,
 deflate, filter mask, and unsupported pipeline cases. The corpus baseline
 passes with four hashes verified, 1 candidate, 250 unsupported. Earlier

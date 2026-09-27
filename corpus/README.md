@@ -19,7 +19,18 @@ With the project's Python dependencies available, run from the repository root:
 python benchmarks/run_real_corpus.py
 ```
 
-The command writes a JSON report to standard output. It checks every bundled file's size and SHA-256, inventories its local datasets through `survey`, and summarizes support reasons. It exits with code 2 when a file is missing or its bytes have changed; a survey classification change from the pinned baseline exits with code 1 for review. This command makes **no network requests**, changes no originals, and does not need the experimental fixture generator.
+The command prints a readable per-file result by default: verified originals,
+dataset totals, candidates, unsupported cases, representative datasets and
+their reasons, and whether the pinned coverage baseline still matches. Use
+`python benchmarks/run_real_corpus.py --json` for the complete structured
+report on standard output. It checks every bundled file's size and SHA-256,
+inventories its local datasets through `survey`, and summarizes support
+reasons. It exits with code 2 when a file is missing or its bytes have changed;
+a survey classification change from the pinned baseline exits with code 1 for
+review, and a matching baseline exits with code 0. It may make and remove
+bounded private analysis snapshots, but makes **no network requests**, changes
+no originals, reads no dataset measurement values, and does not need the
+experimental fixture generator.
 
 On Windows PowerShell, run `py -3 -m venv .venv`, then `./.venv/Scripts/python.exe -m pip install -e .`, then `./.venv/Scripts/python.exe benchmarks/run_real_corpus.py`. The editable install is from this local directory; it does not retrieve `h5reclaim` from the Python package index. Pip may retrieve the project's declared `h5py` and NumPy dependencies unless they are installed already.
 

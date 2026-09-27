@@ -6,8 +6,8 @@ This is a data recovery project, not a robotics simulator. An HDF5 file may cont
 
 ## How the pieces fit
 
-1. `corpus/files/` provides four unchanged scientific HDF5 files. `benchmarks/run_real_corpus.py` verifies their hashes and surveys real structure coverage. `benchmarks/run_gwosc_recovery.py` makes controlled damage in a copy of the authentic GWOSC file and scores recovery. The synthetic fixture tools remain for a second, randomly valued experiment.
-2. `h5reclaim survey` lists local datasets and support reasons without reading their values. `h5reclaim inspect` checks one selected dataset and index. `h5reclaim recover` uses surviving structural links to copy justified chunks to a new HDF5 file.
+1. `corpus/files/` provides four unchanged scientific HDF5 files. `benchmarks/run_real_corpus.py` verifies their hashes and surveys real structure coverage. `benchmarks/run_gwosc_recovery.py` makes controlled damage in a copy of the authentic GWOSC file and scores recovery. Both show a readable summary by default; `--json` prints their complete machine-readable summaries. The synthetic fixture tools remain for a second, randomly valued experiment.
+2. `h5reclaim survey` lists local datasets and support reasons without reading their values. `h5reclaim inspect` checks one selected dataset and index. Both show a readable summary by default and accept `--json` for a complete structured result. `h5reclaim recover` uses surviving structural links to copy justified chunks to a new HDF5 file.
 3. The new file contains a chunk status map. A separate JSON report and an embedded copy of that report explain which chunks were copied, where they came from, and which regions remain unknown.
 4. The two recovery benchmarks compare output with a pristine reference at exact chunk coordinates. This comparison is evaluation work; it is not part of the recovery algorithm.
 
@@ -63,7 +63,8 @@ The benchmark keeps `truth/pristine.h5`, `truth/challenge.json`, and `truth/muta
 | `tests/test_gwosc_recovery.py` | Checks rank-one filtered decoding, checksum failure behavior, and selected attribute handling. |
 | `tests/test_support.py` | Filters, partial edge chunks, wrong datatypes, and a newer layout are refused; a selected nested dataset recovers correctly with an identically shaped local distractor present. |
 | `tests/test_datatype.py` | Canonical little-endian `uint32` is accepted while reduced precision, shifted bits, and nonstandard padding are refused. |
-| `tests/test_survey.py` | Survey candidates, independent local datasets, skipped links, support reasons, traversal limits, and JSON failure output. |
+| `tests/test_survey.py` | Survey candidates, independent local datasets, skipped links, support reasons, traversal limits, and CLI text and JSON output. |
+| `tests/test_corpus_cli.py` | Corpus survey command's readable summary and opt-in JSON output. |
 | `tests/test_recovery_safety.py` | Destination aliases, contradictory or out-of-bounds metadata, missing sibling evidence, and failures while publishing output do not produce falsely trusted results. |
 | `tests/test_integrity_limits.py` | Deliberately changed payload bytes can still be copied under a structurally valid mapping, so the report must not claim a historical integrity check. |
 | `tests/test_end_to_end.py` | Runs the recovery path on damaged input and checks exact placement, output status, source preservation, and benchmark error categories. |
