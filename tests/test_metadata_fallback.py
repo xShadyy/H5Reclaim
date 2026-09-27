@@ -15,6 +15,7 @@ from h5reclaim.format import FormatError, UnsupportedFormat
 from h5reclaim.metadata_fallback import _messages, _old_messages, read_dataset_spec_fallback
 from h5reclaim.format import H5File
 from h5reclaim.modern_indexes import ModernH5File, lookup3
+from h5reclaim.recovery import recover
 
 
 def _patch_header(path: Path, object_address: int, byte_offset: int, replacement: int) -> None:
@@ -156,13 +157,14 @@ class MetadataFallbackTests(unittest.TestCase):
             with self.assertRaisesRegex(FormatError, "source changed"):
                 read_dataset_spec_fallback(self.path, "/lab/science")
 
-    def test_dense_group_refuses_instead_of_scanning_for_matching_name(self):
-        self._create_rank_two()
+    def test_dense_group_uses_checked_name_index_instead_of_heap_scan(self):
+        _, address, _ = self._create_rank_two()
         with h5py.File(self.path, "r+") as handle:
             for i in range(20):
                 handle["lab"].create_dataset(f"other_{i}", data=np.ones((2, 2), dtype="<u4"))
-        with self.assertRaisesRegex(UnsupportedFormat, "dense group"):
-            read_dataset_spec_fallback(self.path, "/lab/science")
+        result = read_dataset_spec_fallback(self.path, "/lab/science")
+        self.assertEqual(result.spec.object_address, address)
+        self.assertIsNotNone(result.link_chain[-1].index_record_offset)
 
     def test_rank_one_declared_filter_order_is_observed(self):
         fapl = h5py.h5p.create(h5py.h5p.FILE_ACCESS)
@@ -218,6 +220,34 @@ class MetadataFallbackTests(unittest.TestCase):
         btree = read_dataset_spec_fallback(two, "/growth")
         self.assertEqual((btree.spec.shape, btree.spec.maxshape, btree.spec.filters),
                          ((12, 15), (None, None), (1,)))
+
+    def test_dense_group_damaged_native_open_recovers_from_damaged_copy_only(self):
+        expected = np.arange(16, dtype="<u4").reshape(4, 4)
+        with h5py.File(self.path, "w", libver="latest") as handle:
+            group = handle.create_group("lab")
+            for i in range(25):
+                dataset = group.create_dataset(f"sensor_{i:03}", data=expected + i,
+                                               chunks=(4, 4))
+                if i == 17:
+                    selected_address = h5py.h5o.get_info(dataset.id).addr
+        with ModernH5File(self.path) as reader:
+            fill = [m for m in _messages(reader, selected_address) if m.kind == 5][0]
+        _patch_header(self.path, selected_address, fill.absolute_offset, 255)
+        damaged = self.path.read_bytes()
+        with h5py.File(self.path, "r") as native:
+            with self.assertRaises((KeyError, OSError)):
+                _ = native["/lab/sensor_017"]
+        record = read_dataset_spec_fallback(self.path, "/lab/sensor_017")
+        self.assertEqual(record.spec.object_address, selected_address)
+        self.assertIsNotNone(record.link_chain[-1].index_record_offset)
+        self.assertTrue(any(kind == "dense name-index node" for _, _, kind in record.metadata_ranges))
+        output = self.path.with_name("recovered.h5")
+        report_path = self.path.with_name("recovery.json")
+        report = recover(self.path, "/lab/sensor_017", output, report_path)
+        self.assertEqual(report["counts"]["recovered"], 1)
+        with h5py.File(output) as result:
+            np.testing.assert_array_equal(result["/lab/sensor_017"][:], expected + 17)
+        self.assertEqual(self.path.read_bytes(), damaged)
 
     def test_older_symbol_table_tree_with_multiple_leaves_resolves_exact_object(self):
         with h5py.File(self.path, "w", libver="earliest") as handle:

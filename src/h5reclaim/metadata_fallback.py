@@ -21,6 +21,7 @@ from pathlib import Path
 from .format import FormatError, H5File, UnsupportedFormat
 from .metadata import DatasetSpec
 from .modern_indexes import ModernH5File, lookup3
+from .dense_group_links import read_dense_group_links
 from .schema_codec import FilterDescriptor
 
 
@@ -52,6 +53,7 @@ class LinkStep:
     object_address: int
     link_message_offset: int
     cached_group: tuple[int, int] | None = None
+    index_record_offset: int | None = None
 
 
 @dataclass(frozen=True)
@@ -399,8 +401,25 @@ def _compact_links(reader: ModernH5File, address: int) -> dict[str, LinkStep | N
         raise FormatError("invalid group link-info length")
     addresses = [_uint(raw[pos + i * osize:pos + (i + 1) * osize])
                  for i in range(3 if raw[1] & 2 else 2)]
-    if any(a != reader.superblock.undefined_address for a in addresses):
-        raise UnsupportedFormat("dense group link index needs fractal-heap validation")
+    undefined = reader.superblock.undefined_address
+    if (addresses[0] == undefined) != (addresses[1] == undefined):
+        raise FormatError("group Link Info has only one dense index pointer")
+    if len(addresses) == 3 and addresses[0] == undefined and addresses[2] != undefined:
+        raise FormatError("compact group has a detached creation-order index pointer")
+    if addresses[0] != undefined:
+        if any(message.kind == 6 for message in messages):
+            raise FormatError("group declares both compact and dense hard links")
+        dense = read_dense_group_links(reader, group_address=address,
+                                       link_info=info.data, link_info_offset=info.absolute_offset)
+        links: dict[str, LinkStep | None] = {}
+        for entry in dense:
+            links[entry.name] = (
+                LinkStep(address, entry.name, entry.object_address,
+                         entry.heap_record_offset, index_record_offset=entry.btree_record_offset)
+                if entry.object_address is not None else None
+            )
+        _validate_local_modern_hardlinks(reader, links)
+        return links
     links: dict[str, LinkStep | None] = {}
     for message in messages:
         if message.kind != 6:
@@ -453,6 +472,12 @@ def _compact_links(reader: ModernH5File, address: int) -> dict[str, LinkStep | N
             target = _uint(data[pos:])
             reader.absolute(target)
             links[name] = LinkStep(address, name, target, message.absolute_offset)
+    _validate_local_modern_hardlinks(reader, links)
+    return links
+
+
+def _validate_local_modern_hardlinks(reader: ModernH5File,
+                                     links: dict[str, LinkStep | None]) -> None:
     counts = Counter(step.object_address for step in links.values() if step is not None)
     for target, count in counts.items():
         if count < 2:
@@ -462,7 +487,6 @@ def _compact_links(reader: ModernH5File, address: int) -> dict[str, LinkStep | N
             _uint(declared.data[1:]) < count
         ):
             raise FormatError("modern local hard-link count contradicts target object header")
-    return links
 
 
 def _dataspace(raw: bytes, lsize: int, *, older_padding: bool = False,
