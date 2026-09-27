@@ -71,6 +71,8 @@ class ModernLinkRepairCLITests(unittest.TestCase):
         self.assertTrue(report["structural_repair"])
         self.assertEqual(report["counts"]["recovered"], 40)
         self.assertEqual(report["unresolved_links"][0]["kind"], "eaib_to_child")
+        with h5py.File(self.folder / "recovered.h5") as output:
+            np.testing.assert_array_equal(output["science"][:], np.arange(400, dtype="<u4"))
         self.assertEqual(source.read_bytes(), bytes(damaged))
 
     def test_bthd_checked_root_pointer_damage(self):
@@ -91,6 +93,9 @@ class ModernLinkRepairCLITests(unittest.TestCase):
         self.assertTrue(report["structural_repair"])
         self.assertEqual(report["counts"]["recovered"], 900)
         self.assertEqual(report["unresolved_links"][0]["kind"], "bthd_to_root")
+        with h5py.File(self.folder / "recovered.h5") as output:
+            np.testing.assert_array_equal(
+                output["science"][:], np.arange(3600, dtype="<u4").reshape(60, 60))
         self.assertTrue(any("selected object native hard-link count unavailable" in reason
                             for reason in report["ownership_inventory"]["incomplete_reasons"]))
         self.assertEqual(source.read_bytes(), bytes(damaged))
