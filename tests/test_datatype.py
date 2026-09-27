@@ -1,4 +1,4 @@
-"""Direct byte export requires the exact on-disk uint32 representation."""
+"""Direct byte export requires canonical full-width on-disk numeric types."""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ class DatatypeRepresentationTests(unittest.TestCase):
             with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
                 source = Path(directory) / f"{name}.h5"
                 self._source(source, **options)
-                with self.assertRaisesRegex(UnsupportedCase, "canonical little-endian"):
+                with self.assertRaisesRegex(UnsupportedCase, "noncanonical"):
                     read_dataset_spec(source, "/measurements")
 
 

@@ -12,7 +12,8 @@ from pathlib import Path
 import h5py
 import numpy as np
 
-from h5reclaim.metadata import DatasetSpec, UnsupportedCase, read_dataset_spec
+from h5reclaim.metadata import DatasetSpec, read_dataset_spec
+from h5reclaim.schema_codec import decode_chunk as decode_general_chunk
 from h5reclaim.recovery import (
     ChunkDecodeError, STATUS_CODES, _decode_chunk, _fletcher32, analyze, recover,
 )
@@ -58,7 +59,7 @@ class FilterChecks(unittest.TestCase):
         with self.assertRaises(ChunkDecodeError):
             _decode_chunk(payload + b"x", unfiltered, 0)
 
-    def test_other_rank_one_filters_and_datatypes_are_refused(self) -> None:
+    def test_other_rank_one_filters_and_datatypes_are_supported_by_general_decoder(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "unsupported.h5"
             with h5py.File(source, "x") as handle:
@@ -71,10 +72,16 @@ class FilterChecks(unittest.TestCase):
                 handle.create_dataset(
                     "wrong_type", data=np.arange(64, dtype="<u4"), chunks=(16,),
                 )
-            with self.assertRaisesRegex(UnsupportedCase, "Fletcher32 followed by deflate"):
-                read_dataset_spec(source, "/other_order")
-            with self.assertRaisesRegex(UnsupportedCase, "IEEE binary64"):
-                read_dataset_spec(source, "/wrong_type")
+            filtered = read_dataset_spec(source, "/other_order")
+            unsigned = read_dataset_spec(source, "/wrong_type")
+            self.assertEqual(filtered.filters, (1, 3))
+            self.assertEqual(unsigned.dtype, "<u4")
+            with h5py.File(source, "r") as handle:
+                mask, raw = handle["other_order"].id.read_direct_chunk((0,))
+                self.assertEqual(
+                    decode_general_chunk(raw, filtered, mask),
+                    np.arange(16, dtype="<f8").tobytes(),
+                )
 
 
 class RealSourceTests(unittest.TestCase):

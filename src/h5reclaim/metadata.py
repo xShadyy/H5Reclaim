@@ -10,6 +10,10 @@ from typing import Any
 import h5py
 import numpy as np
 
+from .schema_codec import (
+    FilterDescriptor, SchemaError, canonical_numeric_dtype, read_filter_pipeline,
+)
+
 
 class UnsupportedCase(ValueError):
     """The selected file or dataset falls outside the declared support envelope."""
@@ -25,10 +29,15 @@ class DatasetSpec:
     filters: tuple[int, ...] = ()
     attributes: tuple[tuple[str, Any], ...] = ()
     omitted_attributes: tuple[str, ...] = ()
+    # Appended defaults retain compatibility with existing DatasetSpec
+    # construction in public tests and callers. None means an older caller
+    # did not supply a maximum shape, so it is interpreted as the current one.
+    filter_pipeline: tuple[FilterDescriptor, ...] = ()
+    maxshape: tuple[int | None, ...] | None = None
 
     @property
     def chunk_grid(self) -> tuple[int, ...]:
-        return tuple(length // chunk for length, chunk in zip(self.shape, self.chunks))
+        return tuple((length + chunk - 1) // chunk for length, chunk in zip(self.shape, self.chunks))
 
     @property
     def chunk_bytes(self) -> int:
@@ -134,46 +143,27 @@ def read_dataset_spec(source: Path, dataset_path: str) -> DatasetSpec:
             chunks = selected.chunks
             if len(shape) not in (1, 2) or chunks is None or len(chunks) != len(shape):
                 raise UnsupportedCase("expected a rank-one or rank-two chunked dataset")
-            if selected.maxshape != shape:
-                raise UnsupportedCase("extendible datasets are not supported")
-            if any(length <= 0 or length % chunk for length, chunk in zip(shape, chunks)):
-                raise UnsupportedCase("dimensions must be positive and divisible by chunks")
+            if any(length <= 0 or chunk <= 0 for length, chunk in zip(shape, chunks)):
+                raise UnsupportedCase("dimensions and chunk extents must be positive")
             if prod(shape) > 1_048_576:
                 raise UnsupportedCase("dataset exceeds the current 1,048,576-element limit")
 
             datatype = selected.id.get_type()
-            # Recovery copies on-disk bytes directly into a canonical <u4
-            # output. A four-byte HDF5 integer can still have fewer than 32
-            # significant bits, a shifted bit field, or nonstandard padding.
-            # Those representations must not be interpreted as plain uint32.
-            if len(shape) == 2:
-                if not _canonical_uint32(datatype):
-                    raise UnsupportedCase("expected canonical little-endian unsigned 32-bit integers")
-                dtype = "<u4"
-            else:
-                if not _canonical_float64(datatype):
-                    raise UnsupportedCase("expected canonical little-endian IEEE binary64 floats")
-                dtype = "<f8"
+            try:
+                # A NumPy dtype by itself does not show shifted or reduced
+                # precision bit fields, unusual padding, or float layout.
+                dtype = canonical_numeric_dtype(datatype, selected.dtype)
+            except SchemaError as exc:
+                raise UnsupportedCase(str(exc)) from exc
 
             if prod(chunks) * np.dtype(dtype).itemsize > 1_048_576:
                 raise UnsupportedCase("chunk exceeds the current 1 MiB limit")
 
             creation = selected.id.get_create_plist()
-            filters = tuple(creation.get_filter(i) for i in range(creation.get_nfilters()))
-            if len(shape) == 2:
-                if filters:
-                    raise UnsupportedCase("filtered or compressed rank-two chunks are not supported")
-            elif (
-                len(filters) != 2
-                or filters[0][0] != h5py.h5z.FILTER_FLETCHER32
-                or filters[0][1] != 0
-                or filters[0][2] != ()
-                or filters[1][0] != h5py.h5z.FILTER_DEFLATE
-                or filters[1][1] != h5py.h5z.FLAG_OPTIONAL
-                or len(filters[1][2]) != 1
-                or not 0 <= filters[1][2][0] <= 9
-            ):
-                raise UnsupportedCase("rank-one floats require exactly Fletcher32 followed by deflate")
+            try:
+                filters = read_filter_pipeline(creation, np.dtype(dtype).itemsize)
+            except SchemaError as exc:
+                raise UnsupportedCase(str(exc)) from exc
             if creation.get_external_count() != 0 or selected.is_virtual:
                 raise UnsupportedCase("external and virtual storage are not supported")
 
@@ -187,9 +177,11 @@ def read_dataset_spec(source: Path, dataset_path: str) -> DatasetSpec:
                 shape=tuple(int(length) for length in shape),
                 chunks=tuple(int(length) for length in chunks),
                 dtype=dtype,
-                filters=tuple(int(item[0]) for item in filters),
+                filters=tuple(item.id for item in filters),
                 attributes=attributes,
                 omitted_attributes=omitted_attributes,
+                filter_pipeline=filters,
+                maxshape=tuple(selected.maxshape),
             )
     except UnsupportedCase:
         raise
