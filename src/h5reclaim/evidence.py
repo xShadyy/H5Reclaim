@@ -37,6 +37,10 @@ _ARRAY_POINTER_BRIDGE_CHECKS = frozenset({
     "selected_header_anchor", "original_header_checksum_restored",
     "data_block_checksum_and_backpointer", "unique_data_block",
 })
+_MODERN_POINTER_BRIDGE_CHECKS = frozenset({
+    "original_parent_checksum_restored", "unique_checked_child",
+    "full_index_consistency",
+})
 
 
 def _digest(value: str) -> bool:
@@ -377,7 +381,8 @@ def _link_chain_valid(
         if link.kind == "bridged_index":
             if any(check.result == "fail" for check in link.checks):
                 return False
-            if _passed(link.checks, _ARRAY_POINTER_BRIDGE_CHECKS):
+            if (_passed(link.checks, _ARRAY_POINTER_BRIDGE_CHECKS)
+                    or _passed(link.checks, _MODERN_POINTER_BRIDGE_CHECKS)):
                 if link.corroborator_ids:
                     return False
             else:

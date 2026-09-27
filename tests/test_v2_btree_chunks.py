@@ -125,10 +125,89 @@ class V2BTreeChunkTests(unittest.TestCase):
         self.fixture()
         obj, root, _, _ = self.inspect()
         raw = bytearray(self.path.read_bytes())
+        raw[root + 34] ^= 0x80
+        self.path.write_bytes(raw)
+        with self.assertRaisesRegex(FormatError, "checksum mismatch"):
+            self._parse_again(obj, root)
+
+    def test_bthd_root_link_restores_original_checksum_and_public_export(self):
+        self.fixture(filtered=True)
+        obj, root, healthy, _ = self.inspect()
+        before = self.path.read_bytes()
+        raw = bytearray(before)
         raw[root + 16] ^= 0x80
         self.path.write_bytes(raw)
-        with self.assertRaisesRegex(FormatError, "header checksum"):
-            self._parse_again(obj, root)
+        damaged = self._parse_again(obj, root, filters=(1,))
+        self.assertEqual(len(damaged.chunks), len(healthy.chunks))
+        self.assertEqual(damaged.reconstructed_links[0]["kind"], "bthd_to_root")
+        self.assertEqual(damaged.reconstructed_links[0]["pointer_offset"], root + 16)
+        from h5reclaim.recovery import recover
+        report = recover(
+            self.path, "/measurements", Path(self.path.parent) / "recovered.h5",
+            Path(self.path.parent) / "recovered.json")
+        self.assertEqual(report["counts"]["recovered"], len(healthy.chunks))
+        self.assertTrue(report["structural_repair"])
+        self.assertEqual(report["unresolved_links"][0]["kind"], "bthd_to_root")
+        self.assertEqual(self.path.read_bytes(), bytes(raw))
+
+    def test_btin_child_link_restores_original_checksum(self):
+        self.fixture()
+        obj, root, healthy, _ = self.inspect()
+        first_root = healthy.chunks[0].evidence["node_chain"][0]
+        header = self.path.read_bytes()[root:root+38]
+        count = int.from_bytes(header[24:26], "little")
+        child_pointer = first_root + 6 + count * 24
+        raw = bytearray(self.path.read_bytes())
+        raw[child_pointer] ^= 0x80
+        self.path.write_bytes(raw)
+        repaired = self._parse_again(obj, root)
+        self.assertEqual(len(repaired.chunks), len(healthy.chunks))
+        self.assertEqual(repaired.reconstructed_links[0]["kind"], "btin_to_child")
+        self.assertEqual(repaired.reconstructed_links[0]["pointer_offset"], child_pointer)
+        from h5reclaim.recovery import recover
+        report = recover(
+            self.path, "/measurements", Path(self.path.parent) / "btin_recovered.h5",
+            Path(self.path.parent) / "btin_recovered.json")
+        self.assertEqual(report["counts"]["recovered"], len(healthy.chunks))
+        self.assertGreater(report["reconstructed_chunks"], 0)
+        self.assertLess(report["reconstructed_chunks"], len(healthy.chunks))
+
+    def test_depth_two_internal_link_repairs_checked_internal_child(self):
+        self.fixture(shape=(180, 180))
+        obj, root, healthy, _ = self.inspect()
+        self.assertEqual(len(healthy.chunks), 8100)
+        path = next(item.evidence["link_path"] for item in healthy.chunks
+                    if len(item.evidence["link_path"]) == 3)
+        broken_at = path[1]["pointer_offset"]
+        raw = bytearray(self.path.read_bytes())
+        raw[broken_at] ^= 0x40
+        self.path.write_bytes(raw)
+        repaired = self._parse_again(obj, root, shape=(180, 180))
+        self.assertEqual(len(repaired.chunks), len(healthy.chunks))
+        self.assertEqual(repaired.reconstructed_links[0]["kind"], "btin_to_child")
+        self.assertEqual(repaired.reconstructed_links[0]["target_address"], path[1]["target_address"])
+
+    def test_pointer_repair_refuses_two_faults_and_corrupt_candidate(self):
+        self.fixture()
+        obj, root, healthy, _ = self.inspect()
+        child = healthy.chunks[0].evidence["node_chain"][0]
+        header = self.path.read_bytes()[root:root+38]
+        count = int.from_bytes(header[24:26], "little")
+        child_pointer = child + 6 + count * 24
+        original = self.path.read_bytes()
+        cases = (
+            (root+16, root+26),  # Root address and total records.
+            (root+16, child+8),  # Root address and root node data.
+            (child_pointer, child+8),  # Child pointer and unrelated node data.
+        )
+        for positions in cases:
+            with self.subTest(positions=positions):
+                raw = bytearray(original)
+                for at in positions:
+                    raw[at] ^= 1
+                self.path.write_bytes(raw)
+                with self.assertRaises(FormatError):
+                    self._parse_again(obj, root)
 
     def test_leaf_checksum_mismatch_refuses_all_records(self):
         self.fixture()

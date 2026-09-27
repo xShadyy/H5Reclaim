@@ -6,9 +6,10 @@ BTIN, or BTLF signature never establishes ownership. Each returned record is
 supported by a checked header, a chain of checked child pointers and counts,
 its exact record slot, and a coordinate consistent with the selected layout.
 
-This reader makes no inference about broken links or missing payload bytes.
-It refuses an inconsistent tree as a whole. It does not decode filters or
-interpret a dataset's scientific datatype.
+One BTHD root or BTIN child pointer can be reconstructed when substituting
+only that pointer restores the original parent checksum and a unique checked
+node completes the tree consistently. It refuses an inconsistent tree as a
+whole. It does not decode filters or interpret scientific datatypes.
 
 HDF5 specification, III.A.2, B-tree types 10/11:
 https://support.hdfgroup.org/documentation/hdf5/latest/_f_m_t4.html
@@ -21,6 +22,7 @@ from math import prod
 from typing import TYPE_CHECKING
 
 from .format import FormatError, UnsupportedFormat
+from .modern_link_repair import candidate_addresses
 from .modern_indexes import (
     MAX_CHUNK_BYTES, MAX_CHUNKS, ModernChunk, ModernIndex, lookup3,
 )
@@ -33,6 +35,8 @@ MAX_NODE_BYTES = 1 << 20
 MAX_TREE_DEPTH = 4
 MAX_VISITED_NODES = 8192
 MAX_METADATA_BYTES = 64 << 20
+MAX_REPAIR_CANDIDATES = 8192
+MAX_REPAIR_SLOTS = 512
 
 
 def _uint(raw: bytes) -> int:
@@ -55,6 +59,74 @@ class _Header:
     root_records: int
     total_records: int
     size: int
+
+
+def _candidate_checked(reader: ModernH5File, address: int, *,
+                       node_size: int, tree_type: int, record_size: int,
+                       level: int, count: int, offsize: int,
+                       max_records: list[int], max_subtree: list[int]) -> bool:
+    """The expected child must be an independently checksummed complete node."""
+    if count > max_records[level]:
+        return False
+    try:
+        start = reader.absolute(address)
+        if start + node_size > reader.superblock.eof_address:
+            return False
+        node = reader.read_at(address, node_size)
+    except FormatError:
+        return False
+    if (node[:4] != (b"BTIN" if level else b"BTLF")
+            or node[4] != 0 or node[5] != tree_type):
+        return False
+    end = 6 + count * record_size
+    if level:
+        width = offsize + _width(max_records[level - 1])
+        if level > 1:
+            width += _width(max_subtree[level - 1])
+        end += (count + 1) * width
+    return end + 4 <= node_size and lookup3(node[:end]) == _uint(node[end:end+4])
+
+
+def _repair_pointer(reader: ModernH5File, raw: bytes, *,
+                    pointer_slots: tuple[tuple[int, int], ...], checksum_at: int,
+                    signature: bytes, child_level: int, node_size: int,
+                    tree_type: int, record_size: int, offsize: int,
+                    max_records: list[int], max_subtree: list[int]) -> tuple[int, int, bytes]:
+    """Return (pointer position, unique child, parent with that one link fixed)."""
+    if not pointer_slots or len(pointer_slots) > MAX_REPAIR_SLOTS:
+        raise UnsupportedFormat("v2 B-tree repair pointer slot budget exceeded")
+    wanted = _uint(raw[checksum_at:checksum_at+4])
+    if checksum_at + 4 > len(raw) or lookup3(raw[:checksum_at]) == wanted:
+        raise FormatError("v2 B-tree repair requires an invalid original parent checksum")
+    matches: list[tuple[int, int, bytes]] = []
+    count_candidates = 0
+    for candidate in candidate_addresses(reader, signature):
+        count_candidates += 1
+        if count_candidates > MAX_REPAIR_CANDIDATES:
+            raise UnsupportedFormat("v2 B-tree repair candidate budget exceeded")
+        absolute = reader.superblock.base_address + candidate
+        if any(absolute < end and start < absolute + node_size
+               for start, end, _kind in reader.metadata_ranges):
+            continue
+        for position, child_count in pointer_slots:
+            if _uint(raw[position:position+offsize]) == candidate:
+                continue
+            patched = bytearray(raw)
+            patched[position:position+offsize] = candidate.to_bytes(offsize, "little")
+            if lookup3(patched[:checksum_at]) != wanted:
+                continue
+            if not _candidate_checked(
+                reader, candidate, node_size=node_size, tree_type=tree_type,
+                record_size=record_size, level=child_level, count=child_count,
+                offsize=offsize, max_records=max_records, max_subtree=max_subtree,
+            ):
+                continue
+            matches.append((position, candidate, bytes(patched)))
+            if len(matches) > 1:
+                raise FormatError("v2 B-tree pointer reconstruction is ambiguous")
+    if not matches:
+        raise FormatError("v2 B-tree checksum mismatch; no unique checked child restores pointer")
+    return matches[0]
 
 
 def read_v2_btree_chunks(
@@ -117,8 +189,7 @@ def read_v2_btree_chunks(
     tree_type = raw[5]
     if tree_type != (11 if filters else 10):
         raise FormatError("v2 B-tree client type disagrees with selected filter pipeline")
-    if lookup3(raw[:-4]) != _uint(raw[-4:]):
-        raise FormatError("v2 B-tree header checksum mismatch")
+    header_checksum_valid = lookup3(raw[:-4]) == _uint(raw[-4:])
     node_size = _uint(raw[6:10])
     record_size = _uint(raw[10:12])
     depth = _uint(raw[12:14])
@@ -159,6 +230,25 @@ def read_v2_btree_chunks(
         max_subtree.append(capacity + (capacity + 1) * max_subtree[level - 1])
     if root_records > max_records[depth] or root_records > total_records:
         raise FormatError("v2 B-tree root record count exceeds header bounds")
+    reconstructed_links: list[dict[str, object]] = []
+    if not header_checksum_valid:
+        if total_records == 0 or root_records == 0:
+            raise FormatError("v2 B-tree header checksum mismatch without a usable root count")
+        pointer_pos, candidate, _repaired = _repair_pointer(
+            reader, raw, pointer_slots=((16, root_records),),
+            checksum_at=header_size - 4,
+            signature=b"BTIN" if depth else b"BTLF", child_level=depth,
+            node_size=node_size, tree_type=tree_type, record_size=record_size,
+            offsize=offsize, max_records=max_records, max_subtree=max_subtree)
+        root = candidate
+        reconstructed_links.append({
+            "kind": "bthd_to_root", "source_address": index_address,
+            "target_address": candidate,
+            "pointer_offset": reader.absolute(index_address) + pointer_pos,
+            "parent_checksum_offset": reader.absolute(index_address) + header_size - 4,
+            "parent_kind": "v2 B-tree header", "child_kind": "v2 B-tree node",
+            "resolution": "original BTHD checksum restored by one pointer; unique checked root and consistent full tree",
+        })
 
     header_start = reader.absolute(index_address)
     known_ranges = list(reader.metadata_ranges)
@@ -194,7 +284,8 @@ def read_v2_btree_chunks(
         reader.metadata_ranges.extend(local_ranges)
         return ModernIndex("v2_btree", layout_version, object_address,
                            index_address, layout_pointer_offset, chunk_shape,
-                           element_size, ())
+                           element_size, (),
+                           reconstructed_links=tuple(reconstructed_links))
     if root == sb.undefined_address or root_records == 0:
         raise FormatError("v2 B-tree header has no root for nonempty index")
     root_path: tuple[dict[str, object], ...] = ({
@@ -271,7 +362,34 @@ def read_v2_btree_chunks(
             raise FormatError("v2 B-tree node records cross node boundary")
         observed_checksum = _uint(node[checksum_start:checksum_start + 4])
         if lookup3(node[:checksum_start]) != observed_checksum:
-            raise FormatError("v2 B-tree node checksum mismatch")
+            if not level or reconstructed_links:
+                raise FormatError("v2 B-tree node checksum mismatch")
+            child_nrec_width = _width(max_records[level - 1])
+            child_total_width = _width(max_subtree[level - 1]) if level > 1 else 0
+            child_entry = offsize + child_nrec_width + child_total_width
+            slots: list[tuple[int, int]] = []
+            for i in range(count + 1):
+                slot = records_end + i * child_entry
+                child_count = _uint(node[slot+offsize:slot+offsize+child_nrec_width])
+                if child_count > max_records[level - 1]:
+                    raise FormatError("v2 B-tree damaged node has an invalid child count")
+                slots.append((slot, child_count))
+            pointer_pos, candidate, repaired = _repair_pointer(
+                reader, node, pointer_slots=tuple(slots),
+                checksum_at=checksum_start,
+                signature=b"BTIN" if level > 1 else b"BTLF",
+                child_level=level-1, node_size=node_size, tree_type=tree_type,
+                record_size=record_size, offsize=offsize, max_records=max_records,
+                max_subtree=max_subtree)
+            node = repaired
+            reconstructed_links.append({
+                "kind": "btin_to_child", "source_address": address,
+                "target_address": candidate,
+                "pointer_offset": start + pointer_pos,
+                "parent_checksum_offset": start + checksum_start,
+                "parent_kind": "v2 B-tree node", "child_kind": "v2 B-tree node",
+                "resolution": "original BTIN checksum restored by one pointer; unique checked child and consistent full tree",
+            })
         # The remainder of an allocated node is unused; HDF5 need not zero it.
         parsed = [decode_record(address, start, node, 6 + i * record_size,
                                 chain + (address,), link_path) for i in range(count)]
@@ -339,4 +457,5 @@ def read_v2_btree_chunks(
     reader.metadata_ranges.extend(local_ranges)
     return ModernIndex("v2_btree", layout_version, object_address,
                        index_address, layout_pointer_offset, chunk_shape,
-                       element_size, tuple(records))
+                       element_size, tuple(records),
+                       reconstructed_links=tuple(reconstructed_links))

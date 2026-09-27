@@ -134,6 +134,136 @@ class ExtensibleArrayTests(unittest.TestCase):
                 with self.assertRaises(FormatError):
                     _parse(modified, selected_metadata_from=self.path)
 
+    def test_single_eahd_to_eaib_pointer_damage_restores_original_checksum(self):
+        _created(self.path, (400,), (10,), (None,), filtered=True)
+        healthy, ranges = _parse(self.path)
+        before = self.path.read_bytes()
+        header = next((start, end) for start, end, kind in ranges
+                      if kind == "extensible-array header")
+        pointer = header[1] - 4 - 8
+        damaged = bytearray(before)
+        damaged[pointer] ^= 0x20
+        broken = Path(self.temp.name) / "eahd_pointer.h5"
+        broken.write_bytes(damaged)
+        repaired, _ = _parse(broken, selected_metadata_from=self.path)
+        self.assertEqual(healthy.chunks, tuple(
+            item for item in healthy.chunks))
+        self.assertEqual([(x.coordinate, x.address, x.size) for x in repaired.chunks],
+                         [(x.coordinate, x.address, x.size) for x in healthy.chunks])
+        self.assertEqual(len(repaired.reconstructed_links), 1)
+        evidence = repaired.reconstructed_links[0]
+        self.assertEqual((evidence["kind"], evidence["pointer_offset"],
+                          evidence["target_address"]),
+                         ("eahd_to_eaib", pointer, healthy.data_block_address))
+        self.assertEqual(broken.read_bytes(), bytes(damaged))
+
+        report = recover(broken, "/data", Path(self.temp.name) / "ea_export.h5",
+                         Path(self.temp.name) / "ea_report.json")
+        self.assertEqual(report["counts"]["recovered"], 40)
+        self.assertEqual(broken.read_bytes(), bytes(damaged))
+
+    def test_eahd_link_does_not_cover_other_header_or_child_damage(self):
+        _created(self.path, (400,), (10,), (None,))
+        healthy, ranges = _parse(self.path)
+        header = next((start, end) for start, end, kind in ranges
+                      if kind == "extensible-array header")
+        index = next((start, end) for start, end, kind in ranges
+                     if kind == "extensible-array index block")
+        pointer = header[1] - 4 - 8
+        cases = (
+            {header[1]-4: 0x01},  # Checksum field damaged, no original to restore.
+            {pointer: 0x01, header[0]+18: 0x01},  # Two distinct fields.
+            {pointer: 0x01, index[0]+6: 0x01},  # Candidate back-pointer damaged.
+        )
+        for number, changes in enumerate(cases):
+            with self.subTest(case=number):
+                damaged = bytearray(self.path.read_bytes())
+                for position, mask in changes.items():
+                    damaged[position] ^= mask
+                broken = Path(self.temp.name) / f"ea_refusal_{number}.h5"
+                broken.write_bytes(damaged)
+                with self.assertRaises(FormatError):
+                    _parse(broken, selected_metadata_from=self.path)
+
+        # A deliberately rechecksummed pointer redirect must not be treated
+        # as the original-checksum-restoring repair.
+        damaged = bytearray(self.path.read_bytes())
+        damaged[pointer:pointer+8] = healthy.chunks[0].address.to_bytes(8, "little")
+        damaged[header[1]-4:header[1]] = lookup3(
+            bytes(damaged[header[0]:header[1]-4])).to_bytes(4, "little")
+        broken = Path(self.temp.name) / "ea_rechecksum.h5"
+        broken.write_bytes(damaged)
+        with self.assertRaises(FormatError):
+            _parse(broken, selected_metadata_from=self.path)
+
+    def test_eaib_direct_data_block_link_restores_original_checksum(self):
+        _created(self.path, (400,), (10,), (None,))
+        healthy, ranges = _parse(self.path)
+        target = next(step for item in healthy.chunks for step in item.evidence["index_chain"]
+                      if step["kind"] == "eaib_to_eadb")
+        pointer = target["pointer_offset"]
+        before = self.path.read_bytes()
+        raw = bytearray(before)
+        raw[pointer] ^= 0x40
+        broken = Path(self.temp.name) / "eaib_pointer.h5"
+        broken.write_bytes(raw)
+        repaired, _ = _parse(broken, selected_metadata_from=self.path)
+        self.assertEqual(repaired.reconstructed_links[0]["kind"], "eaib_to_child")
+        self.assertEqual(repaired.reconstructed_links[0]["target_address"],
+                         target["target_address"])
+        self.assertEqual([x.address for x in repaired.chunks],
+                         [x.address for x in healthy.chunks])
+        report = recover(broken, "/data", Path(self.temp.name) / "eaib_export.h5",
+                         Path(self.temp.name) / "eaib_report.json")
+        self.assertEqual(report["counts"]["recovered"], 40)
+        self.assertEqual(broken.read_bytes(), bytes(raw))
+
+        # With an unrelated EAIB byte also damaged there is no valid original
+        # checksum to restore by modifying the pointer alone.
+        corrupt = bytearray(raw)
+        corrupt[pointer+8] ^= 1
+        extra = Path(self.temp.name) / "eaib_two_faults.h5"
+        extra.write_bytes(corrupt)
+        with self.assertRaises(FormatError):
+            _parse(extra, selected_metadata_from=self.path)
+
+    def test_eaib_secondary_block_link_repairs_paged_index(self):
+        _created(self.path, (2, 2), (1, 1), (1_000_000, None), filtered=True)
+        healthy, _ = _parse(self.path)
+        target = next(step for item in healthy.chunks for step in item.evidence["index_chain"]
+                      if step["kind"] == "eaib_to_easb")
+        raw = bytearray(self.path.read_bytes())
+        raw[target["pointer_offset"]] ^= 0x10
+        broken = Path(self.temp.name) / "eaib_secondary.h5"
+        broken.write_bytes(raw)
+        recovered, _ = _parse(broken, selected_metadata_from=self.path)
+        self.assertEqual(recovered.reconstructed_links[0]["target_address"], target["target_address"])
+        self.assertEqual([item.address for item in recovered.chunks],
+                         [item.address for item in healthy.chunks])
+        report = recover(broken, "/data", Path(self.temp.name) / "eaib_secondary_export.h5",
+                         Path(self.temp.name) / "eaib_secondary_report.json")
+        self.assertEqual(report["counts"]["recovered"], 4)
+
+    def test_easb_data_block_link_repairs_paged_index(self):
+        _created(self.path, (2, 2), (1, 1), (1_000_000, None), filtered=True)
+        healthy, _ = _parse(self.path)
+        target = next(step for item in healthy.chunks for step in item.evidence["index_chain"]
+                      if step["kind"] == "easb_to_eadb")
+        raw = bytearray(self.path.read_bytes())
+        raw[target["pointer_offset"]] ^= 0x20
+        broken = Path(self.temp.name) / "easb_data.h5"
+        broken.write_bytes(raw)
+        recovered, _ = _parse(broken, selected_metadata_from=self.path)
+        self.assertEqual(recovered.reconstructed_links[0]["target_address"], target["target_address"])
+        self.assertEqual(recovered.reconstructed_links[0]["kind"], "easb_to_eadb")
+        self.assertEqual([item.address for item in recovered.chunks],
+                         [item.address for item in healthy.chunks])
+        report = recover(broken, "/data", Path(self.temp.name) / "easb_export.h5",
+                         Path(self.temp.name) / "easb_report.json")
+        self.assertEqual(report["counts"]["recovered"], 4)
+        self.assertGreater(report["reconstructed_chunks"], 0)
+        self.assertLess(report["reconstructed_chunks"], 4)
+
     def test_rechecks_back_pointer_even_when_index_checksum_is_recomputed(self):
         _created(self.path, (400,), (10,), (None,))
         index, ranges = _parse(self.path)

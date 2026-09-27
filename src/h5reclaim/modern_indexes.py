@@ -111,6 +111,7 @@ class ModernIndex:
     data_block_address: int | None = None
     data_block_pointer_offset: int | None = None
     reconstructed_data_block_pointer: bool = False
+    reconstructed_links: tuple[dict[str, object], ...] = ()
 
 
 class ModernH5File:

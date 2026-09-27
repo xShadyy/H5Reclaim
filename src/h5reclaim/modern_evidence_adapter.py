@@ -120,6 +120,44 @@ def _build(
         header_start, spec.shape, spec.chunks, element_size,
     )
     source = SourceRecord(source_id, reader.size, source_sha256)
+    repair_by_offset: dict[int, dict[str, object]] = {}
+    if len(index.reconstructed_links) > 1:
+        raise ModernEvidenceError("more than one reconstructed modern index link")
+    for repair in index.reconstructed_links:
+        parent_address = repair.get("source_address")
+        child_address = repair.get("target_address")
+        offset = repair.get("pointer_offset")
+        checksum_offset = repair.get("parent_checksum_offset")
+        parent_kind = repair.get("parent_kind")
+        child_kind = repair.get("child_kind")
+        if (not all(isinstance(v, int) for v in
+                    (parent_address, child_address, offset, checksum_offset))
+                or not isinstance(parent_kind, str) or not isinstance(child_kind, str)
+                or offset in repair_by_offset):
+            raise ModernEvidenceError("invalid reconstructed index link evidence")
+        parent_start = reader.absolute(parent_address)
+        child_start = reader.absolute(child_address)
+        if (not any(start == parent_start and start <= offset
+                    and offset + width <= checksum_offset and checksum_offset + 4 <= end
+                    for start, end, kind in reader.metadata_ranges if kind == parent_kind)
+                or not any(start == child_start
+                           for start, end, kind in reader.metadata_ranges
+                           if kind == child_kind)):
+            raise ModernEvidenceError("reconstructed link lacks parsed parent and child")
+        original = reader._read_absolute(parent_start, checksum_offset + 4 - parent_start)
+        patched = bytearray(original)
+        patched[offset-parent_start:offset-parent_start+width] = child_address.to_bytes(width, "little")
+        wanted = int.from_bytes(original[-4:], "little")
+        if (int.from_bytes(reader._read_absolute(offset, width), "little") == child_address
+                or lookup3(original[:-4]) == wanted
+                or lookup3(patched[:-4]) != wanted):
+            raise ModernEvidenceError("one index link does not restore original parent checksum")
+        repair_by_offset[offset] = repair
+
+    def checked_repair(offset: int, target: int, parent: int) -> bool:
+        repair = repair_by_offset.get(offset)
+        return bool(repair is not None and repair["source_address"] == parent
+                    and repair["target_address"] == target)
     by_coordinate = {item.coordinate: item for item in index.chunks}
     if len(by_coordinate) != len(index.chunks):
         raise ModernEvidenceError("modern index proposes duplicate coordinates")
@@ -138,29 +176,31 @@ def _build(
                    if kind == header_kind):
             raise ModernEvidenceError("index data-block pointer is not in its header")
         observed_block_address = int.from_bytes(reader._read_absolute(fa_pointer, width), "little")
-        reconstructed = index.reconstructed_data_block_pointer
+        reconstructed = index.reconstructed_data_block_pointer or checked_repair(
+            fa_pointer, index.data_block_address, index.base_address)
         if reconstructed:
-            if index.index_type != "fixed_array" or observed_block_address == index.data_block_address:
-                raise ModernEvidenceError("reconstructed array pointer is not a damaged fixed-array link")
-            root_size = 12 + reader.superblock.length_size + width
-            raw_header = reader.read_at(index.base_address, root_size)
-            patched = bytearray(raw_header)
-            offset = fa_pointer - fa_header
-            patched[offset:offset+width] = index.data_block_address.to_bytes(width, "little")
-            if (lookup3(raw_header[:-4]) == int.from_bytes(raw_header[-4:], "little")
-                    or lookup3(patched[:-4]) != int.from_bytes(raw_header[-4:], "little")):
-                raise ModernEvidenceError("original fixed-array checksum is not restored by one pointer")
-            child = reader.read_at(index.data_block_address, 6 + width)
-            if (child[:4] != b"FADB" or child[4] != 0
-                    or int.from_bytes(child[6:6+width], "little") != index.base_address):
-                raise ModernEvidenceError("fixed-array data block does not point back to anchored header")
-            child_ranges = [(start, end) for start, end, kind in reader.metadata_ranges
-                            if start == fa_block and kind == "fixed-array data block"]
-            if len(child_ranges) != 1:
-                raise ModernEvidenceError("reconstructed fixed-array block is not uniquely reserved")
-            child_raw = reader._read_absolute(fa_block, child_ranges[0][1] - fa_block)
-            if lookup3(child_raw[:-4]) != int.from_bytes(child_raw[-4:], "little"):
-                raise ModernEvidenceError("reconstructed fixed-array block checksum differs")
+            if index.reconstructed_data_block_pointer:
+                if index.index_type != "fixed_array" or observed_block_address == index.data_block_address:
+                    raise ModernEvidenceError("reconstructed array pointer is not a damaged fixed-array link")
+                root_size = 12 + reader.superblock.length_size + width
+                raw_header = reader.read_at(index.base_address, root_size)
+                patched = bytearray(raw_header)
+                offset = fa_pointer - fa_header
+                patched[offset:offset+width] = index.data_block_address.to_bytes(width, "little")
+                if (lookup3(raw_header[:-4]) == int.from_bytes(raw_header[-4:], "little")
+                        or lookup3(patched[:-4]) != int.from_bytes(raw_header[-4:], "little")):
+                    raise ModernEvidenceError("original fixed-array checksum is not restored by one pointer")
+                child = reader.read_at(index.data_block_address, 6 + width)
+                if (child[:4] != b"FADB" or child[4] != 0
+                        or int.from_bytes(child[6:6+width], "little") != index.base_address):
+                    raise ModernEvidenceError("fixed-array data block does not point back to anchored header")
+                child_ranges = [(start, end) for start, end, kind in reader.metadata_ranges
+                                if start == fa_block and kind == "fixed-array data block"]
+                if len(child_ranges) != 1:
+                    raise ModernEvidenceError("reconstructed fixed-array block is not uniquely reserved")
+                child_raw = reader._read_absolute(fa_block, child_ranges[0][1] - fa_block)
+                if lookup3(child_raw[:-4]) != int.from_bytes(child_raw[-4:], "little"):
+                    raise ModernEvidenceError("reconstructed fixed-array block checksum differs")
         elif observed_block_address != index.data_block_address:
             raise ModernEvidenceError("index header pointer bytes disagree with parsed data block")
         prefix = "fixed" if index.index_type == "fixed_array" else "extensible"
@@ -172,9 +212,9 @@ def _build(
                       fa_header, fa_block, "bridged_index" if reconstructed else "observed_index",
                       PhysicalExtent(source_id, fa_pointer, width),
                       checks=(
-                          EvidenceCheck("selected_header_anchor", "pass", "validated layout points to FAHD"),
+                          EvidenceCheck("selected_header_anchor", "pass", "validated layout points to array header"),
                           EvidenceCheck("original_header_checksum_restored", "pass", "only the address bytes are substituted"),
-                          EvidenceCheck("data_block_checksum_and_backpointer", "pass", "FADB checksum and FAHD back-pointer match"),
+                          EvidenceCheck("data_block_checksum_and_backpointer", "pass", "checked child back-pointer agrees"),
                           EvidenceCheck("unique_data_block", "pass", "bounded candidate search found exactly one match"),
                       ) if reconstructed else
                       (EvidenceCheck("address_rule", "pass", "validated header points to index block"),)),
@@ -272,14 +312,22 @@ def _build(
                                if start == parent and kind in
                                ("extensible-array index block", "extensible-array secondary block")):
                         raise ModernEvidenceError("extensible-array child pointer is outside checked metadata")
-                    if int.from_bytes(reader._read_absolute(offset, width), "little") != target:
+                    reconstructed_child = checked_repair(offset, target, parent_address)
+                    if (int.from_bytes(reader._read_absolute(offset, width), "little") != target
+                            and not reconstructed_child):
                         raise ModernEvidenceError("extensible-array child pointer bytes disagree")
                     child = reader.absolute(target)
                     edge = f"array:{len(linked_coordinates)}:{number}"
                     links.append(IndexLink(
-                        edge, source_id, spec.path, parent, child, "observed_index",
+                        edge, source_id, spec.path, parent, child,
+                        "bridged_index" if reconstructed_child else "observed_index",
                         PhysicalExtent(source_id, offset, width),
-                        checks=(EvidenceCheck("address_rule", "pass", str(step["kind"])),),
+                        checks=(
+                            EvidenceCheck("original_parent_checksum_restored", "pass", str(step["kind"])),
+                            EvidenceCheck("unique_checked_child", "pass", "validated child owner and row"),
+                            EvidenceCheck("full_index_consistency", "pass", "all selected slots checked"),
+                        ) if reconstructed_child else
+                        (EvidenceCheck("address_rule", "pass", str(step["kind"])),),
                     ))
                     path.append(edge)
                     parent = child
@@ -320,14 +368,22 @@ def _build(
                         or not any(start == parent and start <= offset and offset + pointer_length <= end
                                    for start, end, kind in reader.metadata_ranges
                                    if kind in ("v2 B-tree header", "v2 B-tree node"))
-                        or int.from_bytes(reader._read_absolute(offset, width), "little") != target):
+                        or (int.from_bytes(reader._read_absolute(offset, width), "little") != target
+                            and not checked_repair(offset, target, step["source_address"]))):
                     raise ModernEvidenceError("v2 B-tree node pointer is not verified in selected index")
                 child = reader.absolute(target)
                 edge = f"btree:{len(linked_coordinates)}:{number}"
+                reconstructed_child = checked_repair(offset, target, step["source_address"])
                 links.append(IndexLink(
-                    edge, source_id, spec.path, parent, child, "observed_index",
+                    edge, source_id, spec.path, parent, child,
+                    "bridged_index" if reconstructed_child else "observed_index",
                     PhysicalExtent(source_id, offset, width),
-                    checks=(EvidenceCheck("metadata_checksum", "pass", str(step["source_kind"])),),
+                    checks=(
+                        EvidenceCheck("original_parent_checksum_restored", "pass", str(step["source_kind"])),
+                        EvidenceCheck("unique_checked_child", "pass", "unique checksum-valid child"),
+                        EvidenceCheck("full_index_consistency", "pass", "whole B-tree checked"),
+                    ) if reconstructed_child else
+                    (EvidenceCheck("metadata_checksum", "pass", str(step["source_kind"])),),
                 ))
                 path.append(edge)
                 parent = child

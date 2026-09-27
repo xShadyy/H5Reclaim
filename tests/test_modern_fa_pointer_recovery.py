@@ -12,7 +12,6 @@ import numpy as np
 
 from h5reclaim.evidence import load_evidence_report
 from h5reclaim.format import FormatError
-from h5reclaim.metadata import UnsupportedCase
 from h5reclaim.modern_indexes import ModernH5File, lookup3
 from h5reclaim.recovery import recover
 
@@ -90,7 +89,7 @@ class ModernFixedArrayPointerRecoveryTests(unittest.TestCase):
         header_size = index.data_block_pointer_offset - header_start + 8 + 4
         raw[header_start + header_size - 1] ^= 0x80
         self.source.write_bytes(raw)
-        with self.assertRaisesRegex(UnsupportedCase, "no uniquely verified data-block pointer"):
+        with self.assertRaisesRegex(FormatError, "no uniquely verified data-block pointer"):
             recover(self.source, "/science", self.output, self.report)
         self.assertFalse(self.output.exists())
 
@@ -100,7 +99,7 @@ class ModernFixedArrayPointerRecoveryTests(unittest.TestCase):
         raw[index.data_block_pointer_offset] ^= 0x67
         raw[index.data_block_address + 6] ^= 0x40
         self.source.write_bytes(raw)
-        with self.assertRaisesRegex(UnsupportedCase, "no uniquely verified data-block pointer"):
+        with self.assertRaisesRegex(FormatError, "no uniquely verified data-block pointer"):
             recover(self.source, "/science", self.output, self.report)
         self.assertFalse(self.report.exists())
 

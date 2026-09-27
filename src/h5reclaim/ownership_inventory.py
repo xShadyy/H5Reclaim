@@ -68,6 +68,7 @@ def inventory_other_allocations(
     *, max_objects: int = MAX_OBJECTS, max_links: int = MAX_LINKS,
     max_allocations: int = MAX_ALLOCATIONS, max_seconds: float = MAX_SECONDS,
     opened_file: h5py.File | None = None, address_space_size: int | None = None,
+    skip_selected_object_info: bool = False,
 ) -> OwnershipInventory:
     """Observe currently allocated sibling ranges without reading payload values.
 
@@ -101,14 +102,18 @@ def inventory_other_allocations(
     try:
         with (h5py.File(snapshot, "r") if opened_file is None
               else nullcontext(opened_file)) as handle:
-            pending: list[tuple[str, h5py.Group | h5py.Dataset]] = [("/", handle["/"])]
+            pending: list[tuple[str, h5py.Group | h5py.Dataset, int | None]] = [
+                ("/", handle["/"], None)]
             while pending:
                 if monotonic() > deadline:
                     incomplete("native local namespace inventory exceeded its time limit")
                     break
-                path, item = pending.pop()
+                path, item, recorded_address = pending.pop()
                 try:
-                    address = int(h5py.h5o.get_info(item.id).addr)
+                    address = (recorded_address if recorded_address is not None
+                               and skip_selected_object_info and
+                               recorded_address == selected_object_address else
+                               int(h5py.h5o.get_info(item.id).addr))
                 except (OSError, RuntimeError, ValueError) as exc:
                     incomplete(f"cannot inspect object at {path[:128]}: {type(exc).__name__}")
                     continue
@@ -181,18 +186,33 @@ def inventory_other_allocations(
                             incomplete("rooted local path exceeds inventory length limit")
                             continue
                         child = item[name]
-                        child_info = h5py.h5o.get_info(child.id)
-                        child_address = int(child_info.addr)
+                        if skip_selected_object_info:
+                            link_info = item.id.links.get_info(name.encode("utf-8"))
+                            child_address = int(link_info.u)
+                            if child_address == selected_object_address:
+                                declared_links = None
+                                note = "selected object native hard-link count unavailable under checked index repair"
+                                if note not in problems:
+                                    incomplete(note)
+                            else:
+                                child_info = h5py.h5o.get_info(child.id)
+                                if int(child_info.addr) != child_address:
+                                    contradiction = "native object address disagrees with its rooted hard link"
+                                    break
+                                declared_links = int(child_info.rc)
+                        else:
+                            child_info = h5py.h5o.get_info(child.id)
+                            child_address = int(child_info.addr)
+                            declared_links = int(child_info.rc)
                         observed_links = rooted_link_counts.get(child_address, 0) + 1
                         rooted_link_counts[child_address] = observed_links
-                        declared_links = int(child_info.rc)
-                        if declared_links < observed_links:
+                        if declared_links is not None and declared_links < observed_links:
                             contradiction = (
                                 f"rooted local hard links to {child_path[:128]} exceed "
                                 "its object-header link count"
                             )
                             break
-                        pending.append((child_path, child))
+                        pending.append((child_path, child, child_address))
                     if links > max_links or contradiction:
                         break
                 except (OSError, RuntimeError, ValueError, KeyError, AttributeError) as exc:
