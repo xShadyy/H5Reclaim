@@ -220,8 +220,27 @@ def _probe_index(source: Path, entries: list[dict[str, Any]]) -> None:
                         if len(walk.broken_links) > 1:
                             raise UnsupportedFormat("more than one broken child pointer")
                         levels = {node.address: node.level for node in walk.nodes}
-                        if any(levels[gap.parent_address] != 1 for gap in walk.broken_links):
-                            raise UnsupportedFormat("missing internal subtree below the root")
+                        for gap in walk.broken_links:
+                            if levels[gap.parent_address] == 1:
+                                continue
+                            matches = [candidate for candidate in reader.find_missing_child_candidates(
+                                root.address, max_nodes=MAX_NODES, rank=rank,
+                                element_size=element_size,
+                            ) if (candidate.parent_address, candidate.entry_index)
+                                == (gap.parent_address, gap.entry_index)]
+                            if len(matches) != 1:
+                                raise UnsupportedFormat(
+                                    "missing internal subtree has no unique two-sided rooted bridge"
+                                )
+                            subtree = reader.walk_tree(
+                                matches[0].node.address, max_nodes=MAX_NODES-len(walk.nodes),
+                                rank=rank, element_size=element_size,
+                            )
+                            if (subtree.broken_links or {node.address for node in subtree.nodes}
+                                    & set(levels)):
+                                raise UnsupportedFormat(
+                                    "bridged internal subtree is incomplete or repeats a rooted node"
+                                )
                     entry["index"] = {
                         "type": "v1_raw_data_btree",
                         "root_level": root.level,

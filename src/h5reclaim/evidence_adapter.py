@@ -17,7 +17,7 @@ from .evidence import (
     ChecksumEvidence, ChunkProposal, DatasetAnchor, EvidenceCheck, EvidenceReport,
     IndexLink, PhysicalExtent, SourceRecord, reconcile,
 )
-from .format import H5File, TreeNode, TreeWalk
+from .format import H5File, MissingChildCandidate, TreeNode, TreeWalk
 from .metadata import DatasetSpec
 from .schema_codec import fletcher32_applied
 
@@ -31,6 +31,9 @@ _PASS = tuple(EvidenceCheck(code, "pass") for code in (
 ))
 _BRIDGE_PASS = tuple(EvidenceCheck(code, "pass") for code in (
     "parent_key_interval", "reciprocal_sibling_links", "unique_node", "node_level",
+))
+_SUBTREE_BRIDGE_PASS = _BRIDGE_PASS + tuple(EvidenceCheck(code, "pass") for code in (
+    "complete_keyed_subtree", "disjoint_rooted_nodes",
 ))
 
 
@@ -47,6 +50,7 @@ def build_recovery_evidence(
     failed: Sequence[Mapping[str, Any]] = (),
     rooted_metadata_ranges: Sequence[tuple[int, int, str]] = (),
     source_id: str = "damaged",
+    internal_bridges: Sequence[MissingChildCandidate] = (),
 ) -> EvidenceReport:
     """Create and reconcile a ledger for accepted and decode-failed chunks.
 
@@ -59,7 +63,7 @@ def build_recovery_evidence(
     try:
         return _build(
             spec, reader, walk, root, leaves, records, source_sha256,
-            decode_chunk, failed, source_id, rooted_metadata_ranges,
+            decode_chunk, failed, source_id, rooted_metadata_ranges, internal_bridges,
         )
     except (IndexError, KeyError, TypeError, ValueError, OverflowError) as exc:
         if isinstance(exc, EvidenceAdapterError):
@@ -74,6 +78,7 @@ def _build(
     decode_chunk: Callable[[bytes, DatasetSpec, int], bytes],
     failed: Sequence[Mapping[str, Any]], source_id: str,
     rooted_metadata_ranges: Sequence[tuple[int, int, str]],
+    internal_bridges: Sequence[MissingChildCandidate],
 ) -> EvidenceReport:
     nodes = {node.address: node for node in walk.nodes}
     if len(nodes) != len(walk.nodes) or nodes.get(root.address) != root:
@@ -117,12 +122,80 @@ def _build(
             parent_links[child.address] = link_id
             parent_addresses[child.address] = node.address
 
+    # A v1 index node has no checksum. The bridge is structural evidence only:
+    # two *rooted* siblings independently name one child, its own reciprocal
+    # links and keys agree, and every descendant is parsed in the parent's
+    # exact coordinate interval. Recheck independently of the supplied report.
+    graft_addresses: set[int] = set()
+    verified = reader.find_missing_child_candidates(
+        root.address, rank=len(spec.shape), element_size=np.dtype(spec.dtype).itemsize,
+        max_nodes=len(walk.nodes),
+    ) if internal_bridges else ()
+    if len(internal_bridges) > 1:
+        raise EvidenceAdapterError("at most one internal subtree bridge is supported")
+    for candidate in internal_bridges:
+        parent = nodes.get(candidate.parent_address)
+        slot = candidate.entry_index
+        if (
+            candidate not in verified or parent is None or parent.level < 2
+            or slot < 1 or slot + 1 >= len(parent.entries)
+            or nodes.get(candidate.node.address) != candidate.node
+            or candidate.node.address in parent_links
+        ):
+            raise EvidenceAdapterError("internal subtree lacks one unique reciprocal two-sided bridge")
+        child_walk = reader.walk_tree(
+            candidate.node.address, rank=len(spec.shape),
+            element_size=np.dtype(spec.dtype).itemsize,
+            max_nodes=len(walk.nodes),
+        )
+        child_addresses = {node.address for node in child_walk.nodes}
+        rooted_walk = reader.walk_tree(
+            root.address, rank=len(spec.shape),
+            element_size=np.dtype(spec.dtype).itemsize,
+            max_nodes=len(walk.nodes),
+        )
+        if (child_walk.broken_links or len(child_addresses) != len(child_walk.nodes)
+                or any(nodes.get(node.address) != node for node in child_walk.nodes)
+                or child_addresses & {node.address for node in rooted_walk.nodes}
+                or any(parent_addresses.get(address) not in child_addresses
+                       for address in child_addresses if address != candidate.node.address)
+                or root.address in child_addresses):
+            raise EvidenceAdapterError("internal bridge lacks a complete disjoint keyed subtree")
+        graft_addresses.update(child_addresses)
+        left = nodes[parent.entries[slot - 1].address]
+        right = nodes[parent.entries[slot + 1].address]
+        child = candidate.node
+        bridge_id = f"bridge:{parent.address}:{slot}"
+        left_id, right_id = f"sibling:left:{child.address}", f"sibling:right:{child.address}"
+        offsize = reader.superblock.offset_size
+        link_records.extend((
+            IndexLink(left_id, source_id, spec.path, reader.absolute(left.address),
+                      reader.absolute(child.address), "observed_sibling",
+                      PhysicalExtent(source_id, reader.absolute(left.address) + 8 + offsize,
+                                     offsize), "left"),
+            IndexLink(right_id, source_id, spec.path, reader.absolute(right.address),
+                      reader.absolute(child.address), "observed_sibling",
+                      PhysicalExtent(source_id, reader.absolute(right.address) + 8,
+                                     offsize), "right"),
+            IndexLink(bridge_id, source_id, spec.path, reader.absolute(parent.address),
+                      reader.absolute(child.address), "bridged_index",
+                      PhysicalExtent(source_id, parent.entries[slot].pointer_offset, offsize),
+                      corroborator_ids=(left_id, right_id), checks=_SUBTREE_BRIDGE_PASS),
+        ))
+        link_ids.update((left_id, right_id, bridge_id))
+        parent_links[child.address] = bridge_id
+        parent_addresses[child.address] = parent.address
+
     for leaf_address, (leaf, route, _details) in leaves.items():
         if leaf.address != leaf_address or leaf.level != 0:
             raise EvidenceAdapterError("provided leaf does not match its parsed address and level")
         if route == "intact_tree":
-            if nodes.get(leaf_address) != leaf:
+            if nodes.get(leaf_address) != leaf or leaf_address in graft_addresses:
                 raise EvidenceAdapterError("intact leaf is not present in the rooted traversal")
+            continue
+        if route == "reconstructed_link" and leaf_address in graft_addresses:
+            if nodes.get(leaf_address) != leaf:
+                raise EvidenceAdapterError("reconstructed leaf disagrees with parsed subtree")
             continue
         if route != "reconstructed_link" or leaf_address in nodes:
             raise EvidenceAdapterError("leaf's evidence route is not justified")

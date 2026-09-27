@@ -15,7 +15,7 @@ from typing import Any, Iterator
 import h5py
 import numpy as np
 
-from .format import FormatError, H5File, SIGNATURE
+from .format import FormatError, H5File, MissingChildCandidate, SIGNATURE, TreeWalk
 from .hints import DatasetHints, compare_hints, require_no_conflicts
 from .metadata import DatasetSpec, UnsupportedCase, read_dataset_spec
 from .output_annotations import add_output_annotations
@@ -46,7 +46,7 @@ STATUS_CODES = {
 MAX_SOURCE_BYTES = 4 * 1024 * 1024 * 1024
 MAX_SNAPSHOT_SECONDS = 1800.0
 MAX_NODES = 4096
-MAX_CHUNKS = 4096
+MAX_CHUNKS = 8192
 
 
 class RecoveryError(ValueError):
@@ -299,6 +299,8 @@ def _analyze_snapshot(
             layout.root_address, rank=rank, element_size=element_size, max_nodes=MAX_NODES
         )
         leaves: dict[int, tuple[Any, str, dict[str, Any]]] = {}
+        grafts: list[MissingChildCandidate] = []
+        graft_nodes: list[Any] = []
         if root.level == 0:
             # A level-zero root directly owns its chunk entries. A missing
             # payload address has no neighboring parent link to reconstruct;
@@ -320,10 +322,6 @@ def _analyze_snapshot(
                 for node in walk.nodes if node.level
                 for slot, entry in enumerate(node.entries) if entry.address is not None
             }
-            for broken in walk.broken_links:
-                if nodes[broken.parent_address].level != 1:
-                    raise UnsupportedCase("a missing internal subtree cannot be uniquely located")
-
             for node in walk.nodes:
                 if node.address == root.address:
                     continue
@@ -354,27 +352,79 @@ def _analyze_snapshot(
                 if len(matching) == 1:
                     candidate = matching[0]
                     node = candidate.node
-                    if node.address in leaves:
+                    if node.address in nodes:
                         raise FormatError("candidate is already reachable from the root")
-                    leaves[node.address] = (
-                        node, "reconstructed_link",
-                        {
-                            "root_address": root.address,
-                            "root_level": root.level,
-                            "parent_address": broken.parent_address,
-                            "parent_slot": broken.entry_index,
-                            "left_anchor": _anchor_address(candidate.left_anchor),
-                            "right_anchor": _anchor_address(candidate.right_anchor),
-                            "rule": "parent interval and reciprocal links through both reachable siblings",
-                        },
-                    )
+                    if node.level:
+                        # The sibling bridge identifies just the subtree root.
+                        # Every descendant must also have a complete, unique,
+                        # bounded path and a key interval consistent with it.
+                        subtree = reader.walk_tree(
+                            node.address, rank=rank, element_size=element_size,
+                            max_nodes=MAX_NODES - len(walk.nodes),
+                        )
+                        if subtree.broken_links:
+                            raise UnsupportedCase("bridged v1 internal subtree has another broken child link")
+                        added = {child.address for child in subtree.nodes}
+                        if len(added) != len(subtree.nodes) or added.intersection(nodes):
+                            raise FormatError("bridged subtree repeats an already rooted B-tree node")
+                        graft_nodes.extend(subtree.nodes)
+                        selected_nodes = subtree.nodes
+                    else:
+                        selected_nodes = (node,)
+                    grafts.append(candidate)
+                    bridge_evidence = {
+                        "root_address": root.address,
+                        "root_level": root.level,
+                        "parent_address": broken.parent_address,
+                        "parent_slot": broken.entry_index,
+                        "subtree_root_address": node.address,
+                        "left_anchor": _anchor_address(candidate.left_anchor),
+                        "right_anchor": _anchor_address(candidate.right_anchor),
+                        "rule": "exact parent interval, reciprocal reachable siblings and complete keyed subtree",
+                    }
+                    for child in selected_nodes:
+                        if child.level == 0:
+                            if child.address in leaves:
+                                raise FormatError("bridged subtree repeats a rooted leaf")
+                            leaves[child.address] = (child, "reconstructed_link", bridge_evidence)
                 else:
+                    if nodes[broken.parent_address].level > 1:
+                        raise UnsupportedCase(
+                            "missing v1 internal subtree has no unique two-sided rooted bridge"
+                        )
                     unresolved.append({
                         "parent_address": broken.parent_address,
                         "parent_slot": broken.entry_index,
                         "reason": "no unique two-sided anchored candidate",
                         "candidate_count": len(matching),
                     })
+
+            # No two separately parsed B-tree allocations may claim the same
+            # physical bytes. The parser can have registered a node more than
+            # once while checking a candidate, so compare unique addresses.
+            node_ranges: list[tuple[int, int, int]] = []
+            for node in (*walk.nodes, *graft_nodes,
+                         *(candidate.node for candidate in grafts if not candidate.node.level)):
+                length = (8 + 2 * reader.superblock.offset_size
+                          + 2 * reader.superblock.istore_k
+                          * (8 + 8 * (rank + 1) + reader.superblock.offset_size)
+                          + 8 + 8 * (rank + 1))
+                start = reader.absolute(node.address)
+                node_ranges.append((start, start + length, node.address))
+            node_ranges.sort()
+            for previous, current in zip(node_ranges, node_ranges[1:]):
+                if previous[1] > current[0]:
+                    raise FormatError("distinct B-tree node allocations overlap")
+            known_metadata = (
+                (start, end, label) for start, end, label in
+                (*reader.metadata_ranges,
+                 *(fallback.metadata_ranges if fallback else ()))
+                if label != "B-tree node"
+            )
+            for start, end, label in known_metadata:
+                if any(start < node_end and node_start < end
+                       for node_start, node_end, _address in node_ranges):
+                    raise FormatError(f"B-tree node overlaps rooted {label} metadata")
 
         coordinates: set[tuple[int, ...]] = set()
         ranges: list[tuple[int, int, tuple[int, ...]]] = []
@@ -452,9 +502,11 @@ def _analyze_snapshot(
 
         from .evidence_adapter import build_recovery_evidence
         ledger = build_recovery_evidence(
-            spec, reader, walk, root, leaves, records,
+            spec, reader, TreeWalk(walk.nodes + tuple(graft_nodes), walk.broken_links),
+            root, leaves, records,
             source_sha256=before_hash, decode_chunk=_decode_chunk, failed=failed,
             rooted_metadata_ranges=fallback.metadata_ranges if fallback else (),
+            internal_bridges=tuple(candidate for candidate in grafts if candidate.node.level),
         )
         root_address = root.address
         reachable_leaves = sum(node.level == 0 for node in walk.nodes)
@@ -521,9 +573,8 @@ def _analyze_snapshot(
             "root_address": root_address,
             "root_level": root.level,
             "reachable_leaves": reachable_leaves,
-            "broken_links": len(unresolved) + sum(
-                leaf[1] == "reconstructed_link" for leaf in leaves.values()
-            ),
+            "broken_links": len(walk.broken_links),
+            "reconstructed_internal_subtrees": sum(bool(candidate.node.level) for candidate in grafts),
         },
         "counts": counts,
         "reconstructed_chunks": sum(record.route == "reconstructed_link" for record in records),
@@ -537,12 +588,12 @@ def _analyze_snapshot(
             (
                 "v1 B-tree with intact level-zero root; no missing payload pointers reconstructed"
                 if root.level == 0 else
-                "v1 B-tree with an anchored root and at most one broken leaf link"
+                "v1 B-tree with an anchored root and at most one bridged child link"
             ),
             (
                 "the selected object header owns the direct level-zero chunk index"
                 if root.level == 0 else
-                "detached leaf requires reciprocal sibling links and parent key range"
+                "detached node requires reciprocal sibling links, parent key range and complete subtree"
             ),
         ],
         "integrity_note": (
