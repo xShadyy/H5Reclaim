@@ -209,7 +209,7 @@ def verify_protection_bundle(
                     raise RecoveryError("protection component differs from manifest SHA-256")
     except RecoveryError:
         raise
-    except (OSError, ValueError, KeyError, TypeError, UnicodeError, RuntimeError,
+    except (OSError, ValueError, KeyError, TypeError, UnicodeError, RuntimeError, RecursionError,
             zipfile.BadZipFile) as exc:
         raise RecoveryError(f"protection bundle cannot be read safely: {exc}") from exc
     if _identity(bundle.stat()) != identity:
@@ -281,16 +281,35 @@ def drill_protection_bundle(
                 raise RecoveryError("restore drill failed to retain every captured chunk")
         erasure_restored = 0
         if "erasure.zip" in document["components"]:
-            with zipfile.ZipFile(stage / "erasure.zip") as sidecar:
-                parity_doc = json.loads(sidecar.read("manifest.json").decode("utf-8"),
-                                        object_pairs_hook=_unique)
-            first = parity_doc["stripes"][0]["members"]
-            missing = [tuple(item) for item in first[:2]]
+            try:
+                with zipfile.ZipFile(stage / "erasure.zip") as sidecar:
+                    info = sidecar.getinfo("manifest.json")
+                    if info.file_size > (32 << 20) or info.compress_type != zipfile.ZIP_STORED:
+                        raise RecoveryError("parity drill manifest exceeds its bounds")
+                    parity_doc = json.loads(sidecar.read("manifest.json").decode("utf-8"),
+                                            object_pairs_hook=_unique)
+                first = parity_doc["stripes"][0]["members"]
+                if not isinstance(first, list) or not 1 <= len(first) <= 16:
+                    raise RecoveryError("parity drill has invalid stripe coordinates")
+                missing = [tuple(item) for item in first[:2]]
+                if any(not isinstance(item, tuple) or not item or len(item) > 4
+                       or any(type(axis) is not int or axis < 0 for axis in item)
+                       for item in missing):
+                    raise RecoveryError("parity drill has invalid chunk coordinates")
+            except RecoveryError:
+                raise
+            except (OSError, ValueError, KeyError, IndexError, TypeError, UnicodeError,
+                    RecursionError, zipfile.BadZipFile) as exc:
+                raise RecoveryError(f"parity drill cannot inspect sidecar: {exc}") from exc
             parity_damaged = stage / "parity-damaged.h5"
             shutil.copyfile(source, parity_damaged)
             with h5py.File(source, "r") as intact, parity_damaged.open("r+b") as stream:
                 selected = intact[document["dataset_path"]]
                 for origin in missing:
+                    if (selected.chunks is None or len(origin) != selected.ndim
+                            or any(axis >= extent or axis % step
+                                   for axis, extent, step in zip(origin, selected.shape, selected.chunks))):
+                        raise RecoveryError("parity drill coordinate is outside the selected grid")
                     info = selected.id.get_chunk_info_by_coord(origin)
                     if info.byte_offset is None or info.size < 1:
                         raise RecoveryError("parity drill cannot locate selected chunk")
