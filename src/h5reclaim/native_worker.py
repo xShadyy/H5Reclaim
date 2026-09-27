@@ -22,6 +22,9 @@ def _apply_memory_limit(max_bytes: int) -> int | None:
         import resource
     except ImportError:
         return None
+    if hasattr(resource, "RLIMIT_CORE"):
+        _, core_hard = resource.getrlimit(resource.RLIMIT_CORE)
+        resource.setrlimit(resource.RLIMIT_CORE, (0, core_hard))
     if hasattr(resource, "RLIMIT_AS"):
         _, hard = resource.getrlimit(resource.RLIMIT_AS)
         applied = min(max_bytes, hard) if hard >= 0 else max_bytes
