@@ -34,8 +34,15 @@ external-link target has local metadata. This diagnosis does not read values.
 The distinct `rescue --related-files` export may accept **complete elements**
 from the present prefix of a shorter external raw segment and marks the rest
 unknown. It can materialize bounded VDS mappings after separately opening
-pinned private source snapshots. A VDS target itself backed by other files
-and dynamic VDS filenames remain unsupported.
+pinned private source snapshots. One explicitly pinned nested VDS can map to
+a pinned local numeric leaf. Both finite mapping levels, exact type, leaf
+allocation and physical ownership are checked. A third VDS layer, dynamic
+filenames, overlapping mappings, and a nested external raw source refuse.
+The nested route limits selected rank to four, 65,536 elements or 8 MiB,
+64 combined mappings, 262,144 mapped points, and 4 GiB aggregate related
+snapshots. All declared nested filenames need exact manifest entries; a
+missing or mismatched leaf yields unknown coordinates rather than virtual
+fill accepted as science.
 For one selected external link, the same command requires exactly its declared
 filename in the manifest. It snapshots and hashes the distinct HDF5 target,
 then follows only local hard links to its selected native-readable dataset.
