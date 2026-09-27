@@ -96,6 +96,31 @@ class DenseGroupTests(unittest.TestCase):
             with self.assertRaisesRegex(FormatError, "FHDB checksum"):
                 self._read(reader, group_address)
 
+    def test_corrupt_indirect_heap_pointer_checksum_refuses(self):
+        group_address = self._create(100)
+        with ModernH5File(self.path) as reader:
+            _, heap, _ = self._info(reader, group_address)
+            root = int.from_bytes(reader.read_at(heap+132, 8), "little")
+            self.assertEqual(reader.read_at(root, 4), b"FHIB")
+        raw = bytearray(self.path.read_bytes()); raw[root+22] ^= 0x08
+        self.path.write_bytes(raw)
+        with ModernH5File(self.path) as reader:
+            with self.assertRaisesRegex(FormatError, "root FHIB"):
+                self._read(reader, group_address)
+
+    def test_corrupt_internal_name_tree_node_refuses(self):
+        group_address = self._create(100)
+        with ModernH5File(self.path) as reader:
+            _, _, index = self._info(reader, group_address)
+            header = reader.read_at(index, 38)
+            self.assertGreater(int.from_bytes(header[12:14], "little"), 0)
+            root = int.from_bytes(header[16:24], "little")
+        raw = bytearray(self.path.read_bytes()); raw[root+7] ^= 0x01
+        self.path.write_bytes(raw)
+        with ModernH5File(self.path) as reader:
+            with self.assertRaisesRegex(FormatError, "name-index node checksum"):
+                self._read(reader, group_address)
+
     def test_rechecks_name_hash_even_when_tree_checksum_is_recomputed(self):
         group_address = self._create()
         with ModernH5File(self.path) as reader:
