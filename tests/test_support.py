@@ -1,4 +1,4 @@
-"""Unsupported datasets fail before output creation or coordinate inference."""
+"""Schema coverage plus refusals outside the structural recovery envelope."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from tools.make_broken_link_fixture import make_damage
 
 
 class SupportEnvelopeTests(unittest.TestCase):
-    def test_rejects_filtered_edge_chunk_and_wrong_dtype(self) -> None:
+    def test_filtered_edge_float_and_big_endian_datasets_export_exact_values(self) -> None:
         for case in ("filtered", "edge", "float", "big_endian"):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
@@ -36,11 +36,17 @@ class SupportEnvelopeTests(unittest.TestCase):
                     )
                 before = source.read_bytes()
                 output, report = root / "recovered.h5", root / "report.json"
-                with self.assertRaises(UnsupportedCase):
-                    recover(source, "/measurements", output, report)
+                result = recover(source, "/measurements", output, report)
                 self.assertEqual(source.read_bytes(), before)
-                self.assertFalse(output.exists())
-                self.assertFalse(report.exists())
+                self.assertTrue(result["complete"])
+                self.assertEqual(result["counts"]["recovered"],
+                                 int(np.prod(result["dataset"]["chunk_grid"])))
+                self.assertTrue(report.is_file())
+                with h5py.File(output, "r") as handle:
+                    exported = handle["/measurements"]
+                    self.assertEqual(exported.dtype, values.dtype)
+                    np.testing.assert_array_equal(exported[:], values)
+                    self.assertTrue(np.all(handle["/_h5reclaim/chunk_status"][:] == 1))
 
     def test_selected_nested_dataset_with_identical_shape_distractor(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
