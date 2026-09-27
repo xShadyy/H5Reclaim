@@ -1,7 +1,9 @@
 """Validate filtered and paged HDF5 fixed-array chunk indexes.
 
 The layout pointer must be owned by the selected checksum-validated object
-header in the *same snapshot*. FAHD and FADB are checksum-validated; paged
+header in the *same snapshot*. Normally FAHD and FADB are checksum-validated.
+One damaged FAHD data-block pointer can be reconstructed only when inserting
+the uniquely identified FADB address restores FAHD's stored checksum. Paged
 FADB uses its initialization bitmap and the checksum of each used page.
 Uninitialized pages and undefined chunk slots are unknown, never fill values.
 

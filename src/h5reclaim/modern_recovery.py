@@ -1,9 +1,12 @@
-"""Conservative structural export from two modern HDF5 chunk indexes.
+"""Conservative structural export and one bounded fixed-array link repair.
 
 This route needs a native lookup of the selected local dataset from the same
 private snapshot. The raw parser independently checks the selected object's
-checksum and layout. Its single-chunk or implicit rule must attribute every
-accepted coordinate to a bounded physical byte range. No orphan scan occurs.
+checksum and layout. Direct rules or a validated index must attribute every
+accepted coordinate to a bounded physical byte range. A bounded FADB scan
+can bridge a damaged FAHD pointer only when its original checksum restores
+and the unique candidate has a checked back-pointer. A signature alone never
+establishes ownership.
 """
 
 from __future__ import annotations
