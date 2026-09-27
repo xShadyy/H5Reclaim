@@ -42,7 +42,7 @@ class TriageCliTests(unittest.TestCase):
             exact = command("diagnose", str(source), "--dataset", selected, "--json")
             self.assertEqual(json.loads(exact.stdout)["selection"]["selected_path"], selected)
 
-    def test_newer_chunk_index_can_be_exported_only_if_native_values_are_readable(self) -> None:
+    def test_newer_chunk_index_offers_structural_inspection_and_native_export(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "modern.h5"
@@ -52,7 +52,7 @@ class TriageCliTests(unittest.TestCase):
             before = source.read_bytes()
             triage = command("diagnose", str(source), "--dataset", "/readings", "--json")
             self.assertEqual(triage.returncode, 0, triage.stderr)
-            self.assertNotEqual(json.loads(triage.stdout)["next_action"], "inspect_anchored_index")
+            self.assertEqual(json.loads(triage.stdout)["next_action"], "inspect_anchored_index")
 
             output, report = root / "copy.h5", root / "copy.json"
             copied = command(

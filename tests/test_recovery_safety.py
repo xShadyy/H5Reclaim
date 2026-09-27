@@ -202,12 +202,10 @@ class BrokenLinkSafetyTests(unittest.TestCase):
             before = digest(source)
             with H5File(source) as reader:
                 self.assertEqual(reader.find_missing_child_candidates(self.manifest["btree_root_address"]), ())
-            output, report = folder / "result.h5", folder / "report.json"
-            with self.assertRaises((FormatError, UnsupportedCase, RecoveryError)):
-                recover(source, "/measurements", output, report)
+            # A contradicted detached candidate cannot be assigned; intact
+            # neighboring chunks may still be exported with the gap unknown.
+            self._assert_unresolved_gap(source, folder)
             self.assertEqual(digest(source), before)
-            self.assertFalse(output.exists())
-            self.assertFalse(report.exists())
 
     def test_reachable_child_key_conflict_is_rejected_without_output(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

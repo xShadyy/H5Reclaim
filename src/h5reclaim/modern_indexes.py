@@ -1,9 +1,9 @@
-"""Bounded, read-only parsing of three modern HDF5 chunk index formats.
+"""Bounded, read-only parsing of the modern HDF5 chunk-index families.
 
 The selected object's address must come from a local hard-link lookup on the
 same stable source snapshot. We validate the v2/v3 superblock, selected v2
-object header, and its v4/v5 chunked layout message. Single-chunk, implicit,
-and nonpaged, unfiltered fixed-array indexing have coordinate attribution. A signature
+object header, and its v4/v5 chunked layout message. Single-chunk, implicit, fixed-array, extensible-array, and version-2 B-tree
+indexes provide bounded coordinate attribution through checked metadata. A signature
 found by scanning unowned bytes is never treated as evidence of ownership.
 
 Specification: https://support.hdfgroup.org/documentation/hdf5/latest/_f_m_t4.html
@@ -281,86 +281,12 @@ class ModernH5File:
             raise FormatError("selected object has no layout message")
         return layout, layout_offset
 
-    def _read_fixed_array(
-        self, root: int, count: int, chunk_bytes: int,
-        coordinates: tuple[tuple[int, ...], ...], layout_version: int,
-        object_address: int, layout_pointer_offset: int,
-        chunks: tuple[int, ...], element_size: int, layout_page_bits: int,
-    ) -> ModernIndex:
-        """Validate FAHD -> FADB -> each unfiltered, nonpaged chunk pointer."""
-        sb = self.superblock
-        header_length = 12 + sb.length_size + sb.offset_size
-        header = self.read_at(root, header_length)
-        if header[:4] != b"FAHD" or header[4] != 0:
-            raise FormatError("fixed-array header signature or version is invalid")
-        if header[5] != 0:
-            raise UnsupportedFormat("filtered or unknown fixed-array client is unsupported")
-        entry_size, page_bits = header[6], header[7]
-        if entry_size != sb.offset_size or page_bits > 31:
-            raise UnsupportedFormat("fixed-array entry size or page setting is unsupported")
-        if page_bits != layout_page_bits:
-            raise FormatError("fixed-array page bits disagree with selected layout")
-        declared_count = _uint(header[8 : 8 + sb.length_size])
-        if declared_count != count:
-            raise FormatError("fixed-array capacity disagrees with dataset chunk grid")
-        if count > (1 << page_bits):
-            raise UnsupportedFormat("paged fixed arrays are not implemented")
-        block_pointer = 8 + sb.length_size
-        data_block = _uint(header[block_pointer : block_pointer + sb.offset_size])
-        if data_block == sb.undefined_address:
-            raise UnsupportedFormat("fixed-array data block is not allocated")
-        if lookup3(header[:-4]) != _uint(header[-4:]):
-            raise FormatError("fixed-array header checksum mismatch")
-        header_absolute = self.absolute(root)
-        block_absolute = self.absolute(data_block)
-        # FADB: signature + version + client + back-pointer + entries + checksum.
-        block_length = 10 + sb.offset_size + count * entry_size
-        if block_length > MAX_READ_BYTES:
-            raise UnsupportedFormat("fixed-array data block exceeds read limit")
-        if header_absolute < block_absolute + block_length and block_absolute < header_absolute + header_length:
-            raise FormatError("fixed-array header overlaps its data block")
-        block = self.read_at(data_block, block_length)
-        if block[:4] != b"FADB" or block[4:6] != b"\x00\x00":
-            raise FormatError("fixed-array data block signature, version, or client is invalid")
-        if _uint(block[6 : 6 + sb.offset_size]) != root:
-            raise FormatError("fixed-array data block back-pointer disagrees with header")
-        if lookup3(block[:-4]) != _uint(block[-4:]):
-            raise FormatError("fixed-array data block checksum mismatch")
-        self.metadata_ranges.extend((
-            (header_absolute, header_absolute + header_length, "fixed-array header"),
-            (block_absolute, block_absolute + block_length, "fixed-array data block"),
-        ))
-        records: list[ModernChunk] = []
-        entries_start = 6 + sb.offset_size
-        for linear, coordinate in enumerate(coordinates):
-            entry = entries_start + linear * entry_size
-            address = _uint(block[entry : entry + sb.offset_size])
-            if address == sb.undefined_address:
-                raise UnsupportedFormat("sparse fixed array has unallocated chunks")
-            absolute = self.absolute(address)
-            if chunk_bytes > sb.eof_address - absolute:
-                raise FormatError("fixed-array payload crosses declared end-of-file")
-            records.append(ModernChunk(
-                coordinate, address, chunk_bytes, 0,
-                {"rule": "validated fixed-array slot at row-major grid position",
-                 "object_address": object_address, "layout_version": layout_version,
-                 "index_type": "fixed_array", "linear_index": linear,
-                 "fixed_array_header_address": root, "fixed_array_data_block_address": data_block},
-                pointer_offset=block_absolute + entry,
-            ))
-        return ModernIndex(
-            "fixed_array", layout_version, object_address, root,
-            layout_pointer_offset, chunks, element_size, tuple(records),
-            data_block_address=data_block,
-            data_block_pointer_offset=header_absolute + block_pointer,
-        )
-
     def read_index(
         self, object_address: int, shape: tuple[int, ...], chunks: tuple[int, ...],
-        element_size: int, *, maxshape: tuple[int, ...] | None = None,
+        element_size: int, *, maxshape: tuple[int | None, ...] | None = None,
         filters: tuple[int, ...] = (), max_chunks: int = MAX_CHUNKS,
     ) -> ModernIndex:
-        """Derive chunk addresses from anchored single, implicit, or fixed indexes.
+        """Derive chunk addresses from an anchored modern chunk index.
 
         The caller must obtain object_address and all dataset properties from
         the same immutable source snapshot. Metadata from a different file is
@@ -373,9 +299,9 @@ class ModernH5File:
             raise UnsupportedFormat("modern index requires rank 1 through 4 and matching dimensions")
         if not all(isinstance(x, int) and x > 0 for x in (*shape, *chunks, element_size)):
             raise FormatError("invalid dataset shape, chunk shape, or element size")
-        if any(length % chunk for length, chunk in zip(shape, chunks)):
-            raise UnsupportedFormat("partial edge chunks require a separate validation route")
-        grid = tuple(length // chunk for length, chunk in zip(shape, chunks))
+        if any(limit is not None and limit < length for limit, length in zip(maxshape, shape)):
+            raise FormatError("maximum shape contradicts current dataset dimensions")
+        grid = tuple((length + chunk - 1) // chunk for length, chunk in zip(shape, chunks))
         count = prod(grid)
         if max_chunks < 1 or max_chunks > MAX_CHUNKS or count > max_chunks:
             raise UnsupportedFormat("modern index chunk count exceeds limit")
@@ -398,7 +324,7 @@ class ModernH5File:
         kind = data[end_dims]
         offset = end_dims + 1
         if kind == 1:
-            if shape != chunks or tuple(maxshape) != shape or count != 1:
+            if any(length > width for length, width in zip(shape, chunks)) or tuple(maxshape) != shape or count != 1:
                 raise FormatError("single chunk index disagrees with dataset extents")
             if flags & 0x02:
                 if not filters or len(data) < offset + self.superblock.length_size + 4 + self.superblock.offset_size:
@@ -418,30 +344,72 @@ class ModernH5File:
             size, mask = chunk_bytes, 0
             name = "implicit"
         elif kind == 3:
-            if flags & 0x02 or filters or tuple(maxshape) != shape:
-                raise UnsupportedFormat("fixed array requires fixed extents and no filters")
+            if flags & 0x02 or tuple(maxshape) != shape:
+                raise UnsupportedFormat("fixed array requires fixed extents and valid layout flags")
             if len(data) < offset + 1 + self.superblock.offset_size:
                 raise FormatError("fixed-array layout lacks page setting or address")
             layout_page_bits = data[offset]
             offset += 1
             size, mask = chunk_bytes, 0
             name = "fixed_array"
+        elif kind == 4:
+            if len(data) != offset + 5 + self.superblock.offset_size:
+                raise FormatError("extensible-array layout parameters are truncated or excessive")
+            parameters = tuple(data[offset:offset + 5]); offset += 5
+            name = "extensible_array"
+            size, mask = chunk_bytes, 0
+        elif kind == 5:
+            if len(data) != offset + 6 + self.superblock.offset_size:
+                raise FormatError("v2 B-tree layout parameters are truncated or excessive")
+            node_size = _uint(data[offset:offset + 4])
+            split, merge = data[offset + 4:offset + 6]
+            if not 16 <= node_size <= 1 << 20 or not 0 < split <= 100 or not 0 < merge <= 100:
+                raise FormatError("v2 B-tree layout node parameters are invalid")
+            offset += 6
+            name = "v2_btree"
+            size, mask = chunk_bytes, 0
         else:
             raise UnsupportedFormat(f"modern chunk index type {kind} is not implemented")
         if len(data) != offset + self.superblock.offset_size:
             raise FormatError("modern chunked layout has trailing or missing bytes")
         base = _uint(data[offset:])
         if base == self.superblock.undefined_address:
-            raise UnsupportedFormat("modern chunk storage has not been allocated")
+            # A missing root cannot establish individual allocation or value.
+            # The caller publishes the grid as unknown with no assignments.
+            return ModernIndex(name, version, object_address, base,
+                               layout_offset + offset, chunks, element_size, ())
         if size < 1 or size > MAX_CHUNK_BYTES:
             raise UnsupportedFormat("modern stored chunk size exceeds limit")
         coordinates = tuple(tuple(i * c for i, c in zip(index, chunks))
                             for index in product(*(range(length) for length in grid)))
+        if kind == 4:
+            from .extensible_array import read_extensible_array
+            return read_extensible_array(
+                self, base, shape, chunks, element_size,
+                maxshape=tuple(maxshape), layout_version=version,
+                layout_pointer_offset=layout_offset + offset,
+                layout_params=parameters, object_address=object_address,
+                filters=filters, allow_sparse=True, max_chunks=max_chunks,
+            )
+        if kind == 5:
+            from .v2_btree_chunks import read_v2_btree_chunks
+            tree = read_v2_btree_chunks(
+                self, object_address=object_address, index_address=base,
+                layout_version=version, layout_pointer_offset=layout_offset + offset,
+                shape=shape, chunk_shape=chunks, element_size=element_size,
+                filters=filters, maxshape=tuple(maxshape), max_chunks=max_chunks,
+            )
+            checked_header = self.read_at(base, 16)
+            if (_uint(checked_header[6:10]), checked_header[14], checked_header[15]) != (node_size, split, merge):
+                raise FormatError("v2 B-tree header parameters disagree with selected layout")
+            return tree
         if kind == 3:
-            fixed = self._read_fixed_array(
-                base, count, chunk_bytes, coordinates, version,
+            from .filtered_fixed_array import read_fixed_array_variants
+            fixed = read_fixed_array_variants(
+                self, base, count, chunk_bytes, coordinates, version,
                 object_address, layout_offset + offset, chunks, element_size,
-                layout_page_bits,
+                layout_page_bits, shape=shape, filters=filters,
+                allow_sparse=True, max_chunks=max_chunks,
             )
             for record in fixed.chunks:
                 start = self.absolute(record.address)

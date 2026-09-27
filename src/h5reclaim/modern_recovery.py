@@ -18,11 +18,16 @@ import numpy as np
 from .format import FormatError
 from .metadata import DatasetSpec, UnsupportedCase
 from .modern_indexes import MAX_CHUNKS, ModernH5File
+from .schema_codec import (
+    ChunkDecodeError as SchemaChunkDecodeError, fletcher32_applied,
+    validate_stored_size,
+)
 
 
 def analyze_modern_snapshot(
     snapshot: Path, spec: DatasetSpec, source: Path, before_hash: str,
     identity: tuple[int, int, int, int, int], size: int,
+    *, rooted_metadata_ranges: tuple[tuple[int, int, str], ...] = (),
 ):
     """Return a regular recovery.Analysis for a validated v2/v3 modern file.
 
@@ -31,7 +36,7 @@ def analyze_modern_snapshot(
     initialization cycle with the shared output/report implementation.
     """
     from .recovery import (
-        MAX_CHUNKS as RECOVERY_MAX_CHUNKS, Analysis, ChunkDecodeError,
+        MAX_CHUNKS as RECOVERY_MAX_CHUNKS, Analysis, ChunkDecodeError, MissingDecoderError,
         ChunkRecord, STATUS_CODES, VERSION, _decode_chunk,
     )
 
@@ -46,11 +51,11 @@ def analyze_modern_snapshot(
     with ModernH5File(snapshot) as reader:
         index = reader.read_index(
             spec.object_address, spec.shape, spec.chunks, element_size,
-            maxshape=spec.shape, filters=spec.filters,
+            maxshape=spec.maxshape or spec.shape, filters=spec.filters,
             max_chunks=min(MAX_CHUNKS, RECOVERY_MAX_CHUNKS),
         )
-        if len(index.chunks) != prod(grid):
-            raise FormatError("modern index has incomplete coordinate coverage")
+        if len(index.chunks) > prod(grid):
+            raise FormatError("modern index allocates more chunks than the selected grid")
         coordinates: set[tuple[int, ...]] = set()
         for chunk in index.chunks:
             coordinate = chunk.coordinate
@@ -60,17 +65,29 @@ def analyze_modern_snapshot(
             ):
                 raise FormatError("modern index duplicates or misplaces a coordinate")
             coordinates.add(coordinate)
+            try:
+                validate_stored_size(spec, chunk.size, chunk.filter_mask)
+            except SchemaChunkDecodeError as exc:
+                raise FormatError(f"indexed chunk contradicts filter or length metadata: {exc}") from exc
             absolute = reader.absolute(chunk.address)
             ranges.append((absolute, absolute + chunk.size, coordinate))
             raw = reader.read_at(chunk.address, chunk.size)
             chunk_index = tuple(start // width for start, width in zip(coordinate, spec.chunks))
             try:
                 payload = _decode_chunk(raw, spec, chunk.filter_mask)
+            except MissingDecoderError as exc:
+                failed.append({
+                    "coordinate": list(coordinate), "chunk_index": list(chunk_index),
+                    "source_address": chunk.address, "status": "decoder_unavailable",
+                    "reason": str(exc),
+                })
+                continue
             except ChunkDecodeError as exc:
                 failed.append({
                     "coordinate": list(coordinate),
                     "chunk_index": list(chunk_index),
                     "source_address": chunk.address,
+                    "status": "decode_failed",
                     "reason": str(exc),
                 })
                 continue
@@ -80,6 +97,7 @@ def analyze_modern_snapshot(
                 length=chunk.size, leaf_address=None,
                 route=f"intact_{index.index_type}", evidence=chunk.evidence,
                 payload=payload,
+                filter_mask=chunk.filter_mask,
             ))
         ordered = sorted(ranges)
         for previous, current in zip(ordered, ordered[1:]):
@@ -94,14 +112,16 @@ def analyze_modern_snapshot(
         ledger = build_modern_evidence(
             spec, reader, index, accepted,
             source_sha256=before_hash, decode_chunk=_decode_chunk, failed=failed,
+            rooted_metadata_ranges=rooted_metadata_ranges,
         )
 
     status = np.full(grid, STATUS_CODES["allocation_unknown"], dtype="u1")
     for chunk in failed:
-        status[tuple(chunk["chunk_index"])] = STATUS_CODES["decode_failed"]
+        status[tuple(chunk["chunk_index"])] = STATUS_CODES[chunk.get("status", "decode_failed")]
     for record in accepted:
         status[record.index] = STATUS_CODES["recovered"]
-    counts = {name: int(np.count_nonzero(status == code)) for name, code in STATUS_CODES.items()}
+    counts = {name: int(np.count_nonzero(status == code)) for name, code in STATUS_CODES.items()
+              if name != "decoder_unavailable" or np.any(status == code)}
     complete = bool(np.all(status == STATUS_CODES["recovered"]))
     report = {
         "schema_version": 1,
@@ -120,6 +140,11 @@ def analyze_modern_snapshot(
             "path": spec.path, "object_address": spec.object_address,
             "shape": list(spec.shape), "chunks": list(spec.chunks), "dtype": spec.dtype,
             "chunk_grid": list(grid), "filters": list(spec.filters),
+            "filter_pipeline": [
+                {"id": item.id, "flags": item.flags, "values": list(item.values)}
+                for item in spec.filter_pipeline
+            ],
+            "maxshape": list(spec.maxshape or spec.shape),
             "attributes_copied": [name for name, _ in spec.attributes],
             "attributes_omitted": list(spec.omitted_attributes),
         },
@@ -143,14 +168,16 @@ def analyze_modern_snapshot(
                 "source_absolute_offset": record.absolute_offset,
                 "size_bytes": record.length, "leaf_address": None,
                 "route": record.route, "evidence": record.evidence,
-                "integrity": "fletcher32_verified" if spec.filters else "not_checked_no_checksum",
+                "integrity": "fletcher32_verified" if fletcher32_applied(spec, record.filter_mask)
+                             else "not_independently_verified",
+                "filter_mask": record.filter_mask,
             }
             for record in sorted(accepted, key=lambda item: item.index)
         ],
         "assumptions": [
             "local selected dataset resolved from same snapshot",
             "version-2/3 superblock and checksum-verified version-2 object header",
-            "version-4/5 chunked layout with single-chunk, implicit, or nonpaged unfiltered fixed-array index",
+            "version-4/5 chunked layout with validated direct, fixed-array, extensible-array, or v2 B-tree index",
             "index is intact; no broken modern index pointers were inferred",
         ],
         "coverage_note": (
@@ -159,13 +186,9 @@ def analyze_modern_snapshot(
             "and must not be scored as repair of damaged index links."
         ),
         "integrity_note": (
-            "Chunk address and coordinate follow the selected object's validated layout. "
-            "The stored Fletcher32 checksum was verified per accepted chunk; it detects "
-            "some errors but does not prove historical authenticity."
-            if spec.filters else
-            "Chunk address and coordinate follow the selected object's validated layout. "
-            "Unfiltered payload bytes have no independent checksum here; historical "
-            "measurement integrity is not established."
+            "Chunk address and coordinate follow the selected object's validated index. "
+            "Fletcher32, when present and active, checks stored bytes but does not prove "
+            "historical authenticity. Other chunks have no independent payload checksum."
         ),
         "metadata_note": (
             "Only the selected dataset's values, shape, chunking, datatype, and listed "

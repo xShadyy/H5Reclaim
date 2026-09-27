@@ -125,7 +125,7 @@ def _render_survey(report: dict) -> str:
 def _render_inspect(summary: dict) -> str:
     dataset, index, counts = summary["dataset"], summary["index"], summary["counts"]
     total = sum(counts.values())
-    filter_names = {3: "Fletcher32", 1: "DEFLATE"}
+    filter_names = {3: "Fletcher32", 2: "shuffle", 1: "DEFLATE"}
     filters = ", ".join(filter_names.get(item, f"filter {item}")
                         for item in dataset["filters"]) or "none"
     if index.get("root_level") is None:
@@ -156,6 +156,11 @@ def _render_inspect(summary: dict) -> str:
         lines.append(f"Unresolved links: {len(summary['unresolved_links'])}")
     if "operator_hints" in summary:
         lines.append("Operator hints match observed metadata; they do not verify historical measurements.")
+    if "metadata_resolution" in summary:
+        lines.append(
+            "Metadata path: " + summary["metadata_resolution"]["route"]
+            + " (rooted raw fallback; see report for limits)"
+        )
     lines.append("Inspection writes no recovered file. It cannot establish historical authenticity.")
     return "\n".join(lines)
 
@@ -400,6 +405,8 @@ def main(argv: list[str] | None = None) -> int:
             }
             summary["reconstructed_chunks"] = report["reconstructed_chunks"]
             summary["unresolved_links"] = report["unresolved_links"]
+            if "metadata_resolution" in report:
+                summary["metadata_resolution"] = report["metadata_resolution"]
             if hints is not None:
                 comparisons = compare_hints(
                     hints, observed_dataset=analysis.spec,
@@ -410,11 +417,23 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(summary, indent=2, sort_keys=True) if args.json else _render_inspect(summary))
         elif args.command == "recover":
             report = recover(args.source, args.dataset, args.output, args.report, hints=hints)
-            print(
-                f"{report['outcome']}: {report['counts']['recovered']} chunks exported; "
-                f"{report['reconstructed_chunks']} via reconstructed index links"
-            )
-            print(f"output: {_display_path(args.output, 240)}\nreport: {_display_path(args.report, 240)}")
+            counts = report["counts"]
+            total = sum(counts.values())
+            print(f"H5Reclaim recovery | {report['outcome']}")
+            print(f"Dataset: {_display_path(report['dataset']['path'])} | "
+                  f"{report['index']['type']}")
+            print(f"Accepted: {counts['recovered']}/{total} chunks | "
+                  f"{report['reconstructed_chunks']} from a reconstructed leaf link")
+            unknown = [f"{value} {name.replace('_', ' ')}" for name, value in counts.items()
+                       if name != "recovered" and value]
+            if unknown:
+                print("Unaccepted: " + ", ".join(unknown))
+                print("Check /_h5reclaim/chunk_status before using output fill values.")
+            if "metadata_resolution" in report:
+                print("Metadata: " + report["metadata_resolution"]["route"])
+            print("Accepted coordinates do not prove historical measurement integrity.")
+            print(f"Output: {_display_path(args.output, 240)}\n"
+                  f"Evidence report: {_display_path(args.report, 240)}")
         else:
             report = export_readable(args.source, args.dataset, args.output, args.report, hints=hints)
             print(

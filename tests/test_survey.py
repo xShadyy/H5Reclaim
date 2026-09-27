@@ -89,9 +89,10 @@ class SurveyTests(unittest.TestCase):
             self.assertEqual(items["/filtered"]["filters"][0]["name"], "deflate")
             self.assertEqual(items["/contiguous"]["layout"], "contiguous")
             self.assertEqual(items["/contiguous"]["rank"], 1)
-            for item in items.values():
-                self.assertEqual(item["support"]["status"], "unsupported")
-            self.assertIn("filters", {reason["code"] for reason in items["/filtered"]["support"]["reasons"]})
+            self.assertEqual(items["/filtered"]["support"]["status"], "candidate")
+            self.assertEqual(items["/filtered"]["index"]["type"], "v1_raw_data_btree")
+            self.assertEqual(items["/contiguous"]["support"]["status"], "unsupported")
+            self.assertIn("layout", {reason["code"] for reason in items["/contiguous"]["support"]["reasons"]})
 
     def test_multiple_local_datasets_are_evaluated_independently(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

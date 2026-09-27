@@ -1,6 +1,6 @@
 # Guide to the project files
 
-H5Reclaim is an experimental tool with bounded structural recovery and a separate route for copying current native-readable values. An HDF5 dataset can be split into chunks, much like a large image into tiles. An index tells a reader where each chunk lives. The older tree route can handle one missing leaf pointer with reciprocal neighboring evidence, including below a deeper root. Intact modern single-chunk and implicit layouts have a separate direct-address export route.
+H5Reclaim is an experimental tool with bounded structural recovery and a separate route for copying current native-readable values. An HDF5 dataset can be split into chunks, much like a large image into tiles. An index tells a reader where each chunk lives. The older tree route can handle one missing leaf pointer with reciprocal neighboring evidence, including below a deeper root. Five modern index families have bounded intact-index export routes.
 
 This is a data recovery project, not a robotics simulator. An HDF5 file may contain data from a robot, microscope, simulation, or another application. The program cares about the file's internal layout, not the instrument that produced it. See the [usage guide](usage.md) for the current supported layouts.
 
@@ -9,7 +9,7 @@ This is a data recovery project, not a robotics simulator. An HDF5 file may cont
 1. `corpus/files/` provides four unchanged scientific HDF5 files. `benchmarks/run_real_corpus.py` verifies their hashes; `run_gwosc_recovery.py`, `run_damage_catalog.py`, and `run_seeded_matrix.py` create disposable controlled damage and independently score values and refusals. These do not establish a real-world success rate.
 2. `h5reclaim diagnose` triages some unreadable files and declared dependencies. `survey` inventories local metadata, `inspect` checks one supported index, and `recover` exports evidence-backed chunks. `export-readable` copies bounded currently native-readable local data with sparse unknowns marked explicitly. `probe-status` tests an eligible status flag only on a disposable copy; `export-fragments` publishes unresolved raw bytes without coordinates. Hints cannot supply missing structural evidence.
 3. The new file contains a chunk status map. A separate JSON report and an embedded copy of that report explain which chunks were copied, where they came from, and which regions remain unknown.
-4. The two recovery benchmarks compare output with a pristine reference at exact chunk coordinates. This comparison is evaluation work; it is not part of the recovery algorithm.
+4. The controlled recovery benchmarks compare output with pristine references at exact chunk coordinates. This comparison is evaluation work; it is not part of the recovery algorithm.
 
 ## Project setup and entry points
 
@@ -30,19 +30,19 @@ This is a data recovery project, not a robotics simulator. An HDF5 file may cont
 | --- | --- |
 | `src/h5reclaim/__init__.py` | Marks the directory as the Python package and describes its scope. |
 | `src/h5reclaim/__main__.py` | Parses the seven public commands and prints readable or detailed results. |
-| `src/h5reclaim/format.py` | Reads bounded byte ranges from the analysis snapshot and interprets the supported HDF5 superblock, inline or one continued v1 object header, dataset layout, and rank-one or rank-two version-1 B-tree records. It checks neighboring leaves and parent key boundaries before proposing a missing child and records parsed metadata extents. |
-| `src/h5reclaim/modern_indexes.py`, `modern_recovery.py`, `modern_evidence_adapter.py` | Validate newer checksummed superblocks/object headers and supported chunk layouts; attribute intact single/implicit chunks to selected metadata and reconcile their ranges. |
+| `src/h5reclaim/format.py` | Reads bounded byte ranges from the snapshot and interprets older superblocks, v1 object headers, chunked layout, and rank-one through rank-four version-1 B-tree records. It checks neighboring leaves and parent key boundaries before proposing a missing child. |
+| `src/h5reclaim/modern_indexes.py`, `extensible_array.py`, `filtered_fixed_array.py`, `v2_btree_chunks.py`, `modern_recovery.py`, `modern_evidence_adapter.py` | Validate checksummed newer metadata and all five chunk-index families within bounded variants; attribute intact chunk ranges and reconcile literal pointer chains. |
 | `src/h5reclaim/evidence.py`, `evidence_adapter.py` | Record anchors, pointer paths, physical ranges, checksums, contradictions, accepted/unknown decisions, and bounded raw-fragment export. The adapter independently checks version-1 parser records. |
 | `src/h5reclaim/snapshot_io.py` | Streams a quota-bound source snapshot in small blocks after a full logical disk-space preflight. |
 | `src/h5reclaim/dependency_routes.py` | Observes raw superblock status, inventories external/VDS declarations, validates explicit related-file manifests, and confines optional h5clear to a disposable status-only trial. |
-| `src/h5reclaim/metadata.py` | Uses h5py to find the selected dataset and checks its shape, canonical datatype bit representation, chunks, exact filter pipeline, and other support conditions. It selects bounded primitive scalar attributes for the rank-one path without reading dataset values. |
+| `src/h5reclaim/metadata.py`, `metadata_fallback.py`, `dense_group_links.py`, `schema_codec.py` | Resolve only local hard links; check numeric schema, filter pipeline and bounded decoding. A rooted old/modern raw fallback, including bounded dense groups, may resolve selected metadata when native open fails. |
 | `src/h5reclaim/survey.py` | Inventories bounded local dataset metadata and index nodes without reading values. It reports candidate, unsupported, or indeterminate reasons and skips soft and external links. |
 | `src/h5reclaim/diagnose.py` | Checks a bounded snapshot's format signature and, when possible, local metadata; records condition, supported candidate, suggested action, and questions without reading values. |
 | `src/h5reclaim/hints.py` | Parses size-limited scientist assertions about one dataset and compares them with independently observed metadata and the damaged input hash. Conflicts stop export; unobserved assertions remain unverified. |
 | `src/h5reclaim/recovery.py` | Analyzes a private snapshot, combines selected metadata and parsed index, rejects overlapping payload and metadata ranges, decodes bounded DEFLATE and verifies Fletcher32 where applicable, and writes a new dataset, status map, and provenance report. It rechecks source identity and hash before publication and rejects unsafe destination paths. |
-| `src/h5reclaim/readable_export.py` | Copies bounded native-readable fixed-size schemas with selected storage rules into a separate file, verifies current bytes, and marks sparse regions unknown. It does not repair structural damage or verify historical measurements. |
+| `src/h5reclaim/readable_export.py`, `native_worker.py` | Copies bounded native-readable fixed-size schemas in a deadline-bound child, verifies current bytes, and marks sparse regions unknown. It does not repair structural damage or verify historical measurements. |
 
-The recovery program does not import the fixture generator or the benchmark. It receives the damaged file and the dataset path supplied by the user. Other local datasets may coexist, but one is selected per invocation using its own object header as the index anchor. If necessary metadata cannot be read, or if the index differs from the supported case, it stops or marks an unresolved region instead of inventing values. It copies only bounded primitive scalar attributes for rank-one data, listing copied and omitted names. It omits links, dimension scales, sibling objects, and the larger scientific context, so users must consult source metadata separately when it remains readable.
+The recovery program does not import the fixture generator or the benchmark. It receives the damaged file and the selected dataset path. Other local datasets may coexist; the selected object's header anchors the index. If mandatory metadata or coordinate ownership cannot be established, it stops or leaves a region unknown. It copies only bounded primitive scalar attributes for rank-one data, listing omissions. Links, dimension scales, sibling objects, and larger scientific context remain outside the derived output.
 
 ## Controlled experiment and evaluation
 
@@ -54,6 +54,8 @@ The recovery program does not import the fixture generator or the benchmark. It 
 | `corpus/manifest.json` and `corpus/README.md` | Pin original scientific files with checksums, URLs, licenses, attribution, representative layouts, and expected support classifications. |
 | `corpus/files/*.h5` and `corpus/files/*.hdf5` | Original, unmodified research files bundled for offline, real-structure checks. |
 | `benchmarks/run_real_corpus.py` | Verifies original file hashes and surveys 251 real datasets without reading their measurements. |
+| `benchmarks/run_real_candidate_exports.py` | Scores all six current intact structural candidates against untouched originals by exact values and physical coordinates. |
+| `benchmarks/run_real_readable_corpus.py` | Scores bounded native-readable exports of the two intact Zenodo originals that remain structurally unsupported. |
 | `benchmarks/run_gwosc_recovery.py` | Cross-checks the 16 kHz GWOSC file's real B-tree against h5py, makes a controlled damaged copy, measures native-read failure, and scores bit-exact recovery in a separate subprocess. |
 | `benchmarks/run_damage_catalog.py` | Applies ten controlled damage and refusal cases to verified authentic-file copies and checks exact values, status labels, safe refusals, and source hashes. |
 | `benchmarks/run_seeded_matrix.py` | Makes seeded varied controlled mutations of authentic-file copies and separately scores exact accepted chunks, unknowns, wrong acceptance, and safe refusals. |
@@ -70,8 +72,8 @@ The benchmark keeps `truth/pristine.h5`, `truth/challenge.json`, and `truth/muta
 | `tests/test_format.py` | Small constructed HDF5 byte examples test parser bounds, supported layouts, B-tree traversal, and the two-sided link rule. |
 | `tests/test_gwosc_format.py` | Checks the original 16 kHz file's continued object header, rank-one index, anchored missing child, and parser bounds. |
 | `tests/test_gwosc_recovery.py` | Checks rank-one filtered decoding, checksum failure behavior, and selected attribute handling. |
-| `tests/test_support.py` | Filters, partial edge chunks, wrong datatypes, and a newer layout are refused; a selected nested dataset recovers correctly with an identically shaped local distractor present. |
-| `tests/test_datatype.py` | Canonical little-endian `uint32` is accepted while reduced precision, shifted bits, and nonstandard padding are refused. |
+| `tests/test_support.py`, `test_schema_codec.py` | Filters, partial edge chunks, numeric types, newer layouts, and selected nested datasets are compared against native HDF5 writes; noncanonical storage is refused. |
+| `tests/test_datatype.py` | Canonical integer storage is accepted while reduced precision, shifted bits, and nonstandard padding are refused. |
 | `tests/test_survey.py` | Survey candidates, independent local datasets, skipped links, support reasons, traversal limits, and CLI text and JSON output. |
 | `tests/test_diagnose.py` | Read-only triage with openable, unsupported, signature-damaged, and metadata-damaged inputs. |
 | `tests/test_hints.py` | Strict JSON parsing and comparison of operator assertions with file evidence, including conflicts and unobserved fields. |

@@ -19,6 +19,7 @@ from .evidence import (
 )
 from .format import H5File, TreeNode, TreeWalk
 from .metadata import DatasetSpec
+from .schema_codec import fletcher32_applied
 
 
 class EvidenceAdapterError(ValueError):
@@ -44,6 +45,7 @@ def build_recovery_evidence(
     source_sha256: str,
     decode_chunk: Callable[[bytes, DatasetSpec, int], bytes],
     failed: Sequence[Mapping[str, Any]] = (),
+    rooted_metadata_ranges: Sequence[tuple[int, int, str]] = (),
     source_id: str = "damaged",
 ) -> EvidenceReport:
     """Create and reconcile a ledger for accepted and decode-failed chunks.
@@ -57,7 +59,7 @@ def build_recovery_evidence(
     try:
         return _build(
             spec, reader, walk, root, leaves, records, source_sha256,
-            decode_chunk, failed, source_id,
+            decode_chunk, failed, source_id, rooted_metadata_ranges,
         )
     except (IndexError, KeyError, TypeError, ValueError, OverflowError) as exc:
         if isinstance(exc, EvidenceAdapterError):
@@ -71,6 +73,7 @@ def _build(
     records: Sequence[Any], source_sha256: str,
     decode_chunk: Callable[[bytes, DatasetSpec, int], bytes],
     failed: Sequence[Mapping[str, Any]], source_id: str,
+    rooted_metadata_ranges: Sequence[tuple[int, int, str]],
 ) -> EvidenceReport:
     nodes = {node.address: node for node in walk.nodes}
     if len(nodes) != len(walk.nodes) or nodes.get(root.address) != root:
@@ -231,7 +234,8 @@ def _build(
                 EvidenceCheck("decoded_bytes", "fail", "supported decoder rejected stored chunk"),
             )
             checksum = ChecksumEvidence(
-                "fletcher32" if spec.filters else "none", None, "unverified",
+                "fletcher32" if fletcher32_applied(spec, entry.key.filter_mask) else "none",
+                None, "unverified",
             )
         else:
             decoded = decode_chunk(raw, spec, entry.key.filter_mask)
@@ -239,9 +243,10 @@ def _build(
                 raise EvidenceAdapterError("record payload disagrees with newly decoded source bytes")
             decoded_sha, decoded_length = hashlib.sha256(decoded).hexdigest(), len(decoded)
             checks = _PASS
+            checked = fletcher32_applied(spec, entry.key.filter_mask)
             checksum = ChecksumEvidence(
-                "fletcher32" if spec.filters else "none", None,
-                "passed" if spec.filters else "absent",
+                "fletcher32" if checked else "none", None,
+                "passed" if checked else "absent",
             )
         proposals.append(ChunkProposal(
             proposal_id, PhysicalExtent(source_id, absolute, length), hashlib.sha256(raw).hexdigest(),
@@ -277,7 +282,7 @@ def _build(
 
     ranges = tuple(
         PhysicalExtent(source_id, start, end - start)
-        for start, end, _kind in reader.metadata_ranges
+        for start, end, _kind in (*reader.metadata_ranges, *rooted_metadata_ranges)
     )
     report = reconcile((source,), (anchor,), tuple(link_records), tuple(proposals), ranges)
     for decision in report.decisions[:len(records)]:

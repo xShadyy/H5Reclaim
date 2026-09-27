@@ -125,7 +125,7 @@ class DiagnosisTests(unittest.TestCase):
             self.assertEqual(report["next_action"], "resolve_inventory_issues")
             self.assertEqual(report["inventory"]["support_counts"]["candidate"], 0)
 
-    def test_unsupported_paged_fixed_array_is_not_promoted_by_plausible_schema(self) -> None:
+    def test_paged_fixed_array_is_an_indexed_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "modern.h5"
             with h5py.File(source, "x", libver="latest") as handle:
@@ -134,11 +134,9 @@ class DiagnosisTests(unittest.TestCase):
                     chunks=(1, 1),
                 )
             report = diagnosis_module.diagnose(source, "/readings")
-            self.assertEqual(report["selection"]["support"]["status"], "unsupported")
-            self.assertEqual(report["next_action"], "investigate_index_variant")
-            self.assertIn("index_unsupported", {
-                item["code"] for item in report["selection"]["support"]["reasons"]
-            })
+            self.assertEqual(report["selection"]["support"]["status"], "candidate")
+            self.assertEqual(report["selection"]["index"]["type"], "fixed_array")
+            self.assertEqual(report["next_action"], "inspect_anchored_index")
             self.assertFalse(report["recovery_attempted"])
 
     def test_authentic_gwosc_4khz_intact_index_is_a_candidate(self) -> None:

@@ -2,6 +2,72 @@
 
 Updated: 2026-09-27
 
+## Version 0.6.0: broader bounded structure and damaged-metadata routes
+
+The structural route now handles all five modern chunk-index families within
+checked subvariants: single, implicit, fixed array (including filtered, paged,
+and sparse slots), extensible array (direct/index/secondary/nonpaged blocks),
+and version-2 B-tree (checked internal and leaf nodes). It validates source
+checksums and address chains where the format provides them, chunk positions,
+stored sizes, filter masks, physical extents, and overlap. A missing modern
+index pointer is **not** reconstructed. An absent slot is marked allocation
+unknown rather than assigned a fill measurement. The older version-1 tree
+retains its narrow one-leaf bridge with two independent sibling anchors.
+
+Structural values now support rank one through four canonical fixed-width
+integer and IEEE float32/64 storage in either byte order, partial edge chunks,
+growing extents, and shuffle, DEFLATE, and Fletcher32 in observed order with
+bounded decoding. An active unknown decoder gets its own status 7; a malformed
+known stream or failed checksum gets status 6. Each mapping says whether
+Fletcher32 was actually applied for that chunk. An unfiltered byte change can
+remain structurally accepted with a different historical value; the report
+labels that region as lacking independent integrity verification.
+
+When native HDF5 cannot open selected metadata, a rooted raw fallback can
+follow old symbol-table or modern compact or bounded dense hard links and parse mandatory
+dataset messages from the damaged snapshot. The report records its route and
+metadata omissions. The older group graph is unchecksummed, so its internal
+consistency is weaker evidence of historical ownership. Some auxiliary
+metadata damage has been recovered on generated files with this route.
+Dense modern fallback validates a name-index B-tree and managed fractal-heap
+blocks; a generated native-open failure under a dense group recovered exact
+selected values. Other heap layouts, huge/tiny objects, and unowned links
+continue to refuse without guessing.
+
+`export-readable` now performs native HDF5 operations in a child with a
+900-second deadline, disabled dynamic filter plugins, source rechecks, and
+cleanup on crash. POSIX also applies a 3 GiB address-space cap and disables
+core dumps. Windows currently has a deadline but no enforced worker memory
+cap. This is resource and crash isolation, not a security sandbox.
+
+The four bundled authentic originals remain unchanged. Current inventory
+finds six metadata candidates among 251 local datasets, and all six have
+been checked as intact exports (196/196 bit-exact chunks, zero wrong) against
+original coordinates, physical ranges, and values in a
+separate evaluator. The existing 16 kHz controlled broken-leaf GWOSC case
+tests repair of one lost pointer. A stratified seeded matrix adds generated
+modern/sparse/filter cases, checksum-repaired contradictions, and deliberate
+unchecksummed payload changes. Its outcomes are conditional on those chosen
+fixtures and do not estimate a population success rate. No evidence supports
+calling this tool 99% universal; destroyed unique bytes and lost coordinate
+ownership have no general exact reconstruction from one damaged copy.
+
+The separate native-readable route also copied two intact Zenodo datasets
+whose structural representations remain unsupported: 2,000 uint8 quantum
+elements and 2,088 aircraft records with a 37-field compound type. An
+independent evaluator checked current values and source preservation. These
+are native-readable exports, not recoveries of damaged indexes.
+
+The current parser caps include a 4 GiB source snapshot, 1,048,576 selected
+elements, 4,096 structural chunks, and 1 MiB decoded chunks. Structural
+compact/contiguous payload recovery, variable-length/reference graphs,
+external/VDS values, custom filters, paged extensible-array blocks, arbitrary
+broken modern index links, and naturally damaged held-out files remain open.
+See [usage](usage.md) for the operation and validity map.
+
+The sections below record older releases and are historical; their narrower
+support statements and test counts describe those releases, not version 0.6.0.
+
 ## Version 0.5.0: bounded evidence ledger, modern direct indexes, broader readable export
 
 This release adds a typed evidence ledger to structural recovery. For each

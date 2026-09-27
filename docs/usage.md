@@ -24,6 +24,9 @@ python benchmarks/run_real_corpus.py
 python benchmarks/run_gwosc_recovery.py
 python benchmarks/run_damage_catalog.py
 python benchmarks/run_seeded_matrix.py --seed 20260927 --trials 2
+python benchmarks/run_stratified_layouts.py --seed 11235813 --trials 1
+python benchmarks/run_real_candidate_exports.py
+python benchmarks/run_real_readable_corpus.py
 python -m unittest discover -s tests -q
 ```
 
@@ -33,6 +36,9 @@ python -m unittest discover -s tests -q
 | `run_gwosc_recovery.py` | Breaks one verified index pointer in a disposable GWOSC copy, runs the public recovery CLI on the damaged copy alone, and independently scores output against the untouched original. |
 | `run_damage_catalog.py` | Checks ten selected structural, payload, metadata, and refusal cases on copies. |
 | `run_seeded_matrix.py` | Varies fault positions using a published seed, separately counts exact accepted chunks, wrong accepted values, unknown regions, and safe refusals. The default has 23 correlated cases. |
+| `run_stratified_layouts.py` | Exercises generated modern index families, filters, sparse and edge chunks, deliberate false acceptance with absent checksums, and the authentic corpus. The truth file is used only by the evaluator. |
+| `run_real_candidate_exports.py` | Tests all six currently eligible GWOSC datasets on intact copies through the structural route; bitwise and physical-range scores are independent. This is intact export, not damaged repair. |
+| `run_real_readable_corpus.py` | Tests native-readable export of two structurally unsupported Zenodo originals using independent current-value comparisons. |
 | `unittest discover` | Runs parser, output, negative, resource, and end-to-end tests. It does not recover a supplied user file. |
 
 Benchmark readable summaries include paths to retained HDF5 and JSON evidence. Use `--json` for complete output where offered. The original healthy file and mutation manifest are evaluator truth, never arguments to recovery. These constructed experiments cannot measure a real-world success percentage.
@@ -94,16 +100,17 @@ An optional `source_sha256` refers to the **damaged input**. Observed conflicts 
 python -m h5reclaim recover damaged.h5 --dataset /experiment/readings --output result.h5 --report result.json
 ```
 
-The destinations must not exist. Recovery reads only the damaged input through a private snapshot. Native HDF5 locates the selected local dataset and schema, and a bounded independent parser validates supported raw indexes and decodes chunks. Version-1 trees can bridge one lost **leaf** pointer only through a unique matching parent interval and reciprocal left/right sibling links. Modern single-chunk and implicit indexes derive addresses from the selected object's checked layout. A narrowly supported nonpaged fixed array follows checked header/data-block pointers and array slots. Broken modern indexes are not reconstructed. The report's `evidence_ledger` records index chains, physical ranges, checksums or their absence, decoding checks, contradictions, and per-region decisions.
+The destinations must not exist. Recovery reads only the damaged input through a private snapshot. Native HDF5 normally locates the selected local dataset and schema; when native metadata lookup fails, a narrower rooted parser can resolve surviving old symbol-table or modern compact-group links and required messages. It refuses unsupported paths and records this route in `metadata_resolution`. A bounded independent parser validates raw indexes and decodes chunks. Version-1 trees can bridge one lost **leaf** pointer only through a unique matching parent interval and reciprocal left/right sibling links. Modern indexes require intact anchored pointer paths; missing modern index links are not reconstructed. The report's `evidence_ledger` records index chains, physical ranges, checksums or their absence, decoding checks, contradictions, and per-region decisions.
 
 | Structural condition | Supported behavior |
 | --- | --- |
-| Dataset | One local fixed rank-two canonical little-endian `uint32` without filters or rank-one canonical little-endian IEEE `float64` with exactly Fletcher32 followed by DEFLATE, which may be skipped per chunk. Positive dimensions divisible by chunks. |
-| Older format | Superblock v0/v1, object header v1 with at most one bounded continuation, layout v3, version-1 B-tree with intact level-zero or deeper tree. One missing leaf link can be bridged even below a deeper root. Internal subtree loss or multiple lost links is refused. |
-| Newer format | Checksummed superblock v2/v3, checksummed selected object header v2 with bounded continuations, layout v4/v5 and intact single-chunk, implicit, or nonpaged, fully allocated unfiltered fixed-array index. Paged/filtered/sparse fixed arrays, extensible arrays, and v2 B-trees remain structurally unsupported. |
+| Dataset | One local rank-one through rank-four chunked canonical integer (8/16/32/64 bit signed or unsigned) or IEEE float32/64 dataset, either byte order. Positive current dimensions, partial edge chunks, sparse allocation, and growing maxima are supported when the index parser validates their mapping. |
+| Older format | Superblock v0/v1, object header v1 with bounded continuation, layout v3, version-1 B-tree with intact level-zero or deeper tree. One missing leaf link can be bridged even below a deeper root. Internal subtree loss or multiple lost links is refused. Older raw metadata fallback has a narrower original numeric/filter envelope and unchecksummed link ownership. |
+| Newer format | Checksummed superblock v2/v3, checksummed selected object header v2 with bounded continuations, layout v4/v5 and intact single-chunk, implicit, filtered/paged/sparse fixed array, bounded extensible array, or version-2 B-tree. Extensible-array paged data blocks and damaged modern index links remain unsupported. Raw metadata fallback follows rooted compact links or a bounded checksummed dense-group name index and managed fractal heap; unsupported dense variants refuse. |
+| Filters | Bounded built-in shuffle, DEFLATE, and Fletcher32 in their actual declared order; per-chunk optional skip masks. Missing unknown decoders are reported separately, never treated as verified measurements. |
 | Resource bounds | Source snapshot at most 4 GiB, 30-minute 1 MiB-buffer copy, temporary disk for full logical source size plus 32 MiB reserve; structural dataset at most 1,048,576 elements, 4,096 chunks and traversed nodes, 1 MiB decoded chunk. |
 
-The structural decoder accepts only the stated built-in filter order and supported per-chunk DEFLATE skip bit, with a strict expansion bound. Other masks, unknown filters, partial edge chunks, growing/sparse structural indexes, missing metadata anchors, overlapping physical extents, invalid checksums, or destroyed payloads cannot be promoted to measurements.
+The structural decoder enforces a strict expansion bound and exact final nominal chunk length. Invalid masks, unknown active filters, missing metadata anchors, overlapping physical extents, invalid checksums, or destroyed payloads cannot be promoted to measurements. An unknown active filter with an otherwise anchored chunk is status 7. A missing index slot remains allocation unknown; output fill is never proof of a measurement.
 
 The output's `/_h5reclaim/chunk_status` is indexed by chunk grid:
 
@@ -112,6 +119,7 @@ The output's `/_h5reclaim/chunk_status` is indexed by chunk grid:
 | 1 `recovered` | The coordinate and payload passed the documented structural checks. Unfiltered payload bytes still lack an independent checksum. |
 | 2 `allocation_unknown` | No accepted assignment; output fill is unknown, not a measurement. |
 | 6 `decode_failed` | An anchored chunk failed decoding or its checksum; output fill is unknown. |
+| 7 `decoder_unavailable` | An anchored chunk needs an unsupported active filter decoder; output fill is unknown. |
 
 Codes 3 `ambiguous`, 4 `unavailable`, and 5 `unsupported` are reserved in this output. Check the status map even if the HDF5 output opens. `complete` means all grid chunks have status 1, not that original science was independently authenticated. The report is external JSON and embedded at `/_h5reclaim/report_json`. Only the selected dataset and bounded safe attributes are copied; siblings, links, scales, and full scientific context are excluded.
 
@@ -131,7 +139,7 @@ python -m h5reclaim export-readable damaged.h5 --dataset /experiment/readings --
 
 This distinct route needs native HDF5 to read the selected local dataset. Bounded compact, contiguous, and chunked layouts of rank one through four can include canonical fixed-width numeric, boolean/enum, complex, fixed strings/opaque bytes, and fixed-size compound/array fields. The selected HDF5 datatype, shape/maxshape, fill rules, chunking, and built-in filter order are copied. Native output readback checks bytes. Sparse chunked input is `partial`, with `/_h5reclaim/validity`: 1 accepted current value, 0 unknown element whose output fill must be ignored. The report records physical extents, masks, and raw hashes when available.
 
-Logical data is limited to 512 MiB in 1 MiB blocks, with 2 MiB stored chunks and at most 8,192 grid entries. References, variable-length data, external/VDS storage, custom filters, and noncanonical numeric types are refused. Native HDF5 reads happen in this process, without a crash-isolated worker. This route cannot repair an inaccessible index or verify values before damage.
+Logical data is limited to 512 MiB in 1 MiB blocks, with 2 MiB stored chunks and at most 8,192 grid entries. References, variable-length data, external/VDS storage, custom filters, and noncanonical numeric types are refused. Native reads run in a child process with a 900-second default deadline and disabled dynamic filter plugin loading. POSIX applies a 3 GiB address-space cap and disables core dumps; Windows has the deadline but no enforced worker memory cap. This is process isolation for crashes and resource bounds, not a security sandbox for hostile native code. This route cannot repair an inaccessible index or verify values before damage.
 
 ## Interpreting results
 

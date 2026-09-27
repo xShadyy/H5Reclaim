@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any
 
 from .dependency_routes import inspect_dependencies, inspect_superblock_status
+from .format import FormatError
+from .metadata_fallback import read_dataset_spec_fallback
 from .recovery import _verify_source, sha256_file, source_snapshot
 from .survey import SurveyError, _survey_snapshot
 
@@ -39,7 +41,7 @@ _QUESTIONS = (
 
 def _questions(condition: str, selection: dict[str, Any] | None) -> list[dict[str, str]]:
     wanted = {"dataset_path", "dataset_schema", "external_evidence", "symptom"}
-    if condition == "metadata_inventoried" and selection is not None:
+    if condition in ("metadata_inventoried", "rooted_metadata_fallback") and selection is not None:
         wanted.discard("dataset_path")
     if condition in ("metadata_unreadable", "inventory_partial") or (
         selection is not None and (
@@ -102,7 +104,7 @@ def _choose_route(
         if selected["support"]["status"] == "candidate":
             return (
                 "inspect_anchored_index",
-                "Selected metadata fits a supported version-1 chunk index. Inspect actual chunks before export; this is not a successful recovery claim.",
+                "Selected metadata fits a bounded structural index parser. Inspect actual chunks before export; this is not a successful recovery claim.",
                 selected,
             )
         if selected["support"]["status"] == "indeterminate":
@@ -253,6 +255,38 @@ def diagnose(source: str | Path, dataset_path: str | None = None) -> dict[str, A
                         "Selected metadata declares other files. Resolve and verify those files before "
                         "treating native fill values as measurements; this diagnosis has not read them."
                     )
+
+        issue_codes = {item["code"] for item in (report.get("inventory") or {}).get("issues", ())}
+        if (dataset_path is not None and (
+            report.get("condition") == "metadata_unreadable"
+            or (report.get("condition") == "inventory_partial"
+                and issue_codes and issue_codes <= {"link_unreadable", "group_unreadable", "unknown_object"})
+        )):
+            try:
+                fallback = read_dataset_spec_fallback(
+                    image, dataset_path, expected_sha256=digest,
+                )
+            except (FormatError, OSError, ValueError):
+                pass
+            else:
+                spec = fallback.spec
+                report.update({
+                    "outcome": "triaged",
+                    "condition": "rooted_metadata_fallback",
+                    "next_action": "inspect_anchored_index",
+                    "detail": (
+                        "A rooted raw metadata parser validated the selected local path and "
+                        "index after the native inventory failed. Inspect chunks before export; "
+                        "the metadata graph does not prove historical measurements."
+                    ),
+                    "selection": {
+                        "selected_path": spec.path, "shape": list(spec.shape),
+                        "chunks": list(spec.chunks), "dtype": spec.dtype,
+                        "filters": list(spec.filters), "layout": "chunked",
+                        "support": {"status": "candidate", "reasons": []},
+                        "metadata_resolution": fallback.route,
+                    },
+                })
 
         report["questions"] = _questions(report["condition"], report["selection"])
 

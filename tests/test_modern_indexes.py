@@ -140,25 +140,32 @@ class ModernIndexTests(unittest.TestCase):
             with self.assertRaisesRegex(FormatError, "fixed-array data block checksum"):
                 reader.read_index(obj, (8, 12), (2, 3), 4, maxshape=(8, 12))
 
-    def test_sparse_fixed_array_refuses_unallocated_entries(self):
+    def test_sparse_fixed_array_only_attributes_allocated_entries(self):
         with h5py.File(self.path, "w", libver="latest") as handle:
             data = handle.create_dataset("science", shape=(8, 12), dtype="<u4", chunks=(2, 3))
             data[:2, :3] = 7
         with h5py.File(self.path, "r") as handle, ModernH5File(self.path) as reader:
             obj = h5py.h5o.get_info(handle["science"].id).addr
-            with self.assertRaisesRegex(UnsupportedFormat, "sparse fixed array"):
-                reader.read_index(obj, (8, 12), (2, 3), 4, maxshape=(8, 12))
+            index = reader.read_index(obj, (8, 12), (2, 3), 4, maxshape=(8, 12))
+            self.assertEqual(len(index.chunks), 1)
+            self.assertEqual(index.chunks[0].coordinate, (0, 0))
+            native = handle["science"].id.get_chunk_info(0)
+            self.assertEqual(reader.absolute(index.chunks[0].address), native.byte_offset)
 
-    def test_paged_fixed_array_refuses_before_page_interpretation(self):
+    def test_paged_fixed_array_uses_checked_page_slots(self):
         with h5py.File(self.path, "w", libver="latest") as handle:
             handle.create_dataset("science", data=np.arange(1089, dtype="<u4").reshape(33, 33),
                                   chunks=(1, 1))
         with h5py.File(self.path, "r") as handle, ModernH5File(self.path) as reader:
             obj = h5py.h5o.get_info(handle["science"].id).addr
-            with self.assertRaisesRegex(UnsupportedFormat, "paged fixed arrays"):
-                reader.read_index(obj, (33, 33), (1, 1), 4, maxshape=(33, 33))
+            index = reader.read_index(obj, (33, 33), (1, 1), 4, maxshape=(33, 33))
+            self.assertEqual(len(index.chunks), 1089)
+            self.assertTrue(any(kind == "fixed-array data block page"
+                                for _, _, kind in reader.metadata_ranges))
+            self.assertEqual(reader.absolute(index.chunks[-1].address),
+                             handle["science"].id.get_chunk_info_by_coord((32, 32)).byte_offset)
 
-    def test_unallocated_single_address_refuses_even_with_valid_header_checksum(self):
+    def test_unallocated_single_address_has_no_attributed_chunk(self):
         obj = self._check_native()
         with ModernH5File(self.path) as reader:
             index = reader.read_index(obj, (4, 4), (4, 4), 4, maxshape=(4, 4))
@@ -178,8 +185,8 @@ class ModernIndexTests(unittest.TestCase):
         raw[checksum_offset:checksum_offset+4] = lookup3(raw[obj:checksum_offset]).to_bytes(4, "little")
         self.path.write_bytes(raw)
         with ModernH5File(self.path) as reader:
-            with self.assertRaisesRegex(UnsupportedFormat, "not been allocated"):
-                reader.read_index(obj, (4, 4), (4, 4), 4, maxshape=(4, 4))
+            index = reader.read_index(obj, (4, 4), (4, 4), 4, maxshape=(4, 4))
+            self.assertEqual(index.chunks, ())
 
     def test_observed_shape_and_filter_contradictions_refuse(self):
         obj = self._check_native()

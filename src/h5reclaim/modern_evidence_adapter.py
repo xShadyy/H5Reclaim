@@ -14,6 +14,7 @@ from .evidence import (
 )
 from .metadata import DatasetSpec
 from .modern_indexes import ModernH5File, ModernIndex
+from .schema_codec import fletcher32_applied
 
 
 class ModernEvidenceError(ValueError):
@@ -29,7 +30,9 @@ def build_modern_evidence(
     spec: DatasetSpec, reader: ModernH5File, index: ModernIndex,
     records: Sequence[Any], *, source_sha256: str,
     decode_chunk: Callable[[bytes, DatasetSpec, int], bytes],
-    failed: Sequence[Mapping[str, Any]] = (), source_id: str = "damaged",
+    failed: Sequence[Mapping[str, Any]] = (),
+    rooted_metadata_ranges: Sequence[tuple[int, int, str]] = (),
+    source_id: str = "damaged",
 ) -> EvidenceReport:
     """Reconcile parser-derived chunks before any output can be published.
 
@@ -39,7 +42,7 @@ def build_modern_evidence(
     """
     try:
         return _build(spec, reader, index, records, source_sha256,
-                      decode_chunk, failed, source_id)
+                      decode_chunk, failed, source_id, rooted_metadata_ranges)
     except (IndexError, KeyError, TypeError, ValueError, OverflowError) as exc:
         if isinstance(exc, ModernEvidenceError):
             raise
@@ -51,6 +54,7 @@ def _build(
     records: Sequence[Any], source_sha256: str,
     decode_chunk: Callable[[bytes, DatasetSpec, int], bytes],
     failed: Sequence[Mapping[str, Any]], source_id: str,
+    rooted_metadata_ranges: Sequence[tuple[int, int, str]],
 ) -> EvidenceReport:
     if index.object_address != spec.object_address or index.chunk_shape != spec.chunks:
         raise ModernEvidenceError("index belongs to a different selected object or chunk shape")
@@ -84,28 +88,37 @@ def _build(
     pointer = PhysicalExtent(source_id, pointer_start, reader.superblock.offset_size)
     links: list[IndexLink] = []
     shared_path: tuple[str, ...] = ()
-    if index.index_type == "fixed_array":
+    if index.index_type in ("fixed_array", "extensible_array") and index.chunks:
         if index.data_block_address is None or index.data_block_pointer_offset is None:
             raise ModernEvidenceError("fixed-array index lacks data-block attribution")
         fa_header = reader.absolute(index.base_address)
         fa_block = reader.absolute(index.data_block_address)
         fa_pointer = index.data_block_pointer_offset
+        header_kind = "fixed-array header" if index.index_type == "fixed_array" else "extensible-array header"
         if not any(start <= fa_pointer and fa_pointer + width <= end
                    for start, end, kind in reader.metadata_ranges
-                   if kind == "fixed-array header"):
-            raise ModernEvidenceError("fixed-array data-block pointer is not in its header")
+                   if kind == header_kind):
+            raise ModernEvidenceError("index data-block pointer is not in its header")
         if int.from_bytes(reader._read_absolute(fa_pointer, width), "little") != index.data_block_address:
-            raise ModernEvidenceError("fixed-array header pointer bytes disagree with parsed data block")
+            raise ModernEvidenceError("index header pointer bytes disagree with parsed data block")
+        prefix = "fixed" if index.index_type == "fixed_array" else "extensible"
         links.extend((
-            IndexLink("layout:fixed-header", source_id, spec.path,
+            IndexLink(f"layout:{prefix}-header", source_id, spec.path,
                       header_start, fa_header, "observed_index", pointer,
-                      checks=(EvidenceCheck("address_rule", "pass", "layout points to FAHD"),)),
-            IndexLink("fixed-header:data-block", source_id, spec.path,
+                      checks=(EvidenceCheck("address_rule", "pass", "validated layout points to index header"),)),
+            IndexLink(f"{prefix}-header:data-block", source_id, spec.path,
                       fa_header, fa_block, "observed_index",
                       PhysicalExtent(source_id, fa_pointer, width),
-                      checks=(EvidenceCheck("address_rule", "pass", "FAHD points to FADB"),)),
+                      checks=(EvidenceCheck("address_rule", "pass", "validated header points to index block"),)),
         ))
-        shared_path = ("layout:fixed-header", "fixed-header:data-block")
+        shared_path = (f"layout:{prefix}-header", f"{prefix}-header:data-block")
+    elif index.index_type == "v2_btree" and index.chunks:
+        links.append(IndexLink(
+            "layout:btree-header", source_id, spec.path,
+            header_start, reader.absolute(index.base_address), "observed_index", pointer,
+            checks=(EvidenceCheck("address_rule", "pass", "validated layout points to BTHD"),),
+        ))
+        shared_path = ("layout:btree-header",)
     proposals: list[ChunkProposal] = []
     linked_coordinates: set[tuple[int, ...]] = set()
 
@@ -120,19 +133,103 @@ def _build(
         absolute = reader.absolute(address)
         raw = reader.read_at(address, chunk.size)
         link_id = f"payload:{len(linked_coordinates)}"
-        if index.index_type == "fixed_array":
+        path = list(shared_path)
+        if index.index_type in ("fixed_array", "extensible_array"):
             if chunk.pointer_offset is None or index.data_block_address is None:
-                raise ModernEvidenceError("fixed-array chunk lacks slot pointer")
+                raise ModernEvidenceError("array chunk lacks slot pointer")
             fa_block = reader.absolute(index.data_block_address)
+            parent = fa_block
+            valid_kinds = (
+                ("fixed-array data block", "fixed-array data block page")
+                if index.index_type == "fixed_array" else
+                ("extensible-array index block", "extensible-array data block")
+            )
+            if index.index_type == "extensible_array":
+                chain = chunk.evidence.get("index_chain")
+                if not isinstance(chain, (list, tuple)) or len(chain) < 2:
+                    raise ModernEvidenceError("extensible-array slot has no rooted index path")
+                if (chain[0].get("target_address") != index.base_address
+                        or chain[1].get("target_address") != index.data_block_address):
+                    raise ModernEvidenceError("extensible-array index chain disagrees with header")
+                for number, step in enumerate(chain[2:]):
+                    if not isinstance(step, dict):
+                        raise ModernEvidenceError("invalid extensible-array chain step")
+                    parent_address, target = step["parent_address"], step["target_address"]
+                    offset = step["pointer_offset"]
+                    if (not isinstance(offset, int) or not isinstance(target, int)
+                            or reader.absolute(parent_address) != parent):
+                        raise ModernEvidenceError("extensible-array child pointer has a different owner")
+                    if not any(start <= offset and offset + width <= end
+                               for start, end, kind in reader.metadata_ranges
+                               if start == parent and kind in
+                               ("extensible-array index block", "extensible-array secondary block")):
+                        raise ModernEvidenceError("extensible-array child pointer is outside checked metadata")
+                    if int.from_bytes(reader._read_absolute(offset, width), "little") != target:
+                        raise ModernEvidenceError("extensible-array child pointer bytes disagree")
+                    child = reader.absolute(target)
+                    edge = f"array:{len(linked_coordinates)}:{number}"
+                    links.append(IndexLink(
+                        edge, source_id, spec.path, parent, child, "observed_index",
+                        PhysicalExtent(source_id, offset, width),
+                        checks=(EvidenceCheck("address_rule", "pass", str(step["kind"])),),
+                    ))
+                    path.append(edge)
+                    parent = child
             if not any(start <= chunk.pointer_offset and chunk.pointer_offset + width <= end
                        for start, end, kind in reader.metadata_ranges
-                       if kind == "fixed-array data block"):
-                raise ModernEvidenceError("fixed-array chunk pointer lies outside checked data block")
+                       if kind in valid_kinds and
+                       start == reader.absolute(chunk.evidence.get(
+                           "slot_owner_address", index.data_block_address))):
+                raise ModernEvidenceError("array chunk pointer lies outside checked slot metadata")
+            if index.index_type == "fixed_array":
+                page = chunk.evidence.get("computed_page")
+                if page is not None:
+                    if (not isinstance(page, dict)
+                            or page.get("address") != chunk.evidence.get("slot_owner_address")
+                            or page.get("offset_from_data_block") !=
+                               page.get("address") - index.data_block_address
+                            or not page.get("bitmap_initialized")
+                            or page.get("page_index") != chunk.evidence.get("page_index")):
+                        raise ModernEvidenceError("fixed-array computed page attribution is inconsistent")
             if int.from_bytes(reader._read_absolute(chunk.pointer_offset, width), "little") != address:
-                raise ModernEvidenceError("fixed-array slot bytes disagree with proposal address")
-            parent = fa_block
+                raise ModernEvidenceError("array slot bytes disagree with proposal address")
             link_pointer = PhysicalExtent(source_id, chunk.pointer_offset, width)
-            rule = "FADB array slot gives chunk coordinate in row-major grid"
+            rule = "validated array slot and grid mapping give chunk address and coordinate"
+        elif index.index_type == "v2_btree":
+            parent = reader.absolute(index.base_address)
+            chain = chunk.evidence.get("link_path")
+            if not isinstance(chain, (list, tuple)) or not chain:
+                raise ModernEvidenceError("v2 B-tree record has no rooted node chain")
+            for number, step in enumerate(chain):
+                if not isinstance(step, dict):
+                    raise ModernEvidenceError("invalid v2 B-tree node link")
+                target, offset, pointer_length = (step["target_address"],
+                                                  step["pointer_offset"], step["pointer_length"])
+                if (not step.get("checksum_verified") or step["source_address"] !=
+                        (index.base_address if number == 0 else chain[number - 1]["target_address"])
+                        or step["pointer_length"] != width
+                        or not isinstance(offset, int) or not isinstance(target, int)
+                        or not any(start == parent and start <= offset and offset + pointer_length <= end
+                                   for start, end, kind in reader.metadata_ranges
+                                   if kind in ("v2 B-tree header", "v2 B-tree node"))
+                        or int.from_bytes(reader._read_absolute(offset, width), "little") != target):
+                    raise ModernEvidenceError("v2 B-tree node pointer is not verified in selected index")
+                child = reader.absolute(target)
+                edge = f"btree:{len(linked_coordinates)}:{number}"
+                links.append(IndexLink(
+                    edge, source_id, spec.path, parent, child, "observed_index",
+                    PhysicalExtent(source_id, offset, width),
+                    checks=(EvidenceCheck("metadata_checksum", "pass", str(step["source_kind"])),),
+                ))
+                path.append(edge)
+                parent = child
+            if (chunk.pointer_offset is None or
+                not any(start == parent and start <= chunk.pointer_offset and chunk.pointer_offset + width <= end
+                        for start, end, kind in reader.metadata_ranges if kind == "v2 B-tree node")
+                or int.from_bytes(reader._read_absolute(chunk.pointer_offset, width), "little") != address):
+                raise ModernEvidenceError("v2 B-tree record pointer is outside checked node")
+            link_pointer = PhysicalExtent(source_id, chunk.pointer_offset, width)
+            rule = "validated B-tree record gives a scaled chunk coordinate"
         else:
             parent = header_start
             link_pointer = pointer
@@ -154,8 +251,9 @@ def _build(
                 EvidenceCheck("decoded_bytes", "fail", failure),
             )
             decoded_sha = decoded_length = None
+            checked = fletcher32_applied(spec, chunk.filter_mask)
             checksum = ChecksumEvidence(
-                "fletcher32" if spec.filters else "none", None,
+                "fletcher32" if checked else "none", None,
                 "failed" if "Fletcher32 checksum mismatch" in failure else "unverified",
             )
         else:
@@ -165,14 +263,15 @@ def _build(
             decoded_sha = hashlib.sha256(payload).hexdigest()
             decoded_length = len(payload)
             checks = _PASS
+            checked = fletcher32_applied(spec, chunk.filter_mask)
             checksum = ChecksumEvidence(
-                "fletcher32" if spec.filters else "none", None,
-                "passed" if spec.filters else "absent",
+                "fletcher32" if checked else "none", None,
+                "passed" if checked else "absent",
             )
         proposals.append(ChunkProposal(
             proposal_id, PhysicalExtent(source_id, absolute, chunk.size),
             hashlib.sha256(raw).hexdigest(), spec.path, coordinate,
-            shared_path + (link_id,), decoded_sha, decoded_length, chunk.filter_mask,
+            tuple(path) + (link_id,), decoded_sha, decoded_length, chunk.filter_mask,
             checksum, checks,
         ))
 
@@ -196,7 +295,7 @@ def _build(
     if len(linked_coordinates) != len(index.chunks):
         raise ModernEvidenceError("modern index chunks missing from accepted/failed evidence")
     metadata = tuple(PhysicalExtent(source_id, start, end - start)
-                     for start, end, _ in reader.metadata_ranges)
+                     for start, end, _ in (*reader.metadata_ranges, *rooted_metadata_ranges))
     ledger = reconcile((source,), (anchor,), tuple(links), tuple(proposals), metadata)
     for decision in ledger.decisions[:len(records)]:
         if decision.status != "accepted":

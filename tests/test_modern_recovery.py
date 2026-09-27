@@ -110,30 +110,33 @@ class ModernRecoveryTests(unittest.TestCase):
         ledger = json.loads(self.report.read_text())["evidence_ledger"]
         self.assertTrue(all(len(p["index_link_ids"]) == 3 for p in ledger["proposals"]))
 
-    def test_sparse_fixed_array_has_no_published_coordinates(self):
+    def test_sparse_fixed_array_publishes_only_allocated_coordinate(self):
         with h5py.File(self.source, "w", libver="latest") as handle:
             data = handle.create_dataset("science", shape=(8, 12), dtype="<u4", chunks=(2, 3))
             data[:2, :3] = 7
         selected = survey(self.source)["datasets"][0]
-        self.assertEqual(selected["support"]["status"], "unsupported")
-        self.assertTrue(any(item["code"] == "index_unsupported"
-                            for item in selected["support"]["reasons"]))
-        with self.assertRaisesRegex(ValueError, "sparse fixed array"):
-            recover(self.source, "/science", self.output, self.report)
-        self.assertFalse(self.output.exists())
-        self.assertFalse(self.report.exists())
+        self.assertEqual(selected["support"]["status"], "candidate")
+        result = recover(self.source, "/science", self.output, self.report)
+        self.assertEqual(result["counts"]["recovered"], 1)
+        self.assertEqual(result["counts"]["allocation_unknown"], 15)
+        with h5py.File(self.output) as output:
+            status = output["/_h5reclaim/chunk_status"][:]
+            self.assertEqual(status[0, 0], 1)
+            self.assertEqual(int(np.count_nonzero(status == 2)), 15)
+            self.assertTrue(np.all(output["science"][:2, :3] == 7))
 
-    def test_paged_fixed_array_is_explicitly_unsupported(self):
+    def test_paged_fixed_array_has_verified_page_evidence(self):
         with h5py.File(self.source, "w", libver="latest") as handle:
             handle.create_dataset("science", data=np.arange(1089, dtype="<u4").reshape(33, 33),
                                   chunks=(1, 1))
         selected = survey(self.source)["datasets"][0]
-        self.assertEqual(selected["support"]["status"], "unsupported")
-        self.assertIn("paged fixed arrays", selected["support"]["reasons"][-1]["detail"])
-        with self.assertRaisesRegex(ValueError, "paged fixed arrays"):
-            recover(self.source, "/science", self.output, self.report)
-        self.assertFalse(self.output.exists())
-        self.assertFalse(self.report.exists())
+        self.assertEqual(selected["support"]["status"], "candidate")
+        result = recover(self.source, "/science", self.output, self.report)
+        self.assertEqual(result["counts"]["recovered"], 1089)
+        self.assertIsNotNone(result["mappings"][-1]["evidence"]["computed_page"])
+        with h5py.File(self.output) as output:
+            self.assertTrue(np.array_equal(output["science"][:],
+                                           np.arange(1089, dtype="<u4").reshape(33, 33)))
 
     def test_two_array_slots_pointing_to_same_chunk_refuse_even_with_valid_checksum(self):
         with h5py.File(self.source, "w", libver="latest") as handle:
@@ -153,7 +156,7 @@ class ModernRecoveryTests(unittest.TestCase):
         raw[second.pointer_offset:second.pointer_offset+8] = first.address.to_bytes(8, "little")
         raw[block_end-4:block_end] = lookup3(raw[block_start:block_end-4]).to_bytes(4, "little")
         self.source.write_bytes(raw)
-        with self.assertRaisesRegex(ValueError, "payload ranges overlap"):
+        with self.assertRaisesRegex(ValueError, "payloads overlap"):
             recover(self.source, "/science", self.output, self.report)
         self.assertFalse(self.output.exists())
         self.assertFalse(self.report.exists())
