@@ -12,6 +12,7 @@ import numpy as np
 
 from h5reclaim.format import H5File
 from h5reclaim.metadata import UnsupportedCase, read_dataset_spec
+from h5reclaim.recovery import recover
 from h5reclaim.schema_codec import (
     ChunkDecodeError, FilterDescriptor, MissingFilterDecoder,
     decode_chunk, validate_stored_size,
@@ -104,6 +105,19 @@ class SchemaCodecTests(unittest.TestCase):
                         values[coordinate[0]:coordinate[0]+rows,
                                coordinate[1]:coordinate[1]+cols],
                     )
+            output = Path(directory) / "export.h5"
+            report = Path(directory) / "report.json"
+            result = recover(source, "/growing", output, report)
+            self.assertTrue(result["complete"])
+            self.assertEqual(result["counts"]["recovered"], 4)
+            with h5py.File(output, "r") as handle:
+                self.assertEqual(handle["/growing"].maxshape, (None, 6))
+                self.assertEqual(handle["/growing"].dtype, np.dtype(">i2"))
+                np.testing.assert_array_equal(handle["/growing"][:], values)
+                np.testing.assert_array_equal(
+                    handle["/_h5reclaim/chunk_status"][:],
+                    np.ones((2, 2), dtype="u1"),
+                )
 
     def test_optional_filter_mask_and_mandatory_checksum(self) -> None:
         from h5reclaim.metadata import DatasetSpec
@@ -202,6 +216,32 @@ class SchemaCodecTests(unittest.TestCase):
             with self.assertRaises(MissingFilterDecoder):
                 decode_chunk(raw, spec, mask)
             self.assertEqual(decode_chunk(raw, spec, 1), nominal)
+
+    def test_missing_decoder_marks_partial_result_unknown(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "unknown.h5"
+            output = Path(directory) / "partial.h5"
+            report = Path(directory) / "partial.json"
+            with h5py.File(source, "w", libver=("earliest", "v108")) as handle:
+                creation = h5py.h5p.create(h5py.h5p.DATASET_CREATE)
+                creation.set_chunk((4,))
+                creation.set_filter(32000, h5py.h5z.FLAG_OPTIONAL, ())
+                dataset = h5py.h5d.create(
+                    handle.id, b"data", h5py.h5t.py_create(np.dtype("<u4")),
+                    h5py.h5s.create_simple((4,)), dcpl=creation,
+                )
+                dataset.write_direct_chunk(
+                    (0,), np.arange(4, dtype="<u4").tobytes(), filter_mask=0,
+                )
+            source_before = source.read_bytes()
+            result = recover(source, "/data", output, report)
+            self.assertFalse(result["complete"])
+            self.assertEqual(result["counts"]["decoder_unavailable"], 1)
+            self.assertEqual(result["counts"]["decode_failed"], 0)
+            self.assertEqual(result["failed_chunks"][0]["status"], "decoder_unavailable")
+            self.assertEqual(source.read_bytes(), source_before)
+            with h5py.File(output, "r") as handle:
+                self.assertEqual(int(handle["/_h5reclaim/chunk_status"][0]), 7)
 
     def test_bounded_deflate_and_trailing_stream_rejection(self) -> None:
         from h5reclaim.metadata import DatasetSpec
