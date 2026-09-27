@@ -31,3 +31,13 @@ datatype fixture. `/d1`'s v3 shared filter pipeline resolves through the
 checked SOHM list and managed heap. It is also generated test data.
 
 SHA-256: `327e3f17fc47337df48da06611d5f8923e3597d03bdbe4148ac3ee9d5fa9a87c`
+
+`sohm_btree_leaf.h5` and `sohm_btree_internal.h5` use the simple-dataspace
+sharing settings of the first fixture, but contain eight and 45 distinct
+dataset shapes respectively, each repeated twice. This pushes the SOHM
+index from SMLI to the HDF5 version-2 B-tree client type 7, first as a leaf
+and then with an internal root. Each `/shape_N_J` dataset holds the uint32
+sequence 0 through N-1 in one chunk. Both are generated data.
+
+- Leaf fixture SHA-256: `bf3a44df4aa1f001e0002c5a9ad0fdc7512b6d56f65cf58d5ba3bf9649ac1e59`
+- Internal fixture SHA-256: `18d2197ba52c9c3037ed73689533a4cd4fb406622fced16b552f2a4bcccf56ea`

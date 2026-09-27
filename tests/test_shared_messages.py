@@ -200,7 +200,7 @@ class SharedMessageTests(unittest.TestCase):
         # One indexed shared dataspace. Recompute SMLI checksum to test the
         # pointer relationship, instead of relying on a checksum mismatch.
         _patch_checked_block(self.path, location, 25, location + 4 + 9 + 1, b"\xfe")
-        with self.assertRaisesRegex(FormatError, "no unique record-list owner"):
+        with self.assertRaisesRegex(FormatError, "no unique index owner"):
             read_dataset_spec_fallback(self.path, "/d1")
 
     def test_sohm_direct_heap_corruption_refuses(self):
@@ -215,5 +215,81 @@ class SharedMessageTests(unittest.TestCase):
         _, address, message = self._sohm()
         self.assertEqual(message.data[2], 0)
         _patch_header(self.path, address, message.absolute_offset + 2, b"\x80")
-        with self.assertRaisesRegex(FormatError, "no unique record-list owner"):
+        with self.assertRaisesRegex(FormatError, "no unique index owner"):
             read_dataset_spec_fallback(self.path, "/d1")
+
+    def _btree_fixture(self, internal: bool):
+        name = "sohm_btree_internal.h5" if internal else "sohm_btree_leaf.h5"
+        expected_hash = (
+            "18d2197ba52c9c3037ed73689533a4cd4fb406622fced16b552f2a4bcccf56ea"
+            if internal else
+            "bf3a44df4aa1f001e0002c5a9ad0fdc7512b6d56f65cf58d5ba3bf9649ac1e59"
+        )
+        source = (Path(__file__).parent / "fixtures" / name).read_bytes()
+        self.assertEqual(hashlib.sha256(source).hexdigest(), expected_hash)
+        self.path.write_bytes(source)
+        return source
+
+    def test_sohm_btree_leaf_and_internal_nodes_resolve_owned_dataspace(self):
+        for internal in (False, True):
+            with self.subTest(internal=internal):
+                source = self._btree_fixture(internal)
+                record = read_dataset_spec_fallback(self.path, "/shape_10_1")
+                self.assertEqual(record.spec.shape, (10,))
+                self.assertEqual(record.spec.dtype, "<u4")
+                self.assertEqual(record.spec.chunks, (10,))
+                self.assertTrue(any("checksummed_sohm_btree_managed_heap" in item
+                                    for item in record.resolved_shared_messages))
+                nodes = [item for item in record.metadata_ranges
+                         if item[2] == "SOHM B-tree node"]
+                self.assertGreaterEqual(len(nodes), 2 if internal else 1)
+                self.assertEqual(self.path.read_bytes(), source)
+
+    def test_sohm_internal_repeated_child_with_new_checksum_refuses(self):
+        self._btree_fixture(internal=True)
+        raw = bytearray(self.path.read_bytes())
+        table = raw.index(b"SMTB")
+        index_address = int.from_bytes(raw[table+18:table+26], "little")
+        self.assertEqual(raw[index_address:index_address+4], b"BTHD")
+        self.assertEqual(int.from_bytes(raw[index_address+12:index_address+14], "little"), 1)
+        root = int.from_bytes(raw[index_address+16:index_address+24], "little")
+        root_count = int.from_bytes(raw[index_address+24:index_address+26], "little")
+        node_size = int.from_bytes(raw[index_address+6:index_address+10], "little")
+        self.assertEqual(raw[root:root+4], b"BTIN")
+        first = root + 6 + root_count*17
+        second = first + 9  # 8-byte address and one-byte child count.
+        raw[first:first+9] = raw[second:second+9]
+        checksum = root + 6 + root_count*17 + (root_count+1)*9
+        raw[checksum:checksum+4] = lookup3(raw[root:checksum]).to_bytes(4, "little")
+        self.path.write_bytes(raw)
+        with self.assertRaisesRegex(FormatError, "repeated"):
+            read_dataset_spec_fallback(self.path, "/shape_10_1")
+
+    def test_sohm_btree_leaf_checksum_corruption_refuses(self):
+        self._btree_fixture(internal=False)
+        raw = bytearray(self.path.read_bytes())
+        leaf = raw.index(b"BTLF", raw.index(b"SMTB"))
+        raw[leaf+10] ^= 1
+        self.path.write_bytes(raw)
+        with self.assertRaisesRegex(FormatError, "SOHM B-tree node checksum"):
+            read_dataset_spec_fallback(self.path, "/shape_10_1")
+
+    def test_sohm_btree_internal_recovers_from_damaged_native_open(self):
+        self._btree_fixture(internal=True)
+        with ModernH5File(self.path) as reader, h5py.File(self.path, "r") as native:
+            address = h5py.h5o.get_info(native["shape_10_1"].id).addr
+            fill = next(m for m in _messages(reader, address) if m.kind == 5)
+        _patch_header(self.path, address, fill.absolute_offset, b"\xff")
+        damaged = self.path.read_bytes()
+        with h5py.File(self.path, "r") as native:
+            with self.assertRaises((KeyError, OSError)):
+                _ = native["shape_10_1"]
+        report = recover(self.path, "/shape_10_1", self.path.with_name("out.h5"),
+                         self.path.with_name("out.json"))
+        self.assertEqual(report["counts"]["recovered"], 1)
+        self.assertTrue(any("sohm_btree" in item for item in
+                            report["metadata_resolution"]["resolved_shared_messages"]))
+        with h5py.File(self.path.with_name("out.h5"), "r") as result:
+            np.testing.assert_array_equal(result["shape_10_1"][:],
+                                          np.arange(10, dtype="<u4"))
+        self.assertEqual(self.path.read_bytes(), damaged)

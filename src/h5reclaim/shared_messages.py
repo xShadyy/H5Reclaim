@@ -21,6 +21,8 @@ from .modern_indexes import ModernH5File, lookup3
 MAX_INDICES = 8
 MAX_RECORDS = 128
 MAX_SHARED_BYTES = 1 << 20
+MAX_BTREE_DEPTH = 1
+MAX_BTREE_NODE_BYTES = 1 << 20
 # The file carries H5O_SHMESG_* flags as defined in H5Opublic.h, using the
 # object-header message type as the bit position. The prose table in one
 # revision of the format specification lists compact ordinal bit positions;
@@ -46,6 +48,114 @@ class ResolvedMessage:
 
 def _uint(raw: bytes) -> int:
     return int.from_bytes(raw, "little")
+
+
+def _width(value: int) -> int:
+    return max(1, (value.bit_length() + 7) // 8)
+
+
+def _reserve_index(reader: ModernH5File, pending: list[tuple[int, int, str]],
+                   address: int, length: int, label: str) -> int:
+    start = reader.absolute(address)
+    end = start + length
+    if length < 1 or end > reader.superblock.eof_address:
+        raise FormatError("SOHM index allocation exceeds declared end-of-file")
+    if sum(b-a for a, b, _ in pending) + length > 16 << 20:
+        raise UnsupportedFormat("SOHM index metadata exceeds 16 MiB")
+    if any(start < b and a < end for a, b, _ in (*reader.metadata_ranges, *pending)):
+        raise FormatError("SOHM index overlaps parsed metadata")
+    pending.append((start, end, label))
+    return start
+
+
+def _btree_records(reader: ModernH5File, address: int,
+                   expected: int, pending: list[tuple[int, int, str]]) -> tuple[bytes, ...]:
+    """Read a bounded type-7 v2 B-tree, including internal-record ownership."""
+    osize, lsize = reader.superblock.offset_size, reader.superblock.length_size
+    header_size = 22 + osize + lsize
+    header = reader.read_at(address, header_size)
+    if header[:4] != b"BTHD" or header[4:6] != b"\x00\x07":
+        raise FormatError("SOHM B-tree header signature, version, or client invalid")
+    if lookup3(header[:-4]) != _uint(header[-4:]):
+        raise FormatError("SOHM B-tree header checksum mismatch")
+    node_size = _uint(header[6:10]); record_size = _uint(header[10:12])
+    depth = _uint(header[12:14]); split, merge = header[14:16]
+    root = _uint(header[16:16+osize])
+    root_count = _uint(header[16+osize:18+osize])
+    total = _uint(header[18+osize:18+osize+lsize])
+    if (not 64 <= node_size <= MAX_BTREE_NODE_BYTES or record_size != 17
+        or depth > MAX_BTREE_DEPTH or not 0 < split <= 100
+        or not 0 < merge <= 100 or not 1 <= total <= MAX_RECORDS):
+        raise UnsupportedFormat("SOHM B-tree node size, depth, or record shape exceeds limits")
+    if total != expected or root == reader.superblock.undefined_address:
+        raise FormatError("SOHM B-tree root or total count contradicts master table")
+    _reserve_index(reader, pending, address, header_size, "SOHM B-tree header")
+    capacities = [(node_size - 10) // 17]
+    subtrees = [capacities[0]]
+    if capacities[0] < 1:
+        raise UnsupportedFormat("SOHM B-tree leaf has no room for a record")
+    for level in range(1, depth+1):
+        pointer = osize + _width(capacities[level-1])
+        if level > 1:
+            pointer += _width(subtrees[level-1])
+        capacity = (node_size - 10 - pointer) // (17 + pointer)
+        if capacity < 1:
+            raise UnsupportedFormat("SOHM B-tree internal node has no room for a record")
+        capacities.append(capacity)
+        subtrees.append(capacity + (capacity+1)*subtrees[level-1])
+    if not 1 <= root_count <= capacities[depth]:
+        raise FormatError("SOHM B-tree root count exceeds node capacity")
+    visited: set[int] = set()
+
+    def visit(node_address: int, level: int, count: int) -> tuple[list[bytes], int]:
+        if (node_address in visited or len(visited) >= MAX_RECORDS
+            or not 1 <= count <= capacities[level]):
+            raise FormatError("SOHM B-tree node repeated or record count invalid")
+        visited.add(node_address)
+        _reserve_index(reader, pending, node_address, node_size, "SOHM B-tree node")
+        block = reader.read_at(node_address, node_size)
+        if block[:4] != (b"BTIN" if level else b"BTLF") or block[4:6] != b"\x00\x07":
+            raise FormatError("SOHM B-tree node signature, version, or client invalid")
+        cursor = 6 + count * 17
+        own = [block[6+i*17:6+(i+1)*17] for i in range(count)]
+        children = []
+        if level:
+            count_width = _width(capacities[level-1])
+            total_width = _width(subtrees[level-1]) if level > 1 else 0
+            for _ in range(count+1):
+                if cursor + osize + count_width + total_width > node_size - 4:
+                    raise FormatError("SOHM B-tree child pointer crosses node boundary")
+                child = _uint(block[cursor:cursor+osize]); cursor += osize
+                child_count = _uint(block[cursor:cursor+count_width]); cursor += count_width
+                child_total = None
+                if level > 1:
+                    child_total = _uint(block[cursor:cursor+total_width]); cursor += total_width
+                if child == reader.superblock.undefined_address:
+                    raise FormatError("SOHM B-tree child pointer undefined")
+                children.append((child, child_count, child_total))
+        if cursor + 4 > node_size or lookup3(block[:cursor]) != _uint(block[cursor:cursor+4]):
+            raise FormatError("SOHM B-tree node checksum mismatch")
+        if not level:
+            return own, count
+        ordered: list[bytes] = []
+        observed = count
+        for i, (child, child_count, child_total) in enumerate(children):
+            subset, actual = visit(child, level-1, child_count)
+            if child_total is not None and child_total != actual:
+                raise FormatError("SOHM B-tree subtree count contradicts parent")
+            ordered.extend(subset)
+            observed += actual
+            if i < count:
+                ordered.append(own[i])
+        return ordered, observed
+
+    records, observed = visit(root, depth, root_count)
+    if observed != total or len(records) != total:
+        raise FormatError("SOHM B-tree record count contradicts master table")
+    hashes = [_uint(record[1:5]) for record in records]
+    if any(a > b for a, b in zip(hashes, hashes[1:])):
+        raise FormatError("SOHM B-tree record hashes violate key order")
+    return tuple(records)
 
 
 def _validated_extension(reader: ModernH5File, messages: Callable[[ModernH5File, int], tuple[Message, ...]]) -> Message:
@@ -102,31 +212,35 @@ def _sohm_message(reader: ModernH5File, *, kind: int, encoded: bytes,
     index_type, flags, minimum, nrecords, index_address, heap_address = selected
     if not flags & _MESSAGE_FLAG[kind]:
         raise FormatError("SOHM index does not track the referenced message type")
-    if index_type != 0 or not 1 <= nrecords <= MAX_RECORDS:
-        raise UnsupportedFormat("SOHM shared message requires a bounded record list")
+    if not 1 <= nrecords <= MAX_RECORDS:
+        raise UnsupportedFormat("SOHM index record count exceeds bound")
     if index_address == sb.undefined_address or heap_address == sb.undefined_address:
         raise FormatError("SOHM index or heap pointer is undefined")
-    list_size = 4 + 17 * nrecords + 4
-    records = reader.read_at(index_address, list_size)
-    if records[:4] != b"SMLI" or lookup3(records[:-4]) != _uint(records[-4:]):
-        raise FormatError("SOHM record-list signature or checksum mismatch")
-    list_start = reader.absolute(index_address)
-    pending.append((list_start, list_start + list_size, "SOHM record list"))
+    if index_type == 0:
+        list_size = 4 + 17 * nrecords + 4
+        block = reader.read_at(index_address, list_size)
+        if block[:4] != b"SMLI" or lookup3(block[:-4]) != _uint(block[-4:]):
+            raise FormatError("SOHM record-list signature or checksum mismatch")
+        _reserve_index(reader, pending, index_address, list_size, "SOHM record list")
+        records = tuple(block[4+i*17:4+(i+1)*17] for i in range(nrecords))
+        index_route = "list"
+    else:
+        records = _btree_records(reader, index_address, nrecords, pending)
+        index_route = "btree"
     unique_ids: set[bytes] = set()
     matches = 0
-    for i in range(nrecords):
-        entry = records[4 + i * 17:4 + (i + 1) * 17]
+    for entry in records:
         if entry[0] != 0:
-            raise UnsupportedFormat("SOHM record list contains a non-heap record")
+            raise UnsupportedFormat("SOHM index contains a non-heap record")
         if _uint(entry[5:9]) == 0:
             raise FormatError("SOHM heap record has no references")
         candidate = entry[9:17]
         if candidate in unique_ids:
-            raise FormatError("SOHM record list repeats a heap ID")
+            raise FormatError("SOHM index repeats a heap ID")
         unique_ids.add(candidate)
         matches += candidate == identifier
     if matches != 1:
-        raise FormatError("shared message heap ID has no unique record-list owner")
+        raise FormatError("shared message heap ID has no unique index owner")
     heap = _read_heap(reader, heap_address, pending)
     if heap.id_length != 8 or heap.managed_count != nrecords or identifier[0] != 0:
         raise UnsupportedFormat("SOHM heap needs matching managed ID and record count")
@@ -145,12 +259,12 @@ def _sohm_message(reader: ModernH5File, *, kind: int, encoded: bytes,
     direct_address = next(address for address, (start, size, _) in cache.items()
                           if (start, size) == (block_offset, block_size))
     physical = reader.absolute(direct_address) + relative
-    # The index hash is preserved in the checksummed list. Its implementation
+    # The index hash is preserved in the checksummed list or B-tree. Its implementation
     # is not rederived here; the exact heap ID is independently matched.
     reader.metadata_ranges.extend((a, b, label.replace("dense", "SOHM"))
                                   for a, b, label in pending)
     return ResolvedMessage(block[relative:relative + length], physical,
-                           "checksummed_sohm_list_managed_heap")
+                           f"checksummed_sohm_{index_route}_managed_heap")
 
 
 def resolve_shared_schema(reader: ModernH5File, *, selected_address: int,
