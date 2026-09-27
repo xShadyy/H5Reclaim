@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -46,6 +48,8 @@ class ReadableExportTests(unittest.TestCase):
             original_digest = digest(source)
             result = export_readable(source, "/experiment/strain", output, report)
             self.assertEqual(result["mode"], "readable_export")
+            self.assertTrue(result["native_worker"]["dynamic_plugins_disabled"])
+            self.assertEqual(result["native_worker"]["wall_time_seconds"], 900)
             self.assertEqual(result["dataset"]["allocated_chunks_checked"], 9)
             self.assertIn("array_omitted", result["dataset"]["attributes_copied"])
             self.assertEqual(result["source"]["sha256_after"], original_digest)
@@ -390,6 +394,61 @@ class ReadableExportTests(unittest.TestCase):
             self.assertFalse(output.exists())
             self.assertFalse(report.exists())
             self.assertFalse(list(base.glob(".h5reclaim-*")))
+
+    def test_native_worker_timeout_does_not_publish_or_leave_staging(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source, output, report = self._paths(base)
+            with h5py.File(source, "x") as handle:
+                handle.create_dataset("values", data=np.arange(4))
+            original = digest(source)
+            real_run = subprocess.run
+
+            def hung_child(*args, **kwargs):
+                self.assertEqual(kwargs["env"]["HDF5_PLUGIN_PRELOAD"], "::")
+                self.assertNotIn("HDF5_PLUGIN_PATH", kwargs["env"])
+                return real_run([sys.executable, "-c", "import time; time.sleep(3)"], **kwargs)
+
+            with patch.dict(os.environ, {"HDF5_PLUGIN_PATH": str(base),
+                                         "HDF5_PLUGIN_PRELOAD": "unsafe"}):
+                with patch("h5reclaim.readable_export.subprocess.run", side_effect=hung_child):
+                    with self.assertRaisesRegex(RecoveryError, "time limit"):
+                        export_readable(source, "/values", output, report, timeout_seconds=0.05)
+            self.assertEqual(digest(source), original)
+            self.assertFalse(output.exists())
+            self.assertFalse(report.exists())
+            self.assertFalse(list(base.glob(".h5reclaim-*")))
+
+    @unittest.skipIf(os.name == "nt", "POSIX signal test")
+    def test_native_worker_crash_does_not_publish_or_leave_staging(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source, output, report = self._paths(base)
+            with h5py.File(source, "x") as handle:
+                handle.create_dataset("values", data=np.arange(4))
+            original = digest(source)
+            real_run = subprocess.run
+
+            def crashed_child(*args, **kwargs):
+                return real_run([sys.executable, "-c", "import os, signal; "
+                                 "os.kill(os.getpid(), signal.SIGKILL)"], **kwargs)
+
+            with patch("h5reclaim.readable_export.subprocess.run", side_effect=crashed_child):
+                with self.assertRaisesRegex(RecoveryError, "without a result"):
+                    export_readable(source, "/values", output, report)
+            self.assertEqual(digest(source), original)
+            self.assertFalse(output.exists())
+            self.assertFalse(report.exists())
+            self.assertFalse(list(base.glob(".h5reclaim-*")))
+
+    @unittest.skipIf(os.name == "nt", "POSIX address-space limit test")
+    def test_worker_sets_address_space_budget_before_h5py_import(self) -> None:
+        code = ("from h5reclaim.native_worker import _apply_memory_limit; "
+                "import resource; _apply_memory_limit(536870912); "
+                "print(resource.getrlimit(resource.RLIMIT_AS)[0])")
+        result = subprocess.run([sys.executable, "-c", code], text=True,
+                                capture_output=True, timeout=10, check=True)
+        self.assertLessEqual(int(result.stdout.strip()), 536870912)
 
 
 if __name__ == "__main__":

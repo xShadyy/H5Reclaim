@@ -14,7 +14,10 @@ import hashlib
 import itertools
 import json
 import os
+import subprocess
+import sys
 import tempfile
+from dataclasses import asdict
 from dataclasses import dataclass
 from math import prod
 from pathlib import Path
@@ -30,6 +33,7 @@ from .recovery import (
     VERSION,
     _validate_paths,
     _verify_source,
+    _identity,
     sha256_file,
     source_snapshot,
 )
@@ -44,6 +48,9 @@ MAX_PATH_BYTES = 4096
 MAX_TYPE_DEPTH = 4
 MAX_TYPE_MEMBERS = 64
 MAX_FIXED_FIELD_BYTES = 4096
+NATIVE_WORKER_SECONDS = 900
+NATIVE_WORKER_MEMORY_BYTES = 3 * 1024 * 1024 * 1024
+MAX_WORKER_MESSAGE_BYTES = 65536
 # These filters ship with HDF5. Unknown filters may load third-party plugins.
 NATIVE_FILTERS = frozenset((h5py.h5z.FILTER_DEFLATE, h5py.h5z.FILTER_SHUFFLE,
                             h5py.h5z.FILTER_FLETCHER32))
@@ -352,8 +359,10 @@ def _range_sha256(snapshot: Path, offset: int, size: int) -> str:
     return digest.hexdigest()
 
 
-def export_readable(source: str | Path, dataset_path: str, output: str | Path,
-                    report_path: str | Path, *, hints: DatasetHints | None = None) -> dict[str, Any]:
+def _export_readable_local(source: str | Path, dataset_path: str, output: str | Path,
+                           report_path: str | Path, *, hints: DatasetHints | None = None,
+                           published_output: Path | None = None,
+                           worker_budget: dict[str, Any] | None = None) -> dict[str, Any]:
     """Export one bounded local dataset, marking missing chunk values unknown.
 
     This uses only the damaged/current file as input. It never reconstructs an
@@ -479,7 +488,7 @@ def export_readable(source: str | Path, dataset_path: str, output: str | Path,
                             "validity_codes": {"0": "unknown source chunk; ignore output values at these coordinates",
                                                "1": "allocated chunk with native read and bitwise output readback"}
                             if storage.layout == "chunked" else None,
-                            "output_path": str(output),
+                            "output_path": str(published_output or output),
                             "blocks_verified": block_count,
                             "native_value_sha256": source_values.hexdigest(),
                             "operator_hints": {
@@ -489,6 +498,7 @@ def export_readable(source: str | Path, dataset_path: str, output: str | Path,
                                 "warning": "Matching hints do not prove the origin or historical value of measurements.",
                             } if hints is not None else None,
                             "verification": "all accepted values read through native HDF5 and output read back bitwise equal",
+                            "native_worker": worker_budget,
                             "limits": (
                                 "This copies current native-readable values, not structurally recovered bytes. "
                                 "Values at unknown chunks are not accepted measurements and must be ignored. "
@@ -524,3 +534,107 @@ def export_readable(source: str | Path, dataset_path: str, output: str | Path,
             raise
         except (OSError, RuntimeError, TypeError, ValueError, KeyError) as exc:
             raise RecoveryError(f"native HDF5 readable export failed: {exc}") from exc
+
+
+def _worker_message(path: Path) -> dict[str, Any]:
+    try:
+        if path.stat().st_size > MAX_WORKER_MESSAGE_BYTES:
+            raise RecoveryError("native worker returned an oversized response")
+        message = json.loads(path.read_bytes())
+        if not isinstance(message, dict) or message.get("status") not in ("ok", "error"):
+            raise ValueError("invalid worker response")
+        return message
+    except (OSError, ValueError, UnicodeError) as exc:
+        raise RecoveryError("native worker did not return a valid bounded response") from exc
+
+
+def export_readable(source: str | Path, dataset_path: str, output: str | Path,
+                    report_path: str | Path, *, hints: DatasetHints | None = None,
+                    timeout_seconds: float = NATIVE_WORKER_SECONDS,
+                    memory_bytes: int = NATIVE_WORKER_MEMORY_BYTES) -> dict[str, Any]:
+    """Copy a local dataset in a time-bounded process, publishing only after verification.
+
+    The subprocess isolates native HDF5 crashes and hangs from the caller. On
+    POSIX it also limits virtual address space. Windows enforces the deadline
+    but currently has no OS memory quota. Only a successful staged result is
+    linked to the requested output and report destinations.
+    """
+    source, output, report_path = Path(source), Path(output), Path(report_path)
+    _validate_paths(source, output, report_path)
+    if not 0 < timeout_seconds <= 24 * 3600 or not 256 * 1024 * 1024 <= memory_bytes <= 16 * 1024**3:
+        raise UnsupportedCase("native worker timeout or memory budget is outside the safe range")
+    if not source.is_file():
+        raise RecoveryError(f"input is not a regular file: {source}")
+    identity = _identity(source.stat())
+    digest = sha256_file(source)
+    _verify_source(source, identity, digest)
+
+    with tempfile.TemporaryDirectory(prefix=".h5reclaim-worker-", dir=output.parent) as out_dir:
+        with tempfile.TemporaryDirectory(prefix=".h5reclaim-worker-", dir=report_path.parent) as rep_dir:
+            staged_output = Path(out_dir) / "output.h5"
+            staged_report = Path(rep_dir) / "report.json"
+            request_path = Path(out_dir) / "request.json"
+            response_path = Path(out_dir) / "response.json"
+            request = {
+                "source": str(source.absolute()), "dataset": dataset_path,
+                "output": str(staged_output), "report": str(staged_report),
+                "published_output": str(output), "memory_bytes": memory_bytes,
+                "timeout_seconds": timeout_seconds,
+                "hints": asdict(hints) if hints is not None else None,
+            }
+            request_bytes = json.dumps(request, ensure_ascii=True).encode("utf-8")
+            if len(request_bytes) > MAX_WORKER_MESSAGE_BYTES:
+                raise HintsError("native worker request exceeds the bounded message limit")
+            request_path.write_bytes(request_bytes)
+            environment = os.environ.copy()
+            # HDF5's special :: value disables all dynamically loaded plugins,
+            # including filters and VFDs. Built-in filters still work.
+            environment["HDF5_PLUGIN_PRELOAD"] = "::"
+            environment.pop("HDF5_PLUGIN_PATH", None)
+            command = [sys.executable, "-m", "h5reclaim.native_worker",
+                       str(request_path), str(response_path)]
+            try:
+                completed = subprocess.run(command, env=environment, stdin=subprocess.DEVNULL,
+                                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                           check=False, timeout=timeout_seconds)
+            except subprocess.TimeoutExpired as exc:
+                raise RecoveryError("native HDF5 worker exceeded its time limit") from exc
+            message = _worker_message(response_path) if response_path.exists() else None
+            if message is None:
+                raise RecoveryError("native HDF5 worker exited without a result (crash or resource limit)")
+            if completed.returncode != (0 if message["status"] == "ok" else 2):
+                raise RecoveryError("native HDF5 worker exited unexpectedly (crash or resource limit)")
+            if message["status"] == "error":
+                detail = str(message.get("detail", "native worker failed"))[:300]
+                kind = message.get("kind")
+                if kind == "UnsupportedCase":
+                    raise UnsupportedCase(detail)
+                if kind == "HintsError":
+                    raise HintsError(detail)
+                raise RecoveryError(detail)
+            if not staged_output.is_file() or not staged_report.is_file():
+                raise RecoveryError("native worker reported success without staged outputs")
+            try:
+                report_bytes = staged_report.read_bytes()
+                if len(report_bytes) > 8 * 1024 * 1024:
+                    raise RecoveryError("native export report exceeds the 8 MiB publication limit")
+                result = json.loads(report_bytes)
+                if (result["source"]["sha256_before"] != digest
+                        or result["source"]["sha256_after"] != digest
+                        or result["output_path"] != str(output)
+                        or result["dataset"]["path"] != dataset_path):
+                    raise RecoveryError("native worker result does not match the requested source and dataset")
+            except (ValueError, KeyError, TypeError) as exc:
+                raise RecoveryError("native worker report is invalid") from exc
+            _verify_source(source, identity, digest)
+            _validate_paths(source, output, report_path)
+            published = False
+            try:
+                os.link(staged_output, output)
+                published = True
+                os.link(staged_report, report_path)
+            except OSError as exc:
+                if published:
+                    output.unlink(missing_ok=True)
+                raise RecoveryError(f"native HDF5 readable export publication failed: {exc}") from exc
+            return result
