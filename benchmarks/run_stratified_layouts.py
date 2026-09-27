@@ -20,7 +20,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from itertools import product
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import h5py
@@ -31,9 +31,6 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "benchmarks"))
 
 from h5reclaim.modern_indexes import ModernH5File, lookup3  # noqa: E402
-from run_seeded_matrix import _verify_manifest  # noqa: E402
-
-
 class EvaluationError(RuntimeError):
     """The experiment setup or a mandatory scored invariant failed."""
 
@@ -54,6 +51,34 @@ def digest(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             result.update(block)
     return result.hexdigest()
+
+
+def _verify_corpus_files() -> dict[str, dict[str, Any]]:
+    """Verify pinned original bytes without freezing coverage classifications.
+
+    Parser support is expected to change during this project. A healthy-file
+    survey candidate count is not a precondition for independent fault scoring.
+    """
+    manifest = json.loads((ROOT / "corpus" / "manifest.json").read_text(encoding="utf-8"))
+    entries = manifest.get("entries")
+    if manifest.get("schema_version") != 1 or not isinstance(entries, list) or not entries:
+        raise EvaluationError("missing pinned scientific corpus manifest")
+    verified: dict[str, dict[str, Any]] = {}
+    corpus_root = (ROOT / "corpus").resolve()
+    for entry in entries:
+        identifier, name = entry["id"], entry["path"]
+        relative = PurePosixPath(name)
+        if (identifier in verified or relative.is_absolute() or not relative.parts
+                or ".." in relative.parts):
+            raise EvaluationError("duplicate scientific id or unsafe corpus path")
+        source = ROOT / "corpus" / Path(*relative.parts)
+        if (source.is_symlink() or not source.resolve().is_relative_to(corpus_root)
+                or not source.is_file()):
+            raise EvaluationError(f"scientific original is absent or escapes the corpus: {identifier}")
+        if source.stat().st_size != entry["size_bytes"] or digest(source) != entry["sha256"]:
+            raise EvaluationError(f"scientific original fails pinned size or SHA-256: {identifier}")
+        verified[identifier] = entry
+    return verified
 
 
 def _low_level_file(path: Path) -> tuple[h5py.h5f.FileID, h5py.h5p.PropFAID]:
@@ -454,7 +479,7 @@ def run(workspace: Path, *, seed: int = 20260927, trials: int = 2,
     if workspace.exists() and (not workspace.is_dir() or any(workspace.iterdir())):
         raise EvaluationError("work directory must be new or empty")
     workspace.mkdir(parents=True, exist_ok=True)
-    originals = _verify_manifest()
+    originals = _verify_corpus_files()
     source_dir = workspace / "truth"
     source_dir.mkdir()
     generator = np.random.default_rng(seed)
