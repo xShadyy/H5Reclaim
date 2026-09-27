@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144" viewBox="0 0 144 144" role="img" aria-labelledby="title desc">
+<title id="title">H5Reclaim monogram icon</title><desc id="desc">Monogram: geometric H5 lettering for H5Reclaim.</desc>
+<rect x="0.75" y="0.75" width="142.5" height="142.5" rx="29.25" fill="#123348" stroke="#416579" stroke-width="1.5"/>
+<g fill="none" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M24 28h11m74 0h11M24 116h11m74 0h11" stroke="#547A86" stroke-width="4"/>
+  <path d="M34 43v58m30-58v58M34 72h30" stroke="#E7F2F2" stroke-width="10"/>
+  <path d="M112 45H84v25h20c15 0 15 31 0 31H83" stroke="#34D1BB" stroke-width="10"/>
+</g>
+</svg>
