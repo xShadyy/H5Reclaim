@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo-monogram.svg" alt="H5Reclaim: H5 monogram and wordmark" width="760">
+  <img src="assets/h5reclaim-banner.png" alt="H5Reclaim: evidence-based recovery for scientific HDF5 data" width="760">
 </p>
 
 <p align="center">
@@ -7,8 +7,6 @@
   <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/License-Apache%202.0-228F91?style=flat-square"></a>
   <a href="docs/status.md"><img alt="Status: experimental" src="https://img.shields.io/badge/Status-Experimental-496477?style=flat-square"></a>
 </p>
-
-<p align="center"><strong>Evidence-led recovery for damaged HDF5 data.</strong></p>
 
 H5Reclaim is an experimental, open-source project exploring recovery of scientific data when damage to HDF5 indexing structures makes surviving data difficult to reach. It aims to reconstruct only what the available evidence supports and to make the limits of each recovery attempt clear.
 
@@ -35,19 +33,16 @@ h5reclaim --help
 
 The [usage guide](docs/usage.md) covers current commands, supported structures, output interpretation, and safety limits. The [file guide](docs/file-guide.md) maps the source tree. The [corpus notes](corpus/README.md) and [benchmark guide](benchmarks/README.md) explain the controlled evaluations.
 
-To inspect a damaged acquisition, first select the dataset and new output
-paths with `python -m h5reclaim diagnose damaged.h5 --dataset /measurements`;
-then use `python -m h5reclaim rescue damaged.h5 --dataset /measurements --output
-derived.h5 --report evidence.json`. The report distinguishes currently
-readable values from equality to an independently retained prior capture.
-`--strict-history` requires a pinned baseline, capsule, replica, or parity
-route. For an intact future acquisition, `python -m h5reclaim protect
-healthy.h5 --dataset /measurements --output protection.zip` creates a
-prospective bundle; store the printed manifest digest independently and run
-`verify-protection` and `drill-protection` while the source is intact. The
-[incident intake protocol](benchmarks/INCIDENT_INTAKE.md) separates recovery
-of consented naturally damaged files from later independent scoring. No
-representative field success rate is established.
+To inspect a damaged acquisition, choose the dataset, a new output path, and a separate evidence report:
+
+```sh
+python -m h5reclaim diagnose damaged.h5 --dataset /measurements
+python -m h5reclaim rescue damaged.h5 --dataset /measurements --output derived.h5 --report evidence.json
+```
+
+The report distinguishes currently readable values from equality to an independently retained prior capture. `--strict-history` requires a pinned baseline, capsule, replica, or parity route.
+
+For an intact future acquisition, `python -m h5reclaim protect healthy.h5 --dataset /measurements --output protection.zip` creates a prospective bundle. Store the printed manifest digest independently and run `verify-protection` and `drill-protection` while the source is intact. The [incident intake protocol](benchmarks/INCIDENT_INTAKE.md) separates recovery of consented naturally damaged files from later independent scoring. No representative field success rate is established.
 
 ## License
 
