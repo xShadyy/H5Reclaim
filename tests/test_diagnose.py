@@ -125,18 +125,18 @@ class DiagnosisTests(unittest.TestCase):
             self.assertEqual(report["next_action"], "resolve_inventory_issues")
             self.assertEqual(report["inventory"]["support_counts"]["candidate"], 0)
 
-    def test_modern_format_is_not_promoted_by_plausible_schema(self) -> None:
+    def test_unsupported_paged_fixed_array_is_not_promoted_by_plausible_schema(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "modern.h5"
             with h5py.File(source, "x", libver="latest") as handle:
                 handle.create_dataset(
-                    "readings", data=np.arange(144, dtype="<u4").reshape(12, 12),
+                    "readings", data=np.arange(1089, dtype="<u4").reshape(33, 33),
                     chunks=(1, 1),
                 )
             report = diagnosis_module.diagnose(source, "/readings")
             self.assertEqual(report["selection"]["support"]["status"], "unsupported")
-            self.assertEqual(report["next_action"], "investigate_format_variant")
-            self.assertIn("file_format_unsupported", {
+            self.assertEqual(report["next_action"], "investigate_index_variant")
+            self.assertIn("index_unsupported", {
                 item["code"] for item in report["selection"]["support"]["reasons"]
             })
             self.assertFalse(report["recovery_attempted"])

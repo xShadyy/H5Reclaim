@@ -13,7 +13,7 @@ import numpy as np
 
 from h5reclaim.recovery import recover
 from h5reclaim.survey import survey
-from h5reclaim.modern_indexes import ModernH5File
+from h5reclaim.modern_indexes import ModernH5File, lookup3
 
 
 def _implicit(path: Path) -> None:
@@ -69,7 +69,8 @@ class ModernRecoveryTests(unittest.TestCase):
         self.assertEqual(result["reconstructed_chunks"], 0)
         ledger = result["evidence_ledger"]
         self.assertEqual(len(ledger["proposals"]), expected_chunks)
-        self.assertEqual(len(ledger["links"]), expected_chunks)
+        self.assertEqual(len(ledger["links"]), expected_chunks +
+                         (2 if expected_index == "fixed_array" else 0))
         self.assertFalse(ledger["contradictions"])
         self.assertTrue(all(item["status"] == "accepted" for item in ledger["decisions"]))
         self.assertTrue(all(item["integrity"] == (
@@ -101,15 +102,58 @@ class ModernRecoveryTests(unittest.TestCase):
         self.assertEqual(json.loads(self.report.read_text())["mappings"][0]["integrity"],
                          "fletcher32_verified")
 
-    def test_modern_fixed_array_stays_unsupported(self):
+    def test_modern_nonpaged_fixed_array_exact_indexed_export(self):
         with h5py.File(self.source, "w", libver="latest") as handle:
             handle.create_dataset("science", data=np.arange(96, dtype="<u4").reshape(8, 12),
                                   chunks=(2, 3))
+        self._verify("fixed_array", 16)
+        ledger = json.loads(self.report.read_text())["evidence_ledger"]
+        self.assertTrue(all(len(p["index_link_ids"]) == 3 for p in ledger["proposals"]))
+
+    def test_sparse_fixed_array_has_no_published_coordinates(self):
+        with h5py.File(self.source, "w", libver="latest") as handle:
+            data = handle.create_dataset("science", shape=(8, 12), dtype="<u4", chunks=(2, 3))
+            data[:2, :3] = 7
         selected = survey(self.source)["datasets"][0]
         self.assertEqual(selected["support"]["status"], "unsupported")
         self.assertTrue(any(item["code"] == "index_unsupported"
                             for item in selected["support"]["reasons"]))
-        with self.assertRaisesRegex(ValueError, "index type 3"):
+        with self.assertRaisesRegex(ValueError, "sparse fixed array"):
+            recover(self.source, "/science", self.output, self.report)
+        self.assertFalse(self.output.exists())
+        self.assertFalse(self.report.exists())
+
+    def test_paged_fixed_array_is_explicitly_unsupported(self):
+        with h5py.File(self.source, "w", libver="latest") as handle:
+            handle.create_dataset("science", data=np.arange(1089, dtype="<u4").reshape(33, 33),
+                                  chunks=(1, 1))
+        selected = survey(self.source)["datasets"][0]
+        self.assertEqual(selected["support"]["status"], "unsupported")
+        self.assertIn("paged fixed arrays", selected["support"]["reasons"][-1]["detail"])
+        with self.assertRaisesRegex(ValueError, "paged fixed arrays"):
+            recover(self.source, "/science", self.output, self.report)
+        self.assertFalse(self.output.exists())
+        self.assertFalse(self.report.exists())
+
+    def test_two_array_slots_pointing_to_same_chunk_refuse_even_with_valid_checksum(self):
+        with h5py.File(self.source, "w", libver="latest") as handle:
+            handle.create_dataset("science", data=np.arange(96, dtype="<u4").reshape(8, 12),
+                                  chunks=(2, 3))
+        with h5py.File(self.source, "r") as handle, ModernH5File(self.source) as reader:
+            selected = handle["science"]
+            index = reader.read_index(
+                h5py.h5o.get_info(selected.id).addr, selected.shape, selected.chunks,
+                selected.dtype.itemsize, maxshape=selected.maxshape,
+            )
+            block_start, block_end, _ = next(
+                item for item in reader.metadata_ranges if item[2] == "fixed-array data block"
+            )
+            first, second = index.chunks[:2]
+        raw = bytearray(self.source.read_bytes())
+        raw[second.pointer_offset:second.pointer_offset+8] = first.address.to_bytes(8, "little")
+        raw[block_end-4:block_end] = lookup3(raw[block_start:block_end-4]).to_bytes(4, "little")
+        self.source.write_bytes(raw)
+        with self.assertRaisesRegex(ValueError, "payload ranges overlap"):
             recover(self.source, "/science", self.output, self.report)
         self.assertFalse(self.output.exists())
         self.assertFalse(self.report.exists())

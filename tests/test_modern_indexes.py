@@ -107,14 +107,56 @@ class ModernIndexTests(unittest.TestCase):
                 reader.read_index(obj, (4, 4), (4, 4), 4,
                                   maxshape=(4, 4))
 
-    def test_unsupported_fixed_array_refuses_early(self):
+    def test_nonpaged_fixed_array_entries_match_native(self):
         with h5py.File(self.path, "w", libver="latest") as handle:
             handle.create_dataset("science", data=np.arange(96, dtype="<u4").reshape(8, 12),
                                   chunks=(2, 3))
         with h5py.File(self.path, "r") as handle, ModernH5File(self.path) as reader:
+            dataset = handle["science"]
+            obj = h5py.h5o.get_info(dataset.id).addr
+            index = reader.read_index(obj, (8, 12), (2, 3), 4, maxshape=(8, 12))
+            self.assertEqual(index.index_type, "fixed_array")
+            self.assertEqual(len(index.chunks), 16)
+            self.assertIsNotNone(index.data_block_address)
+            self.assertEqual(sum(kind.startswith("fixed-array")
+                                 for _, _, kind in reader.metadata_ranges), 2)
+            for i, chunk in enumerate(index.chunks):
+                native = dataset.id.get_chunk_info(i)
+                self.assertEqual((chunk.coordinate, reader.absolute(chunk.address), chunk.size),
+                                 (native.chunk_offset, native.byte_offset, native.size))
+                self.assertEqual(reader.read_at(chunk.address, chunk.size),
+                                 dataset.id.read_direct_chunk(chunk.coordinate)[1])
+
+    def test_fixed_array_data_block_checksum_detects_mutation(self):
+        self.test_nonpaged_fixed_array_entries_match_native()
+        with h5py.File(self.path, "r") as handle, ModernH5File(self.path) as reader:
             obj = h5py.h5o.get_info(handle["science"].id).addr
-            with self.assertRaisesRegex(UnsupportedFormat, "index type 3"):
+            index = reader.read_index(obj, (8, 12), (2, 3), 4, maxshape=(8, 12))
+            block = reader.absolute(index.data_block_address)
+        raw = bytearray(self.path.read_bytes())
+        raw[block + 20] ^= 0x80
+        self.path.write_bytes(raw)
+        with ModernH5File(self.path) as reader:
+            with self.assertRaisesRegex(FormatError, "fixed-array data block checksum"):
                 reader.read_index(obj, (8, 12), (2, 3), 4, maxshape=(8, 12))
+
+    def test_sparse_fixed_array_refuses_unallocated_entries(self):
+        with h5py.File(self.path, "w", libver="latest") as handle:
+            data = handle.create_dataset("science", shape=(8, 12), dtype="<u4", chunks=(2, 3))
+            data[:2, :3] = 7
+        with h5py.File(self.path, "r") as handle, ModernH5File(self.path) as reader:
+            obj = h5py.h5o.get_info(handle["science"].id).addr
+            with self.assertRaisesRegex(UnsupportedFormat, "sparse fixed array"):
+                reader.read_index(obj, (8, 12), (2, 3), 4, maxshape=(8, 12))
+
+    def test_paged_fixed_array_refuses_before_page_interpretation(self):
+        with h5py.File(self.path, "w", libver="latest") as handle:
+            handle.create_dataset("science", data=np.arange(1089, dtype="<u4").reshape(33, 33),
+                                  chunks=(1, 1))
+        with h5py.File(self.path, "r") as handle, ModernH5File(self.path) as reader:
+            obj = h5py.h5o.get_info(handle["science"].id).addr
+            with self.assertRaisesRegex(UnsupportedFormat, "paged fixed arrays"):
+                reader.read_index(obj, (33, 33), (1, 1), 4, maxshape=(33, 33))
 
     def test_unallocated_single_address_refuses_even_with_valid_header_checksum(self):
         obj = self._check_native()

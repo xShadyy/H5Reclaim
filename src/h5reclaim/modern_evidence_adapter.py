@@ -69,6 +69,9 @@ def _build(
                for start, end, kind in reader.metadata_ranges
                if kind in ("selected object header", "object header continuation")):
         raise ModernEvidenceError("layout base pointer lies outside validated object metadata")
+    width = reader.superblock.offset_size
+    if int.from_bytes(reader._read_absolute(pointer_start, width), "little") != index.base_address:
+        raise ModernEvidenceError("layout pointer bytes disagree with parsed root address")
     anchor = DatasetAnchor(
         source_id, spec.path,
         PhysicalExtent(source_id, header_start, header_end - header_start),
@@ -80,6 +83,29 @@ def _build(
         raise ModernEvidenceError("modern index proposes duplicate coordinates")
     pointer = PhysicalExtent(source_id, pointer_start, reader.superblock.offset_size)
     links: list[IndexLink] = []
+    shared_path: tuple[str, ...] = ()
+    if index.index_type == "fixed_array":
+        if index.data_block_address is None or index.data_block_pointer_offset is None:
+            raise ModernEvidenceError("fixed-array index lacks data-block attribution")
+        fa_header = reader.absolute(index.base_address)
+        fa_block = reader.absolute(index.data_block_address)
+        fa_pointer = index.data_block_pointer_offset
+        if not any(start <= fa_pointer and fa_pointer + width <= end
+                   for start, end, kind in reader.metadata_ranges
+                   if kind == "fixed-array header"):
+            raise ModernEvidenceError("fixed-array data-block pointer is not in its header")
+        if int.from_bytes(reader._read_absolute(fa_pointer, width), "little") != index.data_block_address:
+            raise ModernEvidenceError("fixed-array header pointer bytes disagree with parsed data block")
+        links.extend((
+            IndexLink("layout:fixed-header", source_id, spec.path,
+                      header_start, fa_header, "observed_index", pointer,
+                      checks=(EvidenceCheck("address_rule", "pass", "layout points to FAHD"),)),
+            IndexLink("fixed-header:data-block", source_id, spec.path,
+                      fa_header, fa_block, "observed_index",
+                      PhysicalExtent(source_id, fa_pointer, width),
+                      checks=(EvidenceCheck("address_rule", "pass", "FAHD points to FADB"),)),
+        ))
+        shared_path = ("layout:fixed-header", "fixed-header:data-block")
     proposals: list[ChunkProposal] = []
     linked_coordinates: set[tuple[int, ...]] = set()
 
@@ -93,12 +119,28 @@ def _build(
         linked_coordinates.add(coordinate)
         absolute = reader.absolute(address)
         raw = reader.read_at(address, chunk.size)
-        link_id = f"layout:{len(links)}"
-        rule = ("direct address stored in validated layout" if index.index_type == "single_chunk"
-                else "validated layout base plus row-major chunk size times grid index")
+        link_id = f"payload:{len(linked_coordinates)}"
+        if index.index_type == "fixed_array":
+            if chunk.pointer_offset is None or index.data_block_address is None:
+                raise ModernEvidenceError("fixed-array chunk lacks slot pointer")
+            fa_block = reader.absolute(index.data_block_address)
+            if not any(start <= chunk.pointer_offset and chunk.pointer_offset + width <= end
+                       for start, end, kind in reader.metadata_ranges
+                       if kind == "fixed-array data block"):
+                raise ModernEvidenceError("fixed-array chunk pointer lies outside checked data block")
+            if int.from_bytes(reader._read_absolute(chunk.pointer_offset, width), "little") != address:
+                raise ModernEvidenceError("fixed-array slot bytes disagree with proposal address")
+            parent = fa_block
+            link_pointer = PhysicalExtent(source_id, chunk.pointer_offset, width)
+            rule = "FADB array slot gives chunk coordinate in row-major grid"
+        else:
+            parent = header_start
+            link_pointer = pointer
+            rule = ("direct address stored in validated layout" if index.index_type == "single_chunk"
+                    else "validated layout base plus row-major chunk size times grid index")
         links.append(IndexLink(
-            link_id, source_id, spec.path, header_start, absolute,
-            "observed_index", pointer,
+            link_id, source_id, spec.path, parent, absolute,
+            "observed_index", link_pointer,
             checks=(EvidenceCheck("address_rule", "pass", rule),),
         ))
         if accepted_payload is None:
@@ -130,7 +172,7 @@ def _build(
         proposals.append(ChunkProposal(
             proposal_id, PhysicalExtent(source_id, absolute, chunk.size),
             hashlib.sha256(raw).hexdigest(), spec.path, coordinate,
-            (link_id,), decoded_sha, decoded_length, chunk.filter_mask,
+            shared_path + (link_id,), decoded_sha, decoded_length, chunk.filter_mask,
             checksum, checks,
         ))
 

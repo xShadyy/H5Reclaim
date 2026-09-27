@@ -68,19 +68,19 @@ class SupportEnvelopeTests(unittest.TestCase):
                 self.assertNotIn("/distractor", handle)
                 self.assertNotIn("units", handle["/lab/run/measurements"].attrs)
 
-    def test_latest_layout_is_explicitly_unsupported(self) -> None:
+    def test_paged_latest_fixed_array_is_explicitly_unsupported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "latest.h5"
             with h5py.File(source, "x", libver="latest") as handle:
                 handle.create_dataset(
                     "measurements",
-                    data=np.arange(144, dtype="<u4").reshape(12, 12),
+                    data=np.arange(1089, dtype="<u4").reshape(33, 33),
                     chunks=(1, 1),
                 )
             before = source.read_bytes()
             output, report = root / "out.h5", root / "out.json"
-            with self.assertRaises((UnsupportedCase, UnsupportedFormat)):
+            with self.assertRaisesRegex((UnsupportedCase, UnsupportedFormat), "paged fixed arrays"):
                 recover(source, "/measurements", output, report)
             self.assertEqual(source.read_bytes(), before)
             self.assertFalse(output.exists())

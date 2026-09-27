@@ -127,6 +127,7 @@ def analyze_modern_snapshot(
             "type": index.index_type, "layout_version": index.layout_version,
             "selected_object_address": spec.object_address,
             "base_address": index.base_address,
+            "fixed_array_data_block_address": index.data_block_address,
             "root_address": None, "root_level": None,
             "reachable_leaves": 0, "broken_links": 0,
         },
@@ -149,7 +150,7 @@ def analyze_modern_snapshot(
         "assumptions": [
             "local selected dataset resolved from same snapshot",
             "version-2/3 superblock and checksum-verified version-2 object header",
-            "version-4/5 chunked layout with single-chunk or implicit index",
+            "version-4/5 chunked layout with single-chunk, implicit, or nonpaged unfiltered fixed-array index",
             "index is intact; no broken modern index pointers were inferred",
         ],
         "coverage_note": (
