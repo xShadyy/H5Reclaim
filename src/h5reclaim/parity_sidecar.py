@@ -49,8 +49,8 @@ def _origins(spec: Any) -> list[tuple[int, ...]]:
 def _xor(target: bytearray, payload: bytes) -> None:
     if len(target) != len(payload):
         raise RecoveryError("nominal decoded chunk does not match selected chunk size")
-    for index, byte in enumerate(payload):
-        target[index] ^= byte
+    np.bitwise_xor(np.frombuffer(target, dtype="u1"), np.frombuffer(payload, dtype="u1"),
+                   out=np.frombuffer(target, dtype="u1"))
 
 
 def _serialized(value: dict[str, Any]) -> bytes:

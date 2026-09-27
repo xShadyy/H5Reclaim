@@ -8,10 +8,13 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import shutil
 from pathlib import Path
 
 import h5py
 import numpy as np
+
+from h5reclaim.baseline import capture_baseline
 
 
 class RescueCliTests(unittest.TestCase):
@@ -131,3 +134,33 @@ class RescueCliTests(unittest.TestCase):
         with h5py.File(self.out) as file:
             np.testing.assert_array_equal(file["science"][:], np.arange(10, dtype="<u4"))
             self.assertTrue(np.all(file["/_h5reclaim/validity"][:] == 1))
+
+    def test_replica_route_replaces_changed_chunk_against_prior_capture(self) -> None:
+        pristine = self.base / "capture.h5"
+        damaged = self.base / "damaged.h5"
+        replica = self.base / "replica.h5"
+        baseline = self.base / "baseline.json"
+        with h5py.File(pristine, "w", libver="latest") as file:
+            file.create_dataset("science", data=np.arange(16, dtype="<u4"), chunks=(8,))
+        capture_baseline(pristine, "/science", baseline)
+        shutil.copyfile(pristine, damaged)
+        shutil.copyfile(pristine, replica)
+        with h5py.File(damaged, "r") as file:
+            address = int(file["science"].id.get_chunk_info_by_coord((0,)).byte_offset)
+        with damaged.open("r+b") as handle:
+            handle.seek(address)
+            first = handle.read(1)
+            handle.seek(address)
+            handle.write(bytes([first[0] ^ 0x20]))
+        manifest = self.base / "replicas.json"
+        manifest.write_text(json.dumps({
+            "schema_version": 1, "damaged_sha256": hashlib.sha256(damaged.read_bytes()).hexdigest(),
+            "baseline": {"path": str(baseline), "sha256": hashlib.sha256(baseline.read_bytes()).hexdigest()},
+            "replicas": [{"path": str(replica), "sha256": hashlib.sha256(replica.read_bytes()).hexdigest()}],
+        }), encoding="utf-8")
+        result = self._run(damaged, "--replicas", str(manifest))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(self.report.read_text())
+        self.assertEqual(report["replacements_from_replicas"], 1)
+        with h5py.File(self.out) as file:
+            np.testing.assert_array_equal(file["science"][:], np.arange(16, dtype="<u4"))
