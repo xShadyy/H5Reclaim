@@ -368,12 +368,14 @@ def main(argv: list[str] | None = None) -> int:
             elif args.related_files is not None:
                 inventory = inspect_dependencies(args.source, args.dataset)
                 kinds = {item["kind"] for item in inventory["dependencies"]}
-                if inventory["outcome"] != "complete" or len(kinds) != 1:
+                if inventory["outcome"] not in ("complete", "external_link") or len(kinds) != 1:
                     raise UnsupportedCase("selected dependency metadata is incomplete or mixes unsupported routes")
                 if kinds == {"external_raw_storage"}:
                     route = "external_raw"
                 elif kinds == {"virtual_source"}:
                     route = "vds"
+                elif kinds == {"external_link"} and inventory["outcome"] == "external_link":
+                    route = "external_link"
                 else:
                     raise UnsupportedCase("selected dependency kind has no safe value-export route")
                 report = run_route(route, args.output, args.report, source=source,

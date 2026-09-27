@@ -17,7 +17,7 @@ from typing import Any
 
 MAX_REQUEST = 65536
 MAX_REPORT = 32 * 1024 * 1024
-ROUTES = frozenset({"family", "split", "vds", "external_raw", "nonchunked", "replicas", "parity", "status"})
+ROUTES = frozenset({"family", "split", "vds", "external_raw", "external_link", "nonchunked", "replicas", "parity", "status"})
 
 
 def _child(request_path: Path, response_path: Path) -> int:
@@ -50,6 +50,10 @@ def _child(request_path: Path, response_path: Path) -> int:
             from .external_raw_export import export_external_raw
             export_external_raw(args["source"], args["dataset"], args["manifest"], output, report,
                                 published_output=request["published_output"])
+        elif route == "external_link":
+            from .external_link_export import export_external_link
+            export_external_link(args["source"], args["dataset"], args["manifest"], output, report,
+                                 published_output=request["published_output"])
         elif route == "nonchunked":
             from .nonchunked_recovery import export_nonchunked
             export_nonchunked(args["source"], args["dataset"], output, report)
