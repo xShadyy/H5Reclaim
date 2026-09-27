@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -181,6 +183,36 @@ class ChunkTruncationTests(unittest.TestCase):
         self.make_fixture()
         with self.assertRaisesRegex(ValueError, "ordinary rescue"):
             analyze_truncated(self.source, "/science")
+
+    def _cli(self):
+        return subprocess.run([
+            sys.executable, "-m", "h5reclaim", "rescue", str(self.source),
+            "--dataset", "/science", "--truncated-chunks",
+            "--output", str(self.output), "--report", str(self.report),
+        ], capture_output=True, text=True, timeout=30)
+
+    def test_public_cli_publishes_original_hash_and_unknown_cut_chunk(self):
+        values = self.make_fixture()
+        self.source.write_bytes(self.source.read_bytes()[:-20])
+        source_hash = hashlib.sha256(self.source.read_bytes()).hexdigest()
+        result = self._cli()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("partial | 9 accepted chunks", result.stdout)
+        report = json.loads(self.report.read_text())
+        self.assertEqual(report["source"]["sha256_before"], source_hash)
+        self.assertEqual(report["source"]["sha256_after"], source_hash)
+        self.assertEqual(hashlib.sha256(self.source.read_bytes()).hexdigest(), source_hash)
+        with h5py.File(self.output) as output:
+            np.testing.assert_array_equal(output["science"][:90], values[:90])
+            self.assertEqual(output["/_h5reclaim/chunk_status"][-1], 4)
+
+    def test_public_cli_intact_file_refuses_without_outputs(self):
+        self.make_fixture()
+        result = self._cli()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("declared HDF5 EOF does not exceed physical EOF", result.stderr)
+        self.assertFalse(self.output.exists())
+        self.assertFalse(self.report.exists())
 
 
 if __name__ == "__main__":
