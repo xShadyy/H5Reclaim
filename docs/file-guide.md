@@ -2,7 +2,7 @@
 
 H5Reclaim is a small research prototype for one kind of damaged HDF5 file. An HDF5 dataset can be split into chunks, much like a large image is split into tiles. An index tells a reader where each chunk lives inside the file. This prototype handles a particular case where one pointer from that index is lost, but neighboring index nodes still provide enough evidence to locate the missing branch.
 
-This is a data recovery project, not a robotics simulator. An HDF5 file may contain data from a robot, microscope, simulation, or another application. The program cares about the file's internal layout, not the instrument that produced it. See the [README](../README.md) for the exact supported layout.
+This is a data recovery project, not a robotics simulator. An HDF5 file may contain data from a robot, microscope, simulation, or another application. The program cares about the file's internal layout, not the instrument that produced it. See the [usage guide](usage.md) for the current supported layouts.
 
 ## How the pieces fit
 
@@ -18,8 +18,11 @@ This is a data recovery project, not a robotics simulator. An HDF5 file may cont
 | `.gitignore` | Keeps virtual environments, caches, build products, and generated experiment files out of Git. |
 | `AGENTS.md` | Instructions for people and coding assistants changing the project, including evidence and testing rules. |
 | `LICENSE` | Apache 2.0 terms for project code; bundled scientific data have separate CC BY 4.0 provenance in the corpus manifest. |
-| `README.md` | Main starting point: installation, commands, supported inputs, output meanings, and measured results. |
+| `README.md` | Main starting point: project goal, principles, current stage, and installation. It links to detailed usage and evaluation guides. |
 | `pyproject.toml` | Python package details, dependencies, build settings, and the `h5reclaim` terminal command. |
+| `assets/logo-*.svg` | Three matching README logo options: Bridge, Trace, and Monogram. The README currently shows Monogram. |
+| `assets/icon-*.svg` | Matching square marks for avatars and compact placements. |
+| `assets/README.md` | Explains the logo options, sizes, palette, and how to switch the README image. |
 
 ## Recovery program
 
@@ -71,6 +74,7 @@ The benchmark keeps `truth/pristine.h5`, `truth/challenge.json`, and `truth/muta
 | --- | --- |
 | `docs/project-brief.md` | Public technical goal, first supported case, and unproven claims. |
 | `docs/status.md` | What was actually implemented and tested, with environment details, measured results, limits, and next work. |
+| `docs/usage.md` | Current command examples, supported structures, output status, and cautions moved from the former long root README. |
 | `docs/structure-plan.md` | How to verify the generated HDF5 index and derive the location of the pointer changed in the experiment. |
 | `docs/existing-work.md` | Other relevant HDF5 tools and which comparisons have yet to be performed. |
 | `docs/file-guide.md` | This map of the repository and the distinction between recovery and evaluation. |
