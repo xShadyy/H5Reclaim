@@ -140,11 +140,104 @@ class SurveyTests(unittest.TestCase):
             source.write_bytes(b"not an HDF5 file")
             stdout = io.StringIO()
             with contextlib.redirect_stdout(stdout):
-                code = main(["survey", str(source)])
+                code = main(["survey", str(source), "--json"])
             self.assertEqual(code, 2)
             report = json.loads(stdout.getvalue())
             self.assertEqual(report["outcome"], "error")
             self.assertEqual(report["error"]["code"], "survey_failed")
+
+    def test_cli_human_survey_prioritizes_candidate_and_bounds_long_inventory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "input.h5"
+            with h5py.File(source, "x", libver=("earliest", "v108")) as handle:
+                for index in range(13):
+                    handle.create_dataset(f"a{index:02}", data=[index])
+                handle.create_dataset(
+                    "zz_candidate", data=np.arange(144, dtype="<u4").reshape(12, 12),
+                    chunks=(1, 1),
+                )
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                code = main(["survey", str(source)])
+            self.assertEqual(code, 0)
+            display = stdout.getvalue()
+            self.assertIn("14 local datasets", display)
+            self.assertIn("1 candidate | 13 unsupported", display)
+            self.assertIn("[CANDIDATE] /zz_candidate", display)
+            self.assertIn("[UNSUPPORTED] /a00", display)
+            self.assertIn("Reason: requires", display)
+            self.assertIn("9 more datasets. Use --json", display)
+            self.assertNotIn("[UNSUPPORTED] /a04", display)
+            self.assertEqual(display.count("[UNSUPPORTED]"), 4)
+
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                code = main(["survey", str(source), "--json"])
+            self.assertEqual(code, 0)
+            report = json.loads(stdout.getvalue())
+            self.assertEqual(report["dataset_count"], 14)
+            self.assertEqual(len(report["datasets"]), 14)
+            self.assertEqual(report["schema_version"], 1)
+
+    def test_cli_partial_survey_reports_issue_and_exit_code(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "input.h5"
+            with h5py.File(source, "x", libver=("earliest", "v108")) as handle:
+                handle.create_dataset("a", data=np.arange(144, dtype="<u4").reshape(12, 12),
+                                      chunks=(1, 1))
+                handle.create_group("b")
+            stdout = io.StringIO()
+            with patch.object(survey_module, "MAX_LINKS", 1), contextlib.redirect_stdout(stdout):
+                code = main(["survey", str(source)])
+            self.assertEqual(code, 1)
+            self.assertIn("Inventory: partial", stdout.getvalue())
+            self.assertIn("link_limit", stdout.getvalue())
+            self.assertIn("[INDETERMINATE]", stdout.getvalue())
+
+    def test_cli_inspect_human_and_json_are_both_available(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "corpus/files/H-H1_GWOSC_16KHZ_R1-1126259447-32.hdf5"
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            code = main(["inspect", str(source), "--dataset", "/strain/Strain"])
+        self.assertEqual(code, 0)
+        display = stdout.getvalue()
+        self.assertIn("H5Reclaim inspection", display)
+        self.assertIn("128/128 chunks accepted", display)
+        self.assertIn("Fletcher32, DEFLATE", display)
+        self.assertIn("Inspection writes no recovered file", display)
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            code = main(["inspect", str(source), "--dataset", "/strain/Strain", "--json"])
+        self.assertEqual(code, 0)
+        report = json.loads(stdout.getvalue())
+        self.assertEqual(report["dataset"]["path"], "/strain/Strain")
+        self.assertEqual(report["counts"]["recovered"], 128)
+        self.assertEqual(report["reconstructed_chunks"], 0)
+        self.assertEqual(report["source"]["sha256_before"], report["source"]["sha256_after"])
+
+    def test_cli_human_errors_go_to_stderr_and_json_errors_are_structured(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "invalid.h5"
+            source.write_bytes(b"not an HDF5 file")
+            for command in ("survey", "inspect"):
+                args = [command, str(source)]
+                if command == "inspect":
+                    args += ["--dataset", "/measurements"]
+                stdout, stderr = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    code = main(args)
+                self.assertEqual(code, 2)
+                self.assertEqual(stdout.getvalue(), "")
+                self.assertIn("h5reclaim:", stderr.getvalue())
+
+                stdout, stderr = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    code = main([*args, "--json"])
+                self.assertEqual(code, 2)
+                self.assertEqual(stderr.getvalue(), "")
+                result = json.loads(stdout.getvalue())
+                self.assertEqual(result["error"]["code"], f"{command}_failed")
 
 
 if __name__ == "__main__":

@@ -20,7 +20,7 @@ from .format import FormatError, H5File
 from .metadata import DatasetSpec, UnsupportedCase, read_dataset_spec
 
 
-VERSION = "0.3.1"
+VERSION = "0.3.2"
 _WINDOWS_STAT = os.name == "nt"
 STATUS_CODES = {
     "recovered": 1,

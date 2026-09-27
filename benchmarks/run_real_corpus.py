@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import json
 import sys
+import textwrap
 from collections import Counter
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -24,6 +25,13 @@ from h5reclaim.survey import survey  # noqa: E402
 
 
 DEFAULT_MANIFEST = ROOT / "corpus" / "manifest.json"
+
+DISPLAY_NAMES = {
+    "gwosc_gw150914_h1_strain": "GWOSC GW150914, Hanford H1 (4 kHz)",
+    "gwosc_gw150914_h1_strain_16khz": "GWOSC GW150914, Hanford H1 (16 kHz)",
+    "zenodo_qubit_feedback": "Superconducting-qubit feedback (Zenodo)",
+    "zenodo_pallas_cloud_aircraft": "Pallas cloud aircraft measurements (Zenodo)",
+}
 
 
 class CorpusError(ValueError):
@@ -141,15 +149,86 @@ def run(manifest_path: Path = DEFAULT_MANIFEST) -> dict[str, Any]:
     }
 
 
+def render_text(result: dict[str, Any]) -> str:
+    """Summarize the survey for a person without overstating recovery coverage."""
+    files = result["files"]
+    counts = result["dataset_support_counts"]
+    total = sum(counts.values())
+    lines = [
+        "H5Reclaim real scientific data survey",
+        "=" * 38,
+        f"Original files verified: {result['original_files_verified']}/{len(files)} "
+        "(size and SHA-256)",
+        f"Datasets surveyed: {total}  |  Candidates: {counts.get('candidate', 0)}"
+        f"  |  Unsupported: {counts.get('unsupported', 0)}",
+        "Manifest coverage baseline: "
+        + ("matches" if result["baseline_matches_manifest"] else "CHANGED"),
+        "",
+        "Per-file results",
+    ]
+    for number, entry in enumerate(files, start=1):
+        if number > 1:
+            lines.append("")
+        support_counts = entry["support_counts"]
+        candidate_count = support_counts.get("candidate", 0)
+        unsupported_count = support_counts.get("unsupported", 0)
+        other_counts = ", ".join(
+            f"{value} {status}" for status, value in sorted(support_counts.items())
+            if status not in {"candidate", "unsupported"}
+        )
+        representative = entry["representative_dataset"]
+        support = representative["support"]
+        lines.extend([
+            f"  {number}. {DISPLAY_NAMES.get(entry['id'], entry['id'].replace('_', ' '))}",
+            f"    Original verified; {entry['dataset_count']} datasets: "
+            f"{candidate_count} candidate{'s' if candidate_count != 1 else ''}, "
+            f"{unsupported_count} unsupported"
+            + (f", {other_counts}" if other_counts else ""),
+            f"    Example {representative['path']}: {support['status']}",
+        ])
+        if support["reasons"]:
+            lines.extend(textwrap.wrap(
+                "; ".join(reason["detail"] for reason in support["reasons"]),
+                width=88, initial_indent="    Reason: ", subsequent_indent="            ",
+            ))
+
+    if result["baseline_changes"]:
+        lines.extend(["", "Unexpected changes from the manifest baseline:"])
+        for change in result["baseline_changes"]:
+            fields = set(change["expected"]) | set(change["observed"])
+            for field in sorted(fields):
+                expected = change["expected"].get(field)
+                observed = change["observed"].get(field)
+                if expected != observed:
+                    lines.append(
+                        f"  {change['id']} {field}: expected {expected!r}, observed {observed!r}"
+                    )
+    if result["baseline_unpinned"]:
+        lines.extend([
+            "",
+            "No coverage baseline is pinned for: " + ", ".join(result["baseline_unpinned"]),
+        ])
+
+    lines.extend([
+        "",
+        "Candidate means the metadata fits a supported layout; this survey does not",
+        "damage a file, attempt recovery, or verify recovered measurements.",
+        "For a controlled recovery trial, run: python benchmarks/run_gwosc_recovery.py",
+        "For machine-readable output, add: --json",
+    ])
+    return "\n".join(lines)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
+    parser.add_argument("--json", action="store_true", help="print machine-readable JSON")
     args = parser.parse_args()
     try:
         result = run(args.manifest)
     except (CorpusError, OSError, ValueError, TypeError, KeyError) as exc:
         parser.exit(2, f"corpus verification failed: {exc}\n")
-    print(json.dumps(result, indent=2, sort_keys=True))
+    print(json.dumps(result, indent=2, sort_keys=True) if args.json else render_text(result))
     return 0 if result["baseline_matches_manifest"] else 1
 
 

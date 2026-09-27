@@ -429,17 +429,53 @@ def run_trial(work_dir: Path, *, python: str = sys.executable) -> dict[str, Any]
     return summary
 
 
+def _human_summary(summary: dict[str, Any]) -> str:
+    """Present the scored result without making readers interpret JSON keys."""
+    total = summary["total_chunks"]
+    native = summary["native_failed_or_incorrect_chunks"]
+    reconstructed = summary["reconstructed_link_chunks"]
+    directory = Path(summary["work_dir"])
+    attributes = summary["scientific_dataset_attributes_preserved"]
+    return "\n".join([
+        "H5Reclaim | GWOSC controlled recovery trial",
+        "=" * 43,
+        "RESULT: PASS",
+        "",
+        "Source: original GW150914 Hanford H1 strain, 16 kHz",
+        "Damage: one index pointer changed in a separate copy; original untouched",
+        "",
+        f"Normal HDF5 reads:  {native}/{total} chunks unreadable or incorrect",
+        f"H5Reclaim output:   {summary['recovered_chunks']}/{total} chunks recovered",
+        f"Detached branch:    {reconstructed}/{native} affected chunks reconstructed",
+        f"Value comparison:   {total - summary['wrong_bit_chunks']}/{total} exact float64 bit matches",
+        f"Unknown regions:    {summary['missing_region_chunks']}",
+        f"Science attributes: {len(attributes)} preserved and checked",
+        "Chunk checksums:    Fletcher32 verified for every exported chunk",
+        "Source files:       original and damaged copy unchanged during recovery",
+        "",
+        "Trial files:",
+        f"  Recovered data: {directory / 'results' / 'recovered.hdf5'}",
+        f"  Chunk status:   /_h5reclaim/chunk_status in recovered data",
+        f"  Recovery report: {directory / 'results' / 'recovery.json'}",
+        f"  Full evaluation: {directory / 'truth' / 'evaluation.json'}",
+        "",
+        "Scope: controlled damage to one authentic file, not proof of general repair.",
+        "For machine-readable output, rerun with --json.",
+    ])
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--work-dir", type=Path, help="new or empty directory for retained trial files")
     parser.add_argument("--python", default=sys.executable, help="interpreter for the recovery subprocess")
+    parser.add_argument("--json", action="store_true", help="print the machine-readable evaluation summary")
     args = parser.parse_args()
     work_dir = args.work_dir or Path(tempfile.mkdtemp(prefix="h5reclaim-gwosc-"))
     try:
         summary = run_trial(work_dir, python=args.python)
     except (TrialError, OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
         parser.exit(2, f"GWOSC trial failed: {exc}\nwork directory: {work_dir}\n")
-    print(json.dumps(summary, indent=2, sort_keys=True))
+    print(json.dumps(summary, indent=2, sort_keys=True) if args.json else _human_summary(summary))
     return 0
 
 
