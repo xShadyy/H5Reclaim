@@ -1,6 +1,6 @@
 # H5Reclaim
 
-H5Reclaim is an experimental command-line tool for one structural HDF5 recovery case: a child pointer in a version-1 raw-data chunk B-tree is lost, while the dataset description, neighboring leaves, and their reciprocal sibling links survive. It exports chunks whose coordinates are supported by that evidence into a **new** HDF5 file. The source is opened for reading and its SHA-256 is checked before and after recovery.
+H5Reclaim is an experimental command-line tool for one structural HDF5 recovery case: a child pointer in a version-1 raw-data chunk B-tree is lost, while the dataset description, neighboring leaves, and their reciprocal sibling links survive. It exports chunks whose coordinates are supported by that evidence into a **new** HDF5 file. The source is opened for reading and its identity and SHA-256 are checked during recovery. A bounded private snapshot lets h5py and the raw parser inspect the same bytes; it temporarily needs disk space up to the source's size, capped at 128 MiB.
 
 This is a narrow implementation, not a general HDF5 repair utility. Structural evidence identifies where bytes belong; unfiltered chunk payloads have no independent checksum here, so the tool cannot authenticate historical measurement values.
 
@@ -15,7 +15,15 @@ python -m pip install -e .
 h5reclaim --help
 ```
 
-On Windows PowerShell, activate with `.venv\Scripts\Activate.ps1`. The tested environment for the first experiment was Python 3.12.14, h5py 3.12.1, HDF5 1.14.4, and NumPy 2.3.5. HDF5 library behavior and fixture bytes may differ on other versions; verify the actual layout and run the tests.
+On Windows PowerShell, activate with `.venv\Scripts\Activate.ps1`. The first experiment ran on Python 3.12.14, h5py 3.12.1, HDF5 1.14.4, and NumPy 2.3.5. The current test suite also passed on Python 3.12.14, h5py 3.16.0, HDF5 2.0.0, and NumPy 2.5.3. HDF5 library behavior and fixture bytes may differ on other versions; verify the actual layout and run the tests.
+
+## Survey a file before recovery
+
+```sh
+h5reclaim survey path/to/input.h5
+```
+
+The JSON inventory lists each local dataset's selectable path, shape, datatype, storage layout, chunk dimensions, filters, and support reasons. It reads metadata and index nodes, never dataset values or chunk payloads. It does not resolve soft or external HDF5 links. `candidate` means a recovery attempt fits the observed metadata, not that its payload is intact or that the attempt will succeed. Select a candidate with `--dataset /its/path` for `inspect` or `recover`; no automatic structure conversion is performed. Exit code 0 means the inventory completed, 1 means traversal was partial due to a declared limit or unreadable link, and 2 means the source could not be surveyed. The output remains JSON in each case.
 
 ## Reproduce the experiment
 
@@ -50,13 +58,13 @@ The directory must be new or empty. See [benchmark details](benchmarks/README.md
 
 | Requirement | Current behavior |
 | --- | --- |
-| Dataset | Exactly one selected local, fixed-size rank-two dataset; dimensions divisible by chunks; little-endian `uint32` |
+| Dataset | One explicitly selected local, fixed-size rank-two dataset; other local datasets may coexist; dimensions divisible by chunks; canonical little-endian `uint32` storage |
 | Storage | Fully aligned, unfiltered chunks; no virtual or external storage |
 | Index | Superblock v0/v1, inline v1 object header and v3 chunked layout, type-1 version-1 B-tree with a level-one root |
 | Damage | Zero or one undefined root-to-interior-leaf pointer; a detached leaf is accepted only with two reachable reciprocal siblings and matching parent key bounds |
 | Limits | Source at most 128 MiB, dataset at most 1,048,576 elements, at most 4,096 chunks and 4,096 traversed nodes, chunk at most 1 MiB |
 
-An index that is healthy also works as an inspection and export control case. Other metadata versions, filters, datatypes, partial edge chunks, multi-dataset attribution, a destroyed root, additional broken links, and arbitrary stale/deallocated structures are outside this release. Unsupported or contradictory structures produce an error or an explicit partial result; a plausible `TREE` signature or payload shape alone never assigns ownership.
+An index that is healthy also works as an inspection and export control case. Other metadata versions, filters, datatypes, partial edge chunks, a destroyed root, additional broken links, and arbitrary stale/deallocated structures are outside this release. Files containing multiple datasets are allowed when a supported dataset is explicitly selected and its own object header anchors its chunk index. Detached structures cannot be attributed across datasets by shape or plausible bytes alone. Unsupported or contradictory structures produce an error or an explicit partial result; a plausible `TREE` signature or payload shape alone never assigns ownership.
 
 The damaged file must still permit HDF5 to resolve the selected dataset's metadata by path. H5Reclaim uses h5py for that name and metadata lookup, then reads the chunk index and payload bytes with its own bounded read-only parser. The output and report paths must not exist and must not alias the input or each other.
 
@@ -75,12 +83,15 @@ The recovered dataset keeps the selected path. `/_h5reclaim/chunk_status` is a t
 
 This release produces codes 1 and 2 in completed outputs. A chunk with code 2 reads as zero from the new HDF5 dataset because zero is its storage fill value. **That zero is not a recovered measurement.** Check the status map before using values. Dataset attributes point to the map and state whether every chunk was recovered.
 
+The output preserves recovered values, shape, chunking, and canonical datatype for the selected dataset. It does not copy the source's attributes, dimension scales, links, other objects, or scientific context. The JSON report and output warning record this limit. Check the original metadata separately before interpreting measurements.
+
 The JSON report includes source hashes, selected object and index addresses, counts, an `execution_state`, unresolved links, and one mapping per accepted chunk with its leaf, payload address, route (`intact_tree` or `reconstructed_link`), and evidence. An identical copy is embedded at `/_h5reclaim/report_json`, so a finalized output retains its provenance if the companion JSON file is separated. `complete` means every chunk has code 1. A finished partial attempt has `execution_state: "finished"` and `complete: false`.
 
 ## Project layout and evidence
 
 - `src/h5reclaim/format.py`: bounded superblock, object-header, layout, and v1 B-tree parsing.
 - `src/h5reclaim/metadata.py`: selected dataset support checks.
+- `src/h5reclaim/survey.py`: bounded local dataset inventory and preflight support reasons.
 - `src/h5reclaim/recovery.py`: anchored reconciliation, extraction, output, and report.
 - `tools/`: healthy fixture and controlled corruption. These are not imported by recovery.
 - `benchmarks/`: independent reference, native-reader baseline, and exact-placement evaluator.

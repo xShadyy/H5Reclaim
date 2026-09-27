@@ -7,7 +7,7 @@ This is a data recovery project, not a robotics simulator. An HDF5 file may cont
 ## How the pieces fit
 
 1. `tools/make_healthy_fixture.py` creates a known-good HDF5 dataset. `tools/make_broken_link_fixture.py` makes a damaged copy and records the deliberate change separately.
-2. `h5reclaim inspect` checks the damaged file's selected dataset and index. `h5reclaim recover` uses surviving structural links to copy justified chunks to a new HDF5 file.
+2. `h5reclaim survey` lists local datasets and support reasons without reading their values. `h5reclaim inspect` checks one selected dataset and index. `h5reclaim recover` uses surviving structural links to copy justified chunks to a new HDF5 file.
 3. The new file contains a chunk status map. A separate JSON report and an embedded copy of that report explain which chunks were copied, where they came from, and which regions remain unknown.
 4. `benchmarks/run_recovery.py` compares that result with the pristine dataset. This comparison is evaluation work; it is not part of the recovery algorithm.
 
@@ -26,12 +26,13 @@ This is a data recovery project, not a robotics simulator. An HDF5 file may cont
 | File | What it does |
 | --- | --- |
 | `src/h5reclaim/__init__.py` | Marks the directory as the Python package and describes its scope. |
-| `src/h5reclaim/__main__.py` | Reads `inspect` and `recover` command-line arguments, prints results, and displays supported errors. |
-| `src/h5reclaim/format.py` | Reads bounded byte ranges from the source and interprets the supported HDF5 superblock, dataset layout, and version-1 B-tree records. It checks the two neighboring leaves and parent key boundaries before proposing a missing child. |
-| `src/h5reclaim/metadata.py` | Uses h5py to find the selected dataset and checks its shape, datatype, chunks, filters, and other support conditions. It does not read the dataset's chunk values. |
-| `src/h5reclaim/recovery.py` | Combines the metadata and parsed index, checks chunk coordinates and byte ranges, reads accepted payloads, and writes the new dataset, status map, and provenance report. It checks that the source has not changed and rejects unsafe destination paths. |
+| `src/h5reclaim/__main__.py` | Reads `survey`, `inspect`, and `recover` command-line arguments, prints results, and displays supported errors. |
+| `src/h5reclaim/format.py` | Reads bounded byte ranges from the analysis snapshot and interprets the supported HDF5 superblock, dataset layout, and version-1 B-tree records. It checks neighboring leaves and parent key boundaries before proposing a missing child and records parsed metadata extents. |
+| `src/h5reclaim/metadata.py` | Uses h5py to find the selected dataset and checks its shape, canonical datatype bit representation, chunks, filters, and other support conditions. It does not read the dataset's chunk values. |
+| `src/h5reclaim/survey.py` | Inventories bounded local dataset metadata and index nodes without reading values. It reports candidate, unsupported, or indeterminate reasons and skips soft and external links. |
+| `src/h5reclaim/recovery.py` | Analyzes a private snapshot, combines selected metadata and parsed index, rejects overlapping payload and metadata ranges, and writes a new dataset, status map, and provenance report. It rechecks source identity and hash before publication and rejects unsafe destination paths. |
 
-The recovery program does not import the fixture generator or the benchmark. It receives the damaged file and the dataset path supplied by the user. If necessary metadata cannot be read, or if the index differs from the supported case, it stops or marks an unresolved region instead of inventing values.
+The recovery program does not import the fixture generator or the benchmark. It receives the damaged file and the dataset path supplied by the user. Other local datasets may coexist, but one is selected per invocation using its own object header as the index anchor. If necessary metadata cannot be read, or if the index differs from the supported case, it stops or marks an unresolved region instead of inventing values. The output omits original scientific attributes, links, dimension scales, and sibling objects, so users must consult the source metadata separately when it remains readable.
 
 ## Controlled experiment and evaluation
 
@@ -51,7 +52,9 @@ The benchmark keeps `truth/pristine.h5`, `truth/challenge.json`, and `truth/muta
 | `tests/test_fixture.py` | The healthy fixture command creates allocated chunks with the expected values and metadata. |
 | `tests/test_damage.py` | The damage tool changes one verified pointer, demonstrates a standard-reader failure, and rejects unsuitable fixture structures. |
 | `tests/test_format.py` | Small constructed HDF5 byte examples test parser bounds, supported layouts, B-tree traversal, and the two-sided link rule. |
-| `tests/test_support.py` | Unsupported datasets, including filters, partial edge chunks, wrong datatypes, multiple datasets, and a newer layout, are refused. |
+| `tests/test_support.py` | Filters, partial edge chunks, wrong datatypes, and a newer layout are refused; a selected nested dataset recovers correctly with an identically shaped local distractor present. |
+| `tests/test_datatype.py` | Canonical little-endian `uint32` is accepted while reduced precision, shifted bits, and nonstandard padding are refused. |
+| `tests/test_survey.py` | Survey candidates, independent local datasets, skipped links, support reasons, traversal limits, and JSON failure output. |
 | `tests/test_recovery_safety.py` | Destination aliases, contradictory or out-of-bounds metadata, missing sibling evidence, and failures while publishing output do not produce falsely trusted results. |
 | `tests/test_integrity_limits.py` | Deliberately changed payload bytes can still be copied under a structurally valid mapping, so the report must not claim a historical integrity check. |
 | `tests/test_end_to_end.py` | Runs the recovery path on damaged input and checks exact placement, output status, source preservation, and benchmark error categories. |
