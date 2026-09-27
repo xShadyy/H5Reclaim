@@ -446,6 +446,7 @@ def restore_from_protection_bundle(
                 "manifest_sha256": protected["manifest_sha256"],
                 "captured_source_sha256": protected["captured_source"]["sha256"],
                 "components": protected["components"],
+                "observed_utc_unverified": protected["observed_utc_unverified"],
                 "retention_note": protected["retention_note"],
             }
             if method == "capsule":
