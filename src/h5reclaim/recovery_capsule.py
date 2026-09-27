@@ -338,6 +338,7 @@ def _raw_chunk(stream: Any, row: dict[str, Any], source_size: int) -> bytes | No
 
 def _check_current_metadata(
     snapshot: Path, path: str, schema: dict[str, Any], rows: list[dict[str, Any]],
+    expected_type_encoding: bytes,
 ) -> dict[str, Any]:
     """Reject positive contradictions when the damaged namespace still opens.
 
@@ -354,7 +355,8 @@ def _check_current_metadata(
             selected = _selected_dataset(handle, path)
         except (OSError, RuntimeError, ValueError, KeyError, UnsupportedCase):
             return {"state": "selected_path_unreadable", "checked_chunk_links": 0}
-        if _schema(selected) != schema:
+        if (_schema(selected) != schema or not selected.id.get_type().equal(
+                h5py.h5t.decode(expected_type_encoding))):
             raise RecoveryError("current rooted selected dataset schema contradicts the capsule")
         observed = 0
         for row in rows:
@@ -409,6 +411,7 @@ def restore_from_capsule(
             with h5py.File(template, "r") as file:
                 selected = _selected_dataset(file, path)
                 rows = _validate_records(manifest, selected)
+                expected_type_encoding = selected.id.get_type().encode()
                 shape, chunks, width = selected.shape, selected.chunks, selected.dtype.itemsize
                 assert chunks is not None
                 grid = tuple((size + step - 1) // step for size, step in zip(shape, chunks))
@@ -420,7 +423,9 @@ def restore_from_capsule(
         # Snapshot guarantees that all byte-range reads refer to one immutable
         # analysis image even if an outside process writes the source in place.
         with source_snapshot(damaged) as (snapshot, damaged_sha, identity, damaged_size):
-            current_metadata = _check_current_metadata(snapshot, path, manifest["schema"], rows)
+            current_metadata = _check_current_metadata(
+                snapshot, path, manifest["schema"], rows, expected_type_encoding,
+            )
             staged = root / "output.h5"
             shutil.copyfile(template, staged)
             status = np.full(grid, 2, dtype="u1")

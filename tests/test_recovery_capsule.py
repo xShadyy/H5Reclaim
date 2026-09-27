@@ -14,7 +14,9 @@ import h5py
 import numpy as np
 
 from h5reclaim.recovery import RecoveryError, sha256_file
-from h5reclaim.recovery_capsule import capture_recovery_capsule, restore_from_capsule
+from h5reclaim.recovery_capsule import (
+    _check_current_metadata, _schema, capture_recovery_capsule, restore_from_capsule,
+)
 
 
 SELECTED = "/science/readings"
@@ -204,6 +206,20 @@ class RecoveryCapsuleTests(unittest.TestCase):
                                               np.asarray(source.attrs[name]))
             self.assertTrue(np.all(restored["/_h5reclaim/element_status"][...] == 1))
             self.assertTrue(np.all(restored["/_h5reclaim/chunk_status"][...] == 1))
+
+    def test_current_rooted_type_with_changed_enum_names_contradicts_capsule(self) -> None:
+        with h5py.File(self.healthy, "x", libver="latest") as file:
+            file.create_dataset(SELECTED, shape=(8,), chunks=(4,),
+                                dtype=h5py.enum_dtype({"OBSERVED": 1}, basetype="<u2"))
+            original = file[SELECTED]
+            schema = _schema(original)
+            exact_type = original.id.get_type().encode()
+        with h5py.File(self.damaged, "x", libver="latest") as file:
+            file.create_dataset(SELECTED, shape=(8,), chunks=(4,),
+                                dtype=h5py.enum_dtype({"CALIBRATION": 1}, basetype="<u2"))
+            self.assertEqual(_schema(file[SELECTED]), schema)
+        with self.assertRaisesRegex(RecoveryError, "schema contradicts"):
+            _check_current_metadata(self.damaged, SELECTED, schema, [], exact_type)
 
     def test_tamper_or_wrong_pin_refuses_without_output(self) -> None:
         capture = self.capture()
