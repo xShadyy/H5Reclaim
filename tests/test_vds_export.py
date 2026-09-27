@@ -133,6 +133,21 @@ class VDSExportTests(unittest.TestCase):
             self.assertEqual(result["accepted_elements"], 0)
             self.assertEqual(result["mappings"][0]["status"], "hash_mismatch")
 
+    def test_staged_report_names_published_destination(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, vds = root / "source.h5", root / "virtual.h5"
+            with h5py.File(source, "w") as handle:
+                handle["/data"] = np.arange(4, dtype="i4")
+            _vds(vds, [("source.h5", "/data", (slice(None),), (slice(None),))], (4,))
+            intended = root / "public.h5"
+            result = export_vds(vds, "/observations", root / "stage.h5", root / "stage.json",
+                                _manifest(("source.h5", source)), published_output=intended)
+            self.assertEqual(result["output_path"], str(intended))
+            with h5py.File(root / "stage.h5", "r") as handle:
+                self.assertEqual(json.loads(handle["/_h5reclaim/report_json"][()])["output_path"],
+                                 str(intended))
+
     def test_refuses_overlap_and_transitive_source(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
