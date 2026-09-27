@@ -101,6 +101,34 @@ value and detects the mismatch. `--json` prints details, and `--work-dir
 NEW-OR-EMPTY-DIR` retains evidence. Native-readable export does not repair
 damaged metadata and cannot certify an earlier, unrecorded measurement.
 
+## Authentic prospective baseline integrity trials
+
+Run `python benchmarks/run_authentic_baseline_integrity.py` for two controlled
+payload mutations on pinned, authentic scientific files. The public capture
+command first records coordinate-specific hashes from each pristine source in
+a separate sidecar. The trial changes exactly one byte of a disposable copy,
+then passes only that copy, the retained baseline, and its separately computed
+SHA-256 to the public `rescue` command. The evaluator separately reads the
+original to score exact accepted values and the output validity map. Both
+original and damaged input hashes must remain unchanged during evaluation.
+
+The Zenodo quantum feedback trial changes one of 2,000 contiguous `uint8`
+measurements. Native HDF5 still reads a plausible but wrong value. A prior
+element baseline withholds that coordinate: 1,999 exact accepted elements,
+one unknown, and zero false accepted. The GWOSC 4 kHz trial changes a byte in
+one compressed strain chunk. Its filter rejects that chunk; 63 of 64 chunks
+remain exact and one is unknown. This latter case verifies safe handling of a
+filtered authentic payload, but does not isolate the extra detection benefit
+of a prior hash because the filter already detects the mutation. In each
+case, modifying the retained sidecar while supplying its original independent
+SHA-256 is refused without publishing output.
+
+Use `--json` for machine-readable scoring or `--work-dir NEW-OR-EMPTY-DIR` to
+retain the copies, sidecars, output, and reports. The default output is a
+readable summary. These two selected faults were applied to intact sources;
+they do not measure natural damage frequency or field recovery success.
+Hashes alone cannot restore a missing or changed measurement.
+
 ## Intact authentic candidate exports
 
 Run `python benchmarks/run_real_candidate_exports.py` to verify all pinned
