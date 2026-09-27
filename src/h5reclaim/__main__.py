@@ -318,6 +318,24 @@ def main(argv: list[str] | None = None) -> int:
     capsule_cmd.add_argument("source", type=Path)
     capsule_cmd.add_argument("--dataset", required=True)
     capsule_cmd.add_argument("--output", required=True, type=Path, help="new independently retained recovery capsule")
+    protect_cmd = commands.add_parser(
+        "protect", help="capture one prospective ZIP with a schema capsule and optional erasure shards"
+    )
+    protect_cmd.add_argument("source", type=Path, help="intact acquisition to protect before an incident")
+    protect_cmd.add_argument("--dataset", required=True)
+    protect_cmd.add_argument("--output", required=True, type=Path, help="new independent protection ZIP")
+    protect_cmd.add_argument("--capsule-only", action="store_true",
+                             help="omit the complete numeric baseline and erasure sidecar")
+    protect_cmd.add_argument("--stripe-width", type=int, default=4)
+    protect_cmd.add_argument("--parity-shards", type=int, default=2)
+    verify_cmd = commands.add_parser("verify-protection", help="verify a prior protection ZIP and its separately retained manifest digest")
+    verify_cmd.add_argument("bundle", type=Path)
+    verify_cmd.add_argument("--manifest-sha256", required=True)
+    verify_cmd.add_argument("--source", type=Path, help="also compare the current intact acquisition to its capture hash")
+    drill_cmd = commands.add_parser("drill-protection", help="test capsule and retained parity on disposable damaged copies of an intact acquisition")
+    drill_cmd.add_argument("bundle", type=Path)
+    drill_cmd.add_argument("source", type=Path)
+    drill_cmd.add_argument("--manifest-sha256", required=True)
     rescue_cmd = commands.add_parser(
         "rescue", help="select a bounded recovery route and publish an output with validity evidence",
     )
@@ -325,6 +343,10 @@ def main(argv: list[str] | None = None) -> int:
     rescue_cmd.add_argument("--dataset", required=True, help="absolute selected HDF5 dataset path")
     rescue_cmd.add_argument("--output", required=True, type=Path)
     rescue_cmd.add_argument("--report", required=True, type=Path)
+    rescue_cmd.add_argument("--strict-history", action="store_true",
+                            help="publish only when a separately pinned prior capture verifies every accepted unit")
+    rescue_cmd.add_argument("--no-context-audit", action="store_true",
+                            help="skip the bounded audit of omitted attributes, units, scales, groups, and links")
     choices = rescue_cmd.add_mutually_exclusive_group()
     choices.add_argument("--related-files", type=Path, help="pinned manifest for external raw or virtual datasets")
     choices.add_argument("--family-members", type=Path, help="pinned HDF5 Family member manifest")
@@ -333,11 +355,17 @@ def main(argv: list[str] | None = None) -> int:
     choices.add_argument("--parity", type=Path, help="pinned baseline plus prospective parity sidecar manifest")
     choices.add_argument("--erasure", type=Path, help="pinned baseline plus multiple-erasure sidecar manifest")
     choices.add_argument("--capsule", type=Path, help="prospective pinned schema and physical map capsule")
+    choices.add_argument("--protection-bundle", type=Path,
+                         help="prospective pinned capsule/parity bundle retained before damage")
     choices.add_argument("--element-baseline", type=Path, help="prior compact/contiguous element-hash ZIP")
     choices.add_argument("--chunk-baseline", type=Path, help="prior coordinate chunk-hash JSON for integrity-gated export")
     rescue_cmd.add_argument("--element-baseline-sha256", help="independently retained SHA-256 of the element baseline ZIP")
     rescue_cmd.add_argument("--chunk-baseline-sha256", help="independently retained SHA-256 of the chunk baseline JSON")
     rescue_cmd.add_argument("--capsule-sha256", help="independently retained SHA-256 of the recovery capsule")
+    rescue_cmd.add_argument("--protection-manifest-sha256",
+                            help="independently retained SHA-256 of the protection ZIP's manifest")
+    rescue_cmd.add_argument("--protection-method", choices=("capsule", "erasure"), default="capsule",
+                            help="use physical-map capsule or parity shards from a protection bundle")
     choices.add_argument("--status-trial", action="store_true",
                          help="trial a validated v3 write flag on a disposable copy before native-readable export")
     choices.add_argument("--metadata-trial", choices=("root", "layout", "dimension"),
@@ -422,15 +450,72 @@ def main(argv: list[str] | None = None) -> int:
             print(f"h5reclaim: capsule capture failed: {_display_path(exc, 300)}", file=sys.stderr)
             return 2
 
+    if args.command == "protect":
+        try:
+            from .protection_bundle import capture_protection_bundle
+            result = capture_protection_bundle(
+                args.source, args.dataset, args.output,
+                include_erasure=not args.capsule_only,
+                stripe_width=args.stripe_width, parity_shards=args.parity_shards,
+            )
+            print("H5Reclaim prospective protection")
+            print(f"Dataset: {_display_path(result['dataset_path'])}")
+            print(f"Bundle: {_display_path(args.output, 240)}")
+            print("Components: " + ", ".join(sorted(result["components"])))
+            print(f"Retain this manifest SHA-256 separately before damage: {result['manifest_sha256']}")
+            print("The capture records current bytes and a local clock, not authenticated capture time or scientific correctness.")
+            return 0
+        except (FormatError, UnsupportedCase, RecoveryError, OSError, ValueError, RuntimeError, KeyError) as exc:
+            print(f"h5reclaim: protection failed: {_display_path(exc, 300)}", file=sys.stderr)
+            return 2
+
+    if args.command in ("verify-protection", "drill-protection"):
+        try:
+            from .protection_bundle import drill_protection_bundle, verify_protection_bundle
+            if args.command == "verify-protection":
+                result = verify_protection_bundle(args.bundle, args.manifest_sha256, source=args.source)
+                print("H5Reclaim protection verification | passed")
+                print(f"Dataset: {_display_path(result['dataset_path'])}")
+                print("Components: " + ", ".join(sorted(result["components"])))
+                print(f"Bundle SHA-256: {result['bundle_sha256']}")
+            else:
+                result = drill_protection_bundle(args.bundle, args.manifest_sha256, args.source)
+                print("H5Reclaim disposable restore drill | passed")
+                print(f"Allocated chunks restored exactly: {result['restored_allocated_chunks']}")
+                print(f"Parity losses rebuilt exactly: {result['erasure_restored_chunks']}")
+                print("The original source and protection bundle were not modified.")
+            return 0
+        except (FormatError, UnsupportedCase, RecoveryError, OSError, ValueError, RuntimeError, KeyError) as exc:
+            print(f"h5reclaim: protection verification failed: {_display_path(exc, 300)}", file=sys.stderr)
+            return 2
+
     if args.command == "rescue":
         try:
             source = str(args.source.absolute())
+            def run_rescue(route: str, output: Path, report_path: Path, **kwargs: str) -> dict:
+                return run_route(
+                    route, output, report_path, strict_history=args.strict_history,
+                    annotate_history=True, audit_science_context=not args.no_context_audit,
+                    **kwargs,
+                )
             if (args.element_baseline is None) != (args.element_baseline_sha256 is None):
                 raise RecoveryError("--element-baseline and --element-baseline-sha256 must be supplied together")
             if (args.chunk_baseline is None) != (args.chunk_baseline_sha256 is None):
                 raise RecoveryError("--chunk-baseline and --chunk-baseline-sha256 must be supplied together")
             if (args.capsule is None) != (args.capsule_sha256 is None):
                 raise RecoveryError("--capsule and --capsule-sha256 must be supplied together")
+            if (args.protection_bundle is None) != (args.protection_manifest_sha256 is None):
+                raise RecoveryError("--protection-bundle and --protection-manifest-sha256 must be supplied together")
+            if args.protection_bundle is None and args.protection_method != "capsule":
+                raise RecoveryError("--protection-method requires --protection-bundle")
+            if args.strict_history and all(item is None for item in (
+                args.replicas, args.parity, args.erasure, args.capsule,
+                args.protection_bundle, args.element_baseline, args.chunk_baseline,
+            )):
+                raise RecoveryError(
+                    "--strict-history requires a separately pinned prior capture: "
+                    "baseline, capsule, protection bundle, replica, or parity route"
+                )
             if args.element_baseline_sha256 is not None and args.element_baseline is None:
                 raise RecoveryError("an element baseline digest cannot be supplied with another route")
             if args.chunk_baseline_sha256 is not None and args.chunk_baseline is None:
@@ -438,56 +523,63 @@ def main(argv: list[str] | None = None) -> int:
             if args.capsule_sha256 is not None and args.capsule is None:
                 raise RecoveryError("a capsule digest cannot be supplied with another route")
             if args.replicas is not None:
-                report = run_route("replicas", args.output, args.report, source=source,
+                report = run_rescue("replicas", args.output, args.report, source=source,
                                    dataset=args.dataset, manifest=str(args.replicas.absolute()))
             elif args.parity is not None:
-                report = run_route("parity", args.output, args.report, source=source,
+                report = run_rescue("parity", args.output, args.report, source=source,
                                    dataset=args.dataset, manifest=str(args.parity.absolute()))
             elif args.erasure is not None:
-                report = run_route("erasure", args.output, args.report, source=source,
+                report = run_rescue("erasure", args.output, args.report, source=source,
                                    dataset=args.dataset, manifest=str(args.erasure.absolute()))
             elif args.capsule is not None:
-                report = run_route("capsule", args.output, args.report, source=source,
+                report = run_rescue("capsule", args.output, args.report, source=source,
                                    dataset=args.dataset, capsule=str(args.capsule.absolute()),
                                    capsule_sha256=args.capsule_sha256)
+            elif args.protection_bundle is not None:
+                report = run_rescue(
+                    "protection", args.output, args.report, source=source,
+                    dataset=args.dataset, bundle=str(args.protection_bundle.absolute()),
+                    manifest_sha256=args.protection_manifest_sha256,
+                    method=args.protection_method,
+                )
             elif args.element_baseline is not None:
-                report = run_route("element_baseline", args.output, args.report,
+                report = run_rescue("element_baseline", args.output, args.report,
                                    source=source, dataset=args.dataset,
                                    baseline=str(args.element_baseline.absolute()),
                                    baseline_sha256=args.element_baseline_sha256)
             elif args.chunk_baseline is not None:
-                report = run_route("chunk_baseline", args.output, args.report,
+                report = run_rescue("chunk_baseline", args.output, args.report,
                                    source=source, dataset=args.dataset,
                                    baseline=str(args.chunk_baseline.absolute()),
                                    baseline_sha256=args.chunk_baseline_sha256)
             elif args.status_trial:
-                report = run_route("status", args.output, args.report, source=source,
+                report = run_rescue("status", args.output, args.report, source=source,
                                    dataset=args.dataset)
             elif args.metadata_trial is not None:
-                report = run_route("metadata_trial", args.output, args.report, source=source,
+                report = run_rescue("metadata_trial", args.output, args.report, source=source,
                                    dataset=args.dataset, kind=args.metadata_trial)
             elif args.truncated_chunks:
-                report = run_route("truncated_chunks", args.output, args.report, source=source,
+                report = run_rescue("truncated_chunks", args.output, args.report, source=source,
                                    dataset=args.dataset)
             elif args.large_readable:
-                report = run_route("large_readable", args.output, args.report, source=source,
+                report = run_rescue("large_readable", args.output, args.report, source=source,
                                    dataset=args.dataset)
             elif args.large_structural:
-                report = run_route("large_structural", args.output, args.report, source=source,
+                report = run_rescue("large_structural", args.output, args.report, source=source,
                                    dataset=args.dataset)
             elif args.family_members is not None:
                 from .family_bundle import _manifest
                 _, members = _manifest(args.family_members)
                 if args.source.resolve(strict=True) != Path(members[0]["path"]).resolve(strict=True):
                     raise RecoveryError("Family source argument must be manifest member zero")
-                report = run_route("family", args.output, args.report,
+                report = run_rescue("family", args.output, args.report,
                                    dataset=args.dataset, manifest=str(args.family_members.absolute()))
             elif args.split_members is not None:
                 from .split_bundle import _load_manifest
                 metadata, _, _, _ = _load_manifest(args.split_members)
                 if args.source.resolve(strict=True) != metadata.resolve(strict=True):
                     raise RecoveryError("Split source argument must be the metadata member")
-                report = run_route("split", args.output, args.report,
+                report = run_rescue("split", args.output, args.report,
                                    dataset=args.dataset, manifest=str(args.split_members.absolute()))
             elif args.related_files is not None:
                 inventory = inspect_dependencies(args.source, args.dataset)
@@ -502,19 +594,20 @@ def main(argv: list[str] | None = None) -> int:
                     route = "external_link"
                 else:
                     raise UnsupportedCase("selected dependency kind has no safe value-export route")
-                report = run_route(route, args.output, args.report, source=source,
+                report = run_rescue(route, args.output, args.report, source=source,
                                    dataset=args.dataset, manifest=str(args.related_files.absolute()))
             else:
                 try:
-                    report = run_route("structural", args.output, args.report,
+                    report = run_rescue("structural", args.output, args.report,
                                        source=source, dataset=args.dataset)
                 except UnsupportedCase as chunked_error:
                     try:
-                        report = run_route("nonchunked", args.output, args.report,
+                        report = run_rescue("nonchunked", args.output, args.report,
                                            source=source, dataset=args.dataset)
                     except RecoveryError as nonchunked_error:
                         try:
-                            report = export_readable(args.source, args.dataset, args.output, args.report)
+                            report = run_rescue("readable", args.output, args.report,
+                                                source=source, dataset=args.dataset)
                         except (RecoveryError, UnsupportedCase) as readable_error:
                             raise UnsupportedCase(
                                 f"chunked route: {chunked_error}; compact/contiguous route: "
@@ -540,7 +633,13 @@ def main(argv: list[str] | None = None) -> int:
                 print("Route: streamed copy of currently native-readable values; no damaged index was reconstructed.")
             print(f"Output: {_display_path(args.output, 240)}")
             print(f"Evidence report: {_display_path(args.report, 240)}")
-            print("Check the validity map before using output values. Accepted values may still lack historical authentication.")
+            integrity = report.get("historical_integrity")
+            if integrity and integrity.get("capture_sha256"):
+                print(f"History: {integrity['matching_units']} units match an operator-supplied prior capture; "
+                      f"{integrity['unknown_units']} unknown. Capture timing is not authenticated.")
+            else:
+                print("History: unverified; current readable values do not establish prior measurements.")
+            print("Check the validity and historical-status maps before using output values.")
             return 0
         except (FormatError, DependencyError, UnsupportedCase, RecoveryError, OSError,
                 ValueError, RuntimeError, KeyError, TypeError, UnicodeError) as exc:
