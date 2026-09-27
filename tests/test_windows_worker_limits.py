@@ -3,14 +3,88 @@
 from __future__ import annotations
 
 import os
+import ctypes
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from h5reclaim.worker_limits import run_worker
+from h5reclaim.worker_limits import _run_windows_job, run_worker
+
+
+class _KernelFunction:
+    def __init__(self, name: str, kernel: "_FakeKernel") -> None:
+        self.name = name
+        self.kernel = kernel
+
+    def __call__(self, *args: object) -> int:
+        self.kernel.calls.append(self.name)
+        if self.name == "CreateJobObjectW":
+            return 11
+        if self.name == "SetInformationJobObject":
+            limits = args[2]._obj
+            self.kernel.flags = limits.BasicLimitInformation.LimitFlags
+            self.kernel.memory = (limits.ProcessMemoryLimit, limits.JobMemoryLimit)
+        if self.name == "CreateFileW":
+            return 12
+        if self.name == "CreateProcessW":
+            process = args[-1]._obj
+            process.hProcess, process.hThread = 13, 14
+            return 1
+        if self.name == "ResumeThread":
+            return 1
+        if self.name == "WaitForSingleObject":
+            if self.kernel.timed_out and not self.kernel.waited:
+                self.kernel.waited = True
+                return 0x102
+            return 0
+        if self.name == "GetExitCodeProcess":
+            args[1]._obj.value = 17
+        return 1
+
+
+class _FakeKernel:
+    def __init__(self, *, timed_out: bool = False) -> None:
+        self.calls: list[str] = []
+        self.functions: dict[str, _KernelFunction] = {}
+        self.flags = 0
+        self.memory = (0, 0)
+        self.timed_out = timed_out
+        self.waited = False
+
+    def __getattr__(self, name: str) -> _KernelFunction:
+        if name not in self.functions:
+            self.functions[name] = _KernelFunction(name, self)
+        return self.functions[name]
+
+
+class WindowsJobCallOrderTests(unittest.TestCase):
+    def test_assignment_and_limits_precede_resume(self) -> None:
+        kernel = _FakeKernel()
+        with patch.object(ctypes, "WinDLL", return_value=kernel, create=True):
+            result = _run_windows_job(["python", "-c", "pass"], {"PATH": "C:\\Python"},
+                                      timeout_seconds=3, memory_bytes=128 * 1024**2)
+        self.assertEqual(result.returncode, 17)
+        self.assertEqual(kernel.flags & (0x100 | 0x200 | 0x2000), 0x100 | 0x200 | 0x2000)
+        self.assertEqual(kernel.memory, (128 * 1024**2, 128 * 1024**2))
+        self.assertLess(kernel.calls.index("SetInformationJobObject"),
+                        kernel.calls.index("CreateProcessW"))
+        self.assertLess(kernel.calls.index("AssignProcessToJobObject"),
+                        kernel.calls.index("ResumeThread"))
+        self.assertEqual(kernel.calls[-1], "CloseHandle")
+
+    def test_timeout_terminates_job(self) -> None:
+        kernel = _FakeKernel(timed_out=True)
+        with patch.object(ctypes, "WinDLL", return_value=kernel, create=True):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                _run_windows_job(["python", "-c", "pass"], {"PATH": "C:\\Python"},
+                                 timeout_seconds=0.1, memory_bytes=128 * 1024**2)
+        self.assertIn("TerminateJobObject", kernel.calls)
+        self.assertLess(kernel.calls.index("TerminateJobObject"),
+                        kernel.calls.index("CloseHandle"))
 
 
 @unittest.skipUnless(os.name == "nt", "Windows Job Object tests")
