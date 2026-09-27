@@ -395,6 +395,7 @@ def export_large_readable(source: str | Path, dataset_path: str, output: str | P
                     report = {
                         "schema_version": 1, "tool": "h5reclaim", "tool_version": VERSION,
                         "mode": "large_native_readable_export",
+                        "operation": "large_native_readable_export",
                         "outcome": "partial" if accepted < selected.shape[0] else "complete",
                         "source": {"path": str(source), "size_bytes": size,
                                    "sha256_before": digest, "sha256_after": digest,

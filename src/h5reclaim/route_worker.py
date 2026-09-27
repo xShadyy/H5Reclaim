@@ -20,7 +20,7 @@ MAX_REPORT = 32 * 1024 * 1024
 ROUTES = frozenset({
     "family", "split", "vds", "external_raw", "external_link", "nonchunked",
     "replicas", "parity", "erasure", "status", "metadata_trial", "capsule",
-    "truncated_chunks", "large_readable", "element_baseline", "chunk_baseline",
+    "truncated_chunks", "large_readable", "structural", "element_baseline", "chunk_baseline",
 })
 
 
@@ -94,6 +94,9 @@ def _child(request_path: Path, response_path: Path) -> int:
             from .large_streaming import export_large_readable
             export_large_readable(args["source"], args["dataset"], output, report,
                                   published_output=request["published_output"])
+        elif route == "structural":
+            from .recovery import recover
+            recover(Path(args["source"]), args["dataset"], Path(output), Path(report))
         else:
             from .parity_sidecar import restore_from_parity
             restore_from_parity(args["source"], args["dataset"], args["manifest"], output, report)
@@ -151,6 +154,12 @@ def run_route(route: str, output: str | Path, report: str | Path, **args: str) -
             except (OSError, ValueError) as exc:
                 raise RecoveryError(f"route worker exited {result.returncode} without a valid response") from exc
             if result.returncode != 0 or message.get("status") != "ok":
+                if message.get("kind") == "UnsupportedCase":
+                    from .metadata import UnsupportedCase
+                    raise UnsupportedCase(str(message.get("detail", "unsupported structural case"))[:300])
+                if message.get("kind") == "FormatError":
+                    from .format import FormatError
+                    raise FormatError(str(message.get("detail", "contradictory format evidence"))[:300])
                 raise RecoveryError(f"route worker failed: {str(message.get('detail', 'unknown error'))[:300]}")
             if not staged_output.is_file() or not staged_report.is_file() or staged_report.stat().st_size > MAX_REPORT:
                 raise RecoveryError("route worker did not produce bounded output and report")

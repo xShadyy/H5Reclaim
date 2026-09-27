@@ -501,7 +501,8 @@ def main(argv: list[str] | None = None) -> int:
                                    dataset=args.dataset, manifest=str(args.related_files.absolute()))
             else:
                 try:
-                    report = recover(args.source, args.dataset, args.output, args.report)
+                    report = run_route("structural", args.output, args.report,
+                                       source=source, dataset=args.dataset)
                 except UnsupportedCase as chunked_error:
                     try:
                         report = run_route("nonchunked", args.output, args.report,
@@ -530,6 +531,8 @@ def main(argv: list[str] | None = None) -> int:
                 print("Route: status-only trial on a disposable copy, then native-readable export; historical values are unverified.")
             elif report.get("mode") == "metadata_trial_readable_export":
                 print("Route: single metadata pointer correction on a disposable copy, then readable export; historical values are unverified.")
+            elif report.get("mode") == "large_native_readable_export":
+                print("Route: streamed copy of currently native-readable values; no damaged index was reconstructed.")
             print(f"Output: {_display_path(args.output, 240)}")
             print(f"Evidence report: {_display_path(args.report, 240)}")
             print("Check the validity map before using output values. Accepted values may still lack historical authentication.")
