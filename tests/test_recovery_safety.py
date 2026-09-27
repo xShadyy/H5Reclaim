@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import h5py
@@ -17,7 +18,7 @@ import numpy as np
 
 from h5reclaim.format import KEY_SIZE, FormatError, H5File
 from h5reclaim.metadata import UnsupportedCase
-from h5reclaim.recovery import RecoveryError, STATUS_CODES, analyze, recover
+from h5reclaim.recovery import RecoveryError, STATUS_CODES, analyze, recover, source_snapshot
 from h5reclaim import recovery as recovery_module
 
 
@@ -44,7 +45,12 @@ class OutputPathSafetyTests(unittest.TestCase):
                         if target_kind == "same":
                             alias = source
                         elif target_kind == "symlink":
-                            alias.symlink_to(source)
+                            try:
+                                alias.symlink_to(source)
+                            except OSError as exc:
+                                if os.name == "nt" and getattr(exc, "winerror", None) == 1314:
+                                    continue  # Windows account cannot create symbolic links.
+                                raise
                         else:
                             os.link(source, alias)
                         output = alias if destination == "output" else base / "result.h5"
@@ -66,7 +72,12 @@ class OutputPathSafetyTests(unittest.TestCase):
             prior_hash = digest(source)
             folder = base / "destinations"
             folder.mkdir()
-            (base / "other_name").symlink_to(folder, target_is_directory=True)
+            try:
+                (base / "other_name").symlink_to(folder, target_is_directory=True)
+            except OSError as exc:
+                if os.name == "nt" and getattr(exc, "winerror", None) == 1314:
+                    self.skipTest("Windows account cannot create symbolic links")
+                raise
             output = folder / "result"
             report = base / "other_name" / "result"
 
@@ -271,19 +282,93 @@ class BrokenLinkSafetyTests(unittest.TestCase):
             source.write_bytes(self.damaged.read_bytes())
             replacement = folder / "replacement.h5"
             replacement.write_bytes(source.read_bytes())
-            real_analysis = recovery_module._analyze_snapshot
+            real_analysis = recovery_module.analyze
 
-            def replace_after_snapshot(*args: object) -> object:
+            def replace_after_analysis(*args: object) -> object:
                 result = real_analysis(*args)
+                # The original read handle has closed, so Windows can replace
+                # the pathname while the publication check is still pending.
                 os.replace(replacement, source)
                 return result
 
             output, report = folder / "result.h5", folder / "report.json"
-            with patch("h5reclaim.recovery._analyze_snapshot", side_effect=replace_after_snapshot):
+            with patch("h5reclaim.recovery.analyze", side_effect=replace_after_analysis):
                 with self.assertRaisesRegex(RecoveryError, "identity"):
                     recover(source, "/measurements", output, report)
             self.assertFalse(output.exists())
             self.assertFalse(report.exists())
+
+
+class SnapshotPortabilityTests(unittest.TestCase):
+    def test_windows_style_stat_and_fstat_mismatch_does_not_reject_unchanged_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.h5"
+            source.write_bytes(b"unchanged scientific input")
+            real_fstat = os.fstat
+            source_info = source.stat()
+
+            def windows_like_fstat(fd: int) -> os.stat_result | SimpleNamespace:
+                actual = real_fstat(fd)
+                if (actual.st_dev, actual.st_ino) != (source_info.st_dev, source_info.st_ino):
+                    return actual
+                return SimpleNamespace(
+                    st_mode=actual.st_mode,
+                    st_dev=actual.st_dev + 7,
+                    st_ino=actual.st_ino + 7,
+                    st_size=actual.st_size,
+                    st_mtime_ns=actual.st_mtime_ns + 100,
+                    st_ctime_ns=actual.st_ctime_ns + 100,
+                )
+
+            with patch.object(recovery_module, "_WINDOWS_STAT", True):
+                with patch("h5reclaim.recovery.os.fstat", side_effect=windows_like_fstat):
+                    with source_snapshot(source) as (snapshot, expected_hash, identity, size):
+                        self.assertEqual(snapshot.read_bytes(), source.read_bytes())
+                        self.assertEqual(size, source.stat().st_size)
+                        self.assertEqual(identity, recovery_module._identity(source.stat()))
+                    recovery_module._verify_source(source, identity, expected_hash)
+
+    def test_same_size_mutation_and_identical_byte_path_swap_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.h5"
+            source.write_bytes(b"input A")
+            replacement = Path(directory) / "replacement.h5"
+            replacement.write_bytes(source.read_bytes())
+            with source_snapshot(source) as (_snapshot, expected_hash, identity, _size):
+                pass
+            source.write_bytes(b"input B")
+            with self.assertRaises(RecoveryError):
+                recovery_module._verify_source(source, identity, expected_hash)
+
+            # Re-establish the baseline so the second check isolates a path
+            # replacement whose contents have the same hash.
+            source.write_bytes(b"input A")
+            with source_snapshot(source) as (_snapshot, expected_hash, identity, _size):
+                pass
+            os.replace(replacement, source)
+            with self.assertRaisesRegex(RecoveryError, "identity"):
+                recovery_module._verify_source(source, identity, expected_hash)
+
+    def test_path_replacement_between_stat_and_open_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.h5"
+            source.write_bytes(b"first input")
+            replacement = Path(directory) / "replacement.h5"
+            replacement.write_bytes(b"second input")
+            real_open = Path.open
+            swapped = False
+
+            def replace_before_open(path: Path, *args: object, **kwargs: object):
+                nonlocal swapped
+                if path == source and not swapped:
+                    os.replace(replacement, source)
+                    swapped = True
+                return real_open(path, *args, **kwargs)
+
+            with patch.object(Path, "open", replace_before_open):
+                with self.assertRaisesRegex(RecoveryError, "while it was being opened"):
+                    with source_snapshot(source):
+                        pass
 
 
 if __name__ == "__main__":

@@ -20,7 +20,8 @@ from .format import FormatError, H5File
 from .metadata import DatasetSpec, UnsupportedCase, read_dataset_spec
 
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
+_WINDOWS_STAT = os.name == "nt"
 STATUS_CODES = {
     "recovered": 1,
     "allocation_unknown": 2,
@@ -74,6 +75,23 @@ def sha256_file(path: Path) -> str:
 
 def _identity(info: os.stat_result) -> tuple[int, int, int, int, int]:
     return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def _handle_matches_path(handle_info: os.stat_result, path_info: os.stat_result) -> bool:
+    """Check fields comparable across descriptor and pathname stat APIs.
+
+    Windows filesystems and Python versions can expose different identifiers
+    or timestamp values through fstat and stat for the same file. The caller
+    also compares each API with itself before and after copying, then hashes
+    the pathname against the snapshot before accepting the result.
+    """
+    if handle_info.st_size != path_info.st_size:
+        return False
+    if not _WINDOWS_STAT and (
+        handle_info.st_dev, handle_info.st_ino
+    ) != (path_info.st_dev, path_info.st_ino):
+        return False
+    return True
 
 
 def _verify_source(source: Path, identity: tuple[int, int, int, int, int], digest: str) -> None:
@@ -153,10 +171,18 @@ def source_snapshot(
     source = Path(source)
     if not source.is_file():
         raise RecoveryError(f"input is not a regular file: {source}")
+    path_info = source.stat()
     with source.open("rb") as original:
         file_info = os.fstat(original.fileno())
-        identity = _identity(file_info)
-        if not stat.S_ISREG(file_info.st_mode) or _identity(source.stat()) != identity:
+        # Keep the exported identity in the pathname stat domain. Comparing
+        # fstat and stat tuples directly rejects unchanged files on some
+        # Windows installations because the APIs report different metadata.
+        identity = _identity(path_info)
+        if (
+            not stat.S_ISREG(file_info.st_mode)
+            or _identity(source.stat()) != identity
+            or not _handle_matches_path(file_info, path_info)
+        ):
             raise RecoveryError("input changed while it was being opened")
         if file_info.st_size > MAX_SOURCE_BYTES:
             raise UnsupportedCase(f"input exceeds the {MAX_SOURCE_BYTES}-byte limit")
@@ -173,6 +199,10 @@ def source_snapshot(
                     digest.update(block)
             if total != file_info.st_size:
                 raise RecoveryError("input size changed while making a read-only snapshot")
+            if _identity(os.fstat(original.fileno())) != _identity(file_info):
+                raise RecoveryError("opened input changed while making a read-only snapshot")
+            if _identity(source.stat()) != identity:
+                raise RecoveryError("input path changed while making a read-only snapshot")
             source_hash = digest.hexdigest()
             yield snapshot, source_hash, identity, total
 
