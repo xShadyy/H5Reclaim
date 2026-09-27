@@ -184,6 +184,7 @@ python benchmarks/run_seeded_matrix.py --seed 20260927 --trials 2
 python benchmarks/run_stratified_layouts.py --seed 11235813 --trials 1
 python benchmarks/run_real_candidate_exports.py
 python benchmarks/run_real_readable_corpus.py
+python benchmarks/run_authentic_baseline_integrity.py
 python -m unittest discover -s tests -q
 ```
 
@@ -196,6 +197,7 @@ python -m unittest discover -s tests -q
 | `run_stratified_layouts.py` | Exercises generated modern index families, filters, sparse and edge chunks, deliberate false acceptance with absent checksums, and the authentic corpus. The truth file is used only by the evaluator. |
 | `run_real_candidate_exports.py` | Tests all six currently eligible GWOSC datasets on intact copies through the structural route; bitwise and physical-range scores are independent. This is intact export, not damaged repair. |
 | `run_real_readable_corpus.py` | Tests native-readable export of two structurally unsupported Zenodo originals using independent current-value comparisons. |
+| `run_authentic_baseline_integrity.py` | Captures prior hashes from two intact authentic files, changes a payload byte in each disposable copy, then verifies damaged-only rescue with those hashes and refuses tampered sidecars. The original is used by the evaluator to score exactness. |
 | `unittest discover` | Runs parser, output, negative, resource, and end-to-end tests. It does not recover a supplied user file. |
 
 Benchmark readable summaries include paths to retained HDF5 and JSON evidence. Use `--json` for complete output where offered. The original healthy file and mutation manifest are evaluator truth, never arguments to recovery. These constructed experiments cannot measure a real-world success percentage.

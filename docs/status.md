@@ -75,6 +75,15 @@ capture exists. No measured representative damage distribution or defensible
 anchors and absent dependent files cannot be exactly reconstructed from one
 damaged container.
 
+An authentic prospective-baseline trial on pinned files found 1,999/2,000
+matching Zenodo qubit elements and 63/64 matching GWOSC chunks after one
+controlled payload mutation in each disposable copy. The altered element and
+chunk were unknown, no changed value was accepted, and deliberately tampered
+baseline sidecars failed their independently retained SHA-256 pins. The
+healthy files were inputs to capture **before** damage and to independent
+evaluation; the rescue subprocess received only the damaged copy and prior
+hash evidence. These two selected trials do not estimate field reliability.
+
 The sections below describe older releases and are historical.
 
 ## Version 0.7.0: additional evidence routes, dependency bundles, and prospective checks
