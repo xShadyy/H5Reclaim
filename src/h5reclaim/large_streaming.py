@@ -154,6 +154,9 @@ def _copy_sparse(source, target, *, size: int, parent: Path,
         try:
             hole_start = os.lseek(source.fileno(), data_start, os.SEEK_HOLE)
         except OSError as exc:
+            if cursor == 0 and exc.errno in (errno.EINVAL, errno.ENOTSUP, errno.ENOSYS):
+                return _copy_dense(source, target, size=size, parent=parent,
+                                   budget=budget, deadline=deadline)
             raise UnsupportedCase("sparse hole lookup failed; input was not copied") from exc
         if not data_start < hole_start <= size:
             raise RecoveryError("filesystem returned an invalid sparse hole extent")
