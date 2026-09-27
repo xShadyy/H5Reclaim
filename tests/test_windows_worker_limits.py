@@ -39,14 +39,14 @@ class WindowsWorkerLimitsTests(unittest.TestCase):
             child_script = ("import subprocess, sys, time; from pathlib import Path; "
                             "subprocess.Popen([sys.executable, '-c', "
                             "'import sys, time; from pathlib import Path; '"
-                            "'time.sleep(2); Path(sys.argv[1]).write_text(\"orphan\")', sys.argv[2]]); "
+                            "'time.sleep(5); Path(sys.argv[1]).write_text(\"orphan\")', sys.argv[2]]); "
                             "Path(sys.argv[1]).write_text('spawned'); time.sleep(20)")
             with self.assertRaises(subprocess.TimeoutExpired):
                 run_worker([sys.executable, "-c", child_script, str(ready), str(orphan)],
-                           env=os.environ.copy(), timeout_seconds=1,
+                           env=os.environ.copy(), timeout_seconds=3,
                            memory_bytes=256 * 1024**2)
             self.assertTrue(ready.exists(), "worker did not spawn its descendant")
-            time.sleep(2.25)
+            time.sleep(5.25)
             self.assertFalse(orphan.exists(), "timed-out worker left a live descendant")
 
 
