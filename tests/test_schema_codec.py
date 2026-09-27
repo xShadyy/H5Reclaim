@@ -21,6 +21,44 @@ from h5reclaim.schema_codec import (
 
 
 class SchemaCodecTests(unittest.TestCase):
+    def test_rank_three_deep_and_rank_four_edge_indexes_preserve_values(self) -> None:
+        fixtures = (
+            ((10, 10, 10), (2, 2, 2), "<i2", False, 1),
+            ((4, 5, 6, 7), (2, 2, 3, 4), ">f4", True, 0),
+        )
+        for shape, chunks, dtype, filtered, expected_root_level in fixtures:
+            with self.subTest(shape=shape), tempfile.TemporaryDirectory() as directory:
+                source = Path(directory) / "source.h5"
+                output = Path(directory) / "output.h5"
+                report = Path(directory) / "report.json"
+                values = np.arange(np.prod(shape), dtype=dtype).reshape(shape)
+                with h5py.File(source, "w", libver=("earliest", "v108")) as handle:
+                    handle.create_dataset(
+                        "data", data=values, chunks=chunks,
+                        maxshape=(None, *shape[1:]),
+                        compression="gzip" if filtered else None,
+                        fletcher32=filtered,
+                    )
+                spec = read_dataset_spec(source, "/data")
+                with H5File(source) as reader:
+                    layout = reader.read_dataset_layout(spec.object_address, rank=len(shape))
+                    root = reader.read_tree(
+                        layout.root_address, rank=len(shape),
+                        element_size=np.dtype(dtype).itemsize,
+                    )
+                    self.assertEqual(root.level, expected_root_level)
+                source_before = source.read_bytes()
+                result = recover(source, "/data", output, report)
+                self.assertEqual(source.read_bytes(), source_before)
+                self.assertTrue(result["complete"])
+                self.assertEqual(result["counts"]["recovered"], int(np.prod(spec.chunk_grid)))
+                with h5py.File(output, "r") as handle:
+                    dataset = handle["data"]
+                    self.assertEqual(dataset.maxshape, (None, *shape[1:]))
+                    self.assertEqual(dataset.dtype, np.dtype(dtype))
+                    np.testing.assert_array_equal(dataset[:], values)
+                    self.assertTrue(np.all(handle["/_h5reclaim/chunk_status"][:] == 1))
+
     def test_dataset_selection_never_follows_external_or_soft_link(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             related = Path(directory) / "related.h5"

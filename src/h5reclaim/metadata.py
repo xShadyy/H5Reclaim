@@ -168,8 +168,8 @@ def read_dataset_spec(source: Path, dataset_path: str) -> DatasetSpec:
 
             shape = selected.shape
             chunks = selected.chunks
-            if len(shape) not in (1, 2) or chunks is None or len(chunks) != len(shape):
-                raise UnsupportedCase("expected a rank-one or rank-two chunked dataset")
+            if len(shape) not in (1, 2, 3, 4) or chunks is None or len(chunks) != len(shape):
+                raise UnsupportedCase("expected a rank-one through rank-four chunked dataset")
             if any(length <= 0 or chunk <= 0 for length, chunk in zip(shape, chunks)):
                 raise UnsupportedCase("dimensions and chunk extents must be positive")
             if prod(shape) > 1_048_576:

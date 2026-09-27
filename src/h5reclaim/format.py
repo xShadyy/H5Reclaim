@@ -1,7 +1,7 @@
 """Bounded, read-only parser for the first H5Reclaim recovery case.
 
 This module accepts v0/v1 superblocks, bounded v1 object headers with a v3
-chunked layout, and v1 type-1 B-tree nodes for declared rank-one or rank-two
+chunked layout, and v1 type-1 B-tree nodes for declared rank-one through rank-four
 datasets with one-, two-, four-, or eight-byte fixed-width elements. Addresses exposed
 by HDF5 metadata are relative to the superblock base; pointer_offset is an
 absolute byte offset in the source file. Parsing a plausible TREE signature
@@ -222,8 +222,8 @@ class H5File:
         lookup. One directly addressed v1 continuation is accepted; nested,
         shared, cyclic, or duplicate layout messages are refused.
         """
-        if rank not in (1, 2):
-            raise UnsupportedFormat("only rank-one and rank-two chunk keys are supported")
+        if rank not in (1, 2, 3, 4):
+            raise UnsupportedFormat("only rank-one through rank-four chunk keys are supported")
         prefix = self.read_at(object_address, 16)
         if prefix[0] != 1:
             raise UnsupportedFormat(f"object header version {prefix[0]} is unsupported")
@@ -308,8 +308,8 @@ class H5File:
         )
         if any(value == 0 for value in dimensions):
             raise FormatError("zero chunk dimension or datatype element size")
-        if rank not in (1, 2) or dimensions[-1] not in (1, 2, 4, 8):
-            raise UnsupportedFormat("only rank-one/two fixed-width 1/2/4/8-byte elements")
+        if rank not in (1, 2, 3, 4) or dimensions[-1] not in (1, 2, 4, 8):
+            raise UnsupportedFormat("only rank-one through four fixed-width 1/2/4/8-byte elements")
         if any(data[fields_end:]):
             raise FormatError("nonzero layout message padding")
         return DatasetLayout(root, dimensions[:-1], dimensions[-1], 3)
@@ -325,7 +325,7 @@ class H5File:
 
     def read_tree(self, address: int, *, rank: int = 2, element_size: int = 4) -> TreeNode:
         """Decode used entries of an explicitly declared type-1 v1 B-tree node."""
-        if rank not in (1, 2) or element_size not in (1, 2, 4, 8):
+        if rank not in (1, 2, 3, 4) or element_size not in (1, 2, 4, 8):
             raise UnsupportedFormat("unsupported rank and datatype-element-size pair")
         key_size = 8 + 8 * (rank + 1)
         header = self.read_at(address, 8 + 2 * self.superblock.offset_size)
