@@ -35,6 +35,8 @@ The random-value benchmark's pristine SHA-256 was `a39249692c51f51a77580234a0b0f
 
 A second independent random-value trial used seed `17444100253769056495` and again recovered all 1,024 chunks, including all 57 unavailable to the native reader, with zero wrong placements, incorrect-value chunks, or missing regions. Both pristine and damaged source hashes were unchanged. The first attempt to repeat this trial used a nonempty work directory and correctly refused to overwrite it; a fresh directory succeeded. The initially attempted `python -m build` command was unavailable in the test environment, so the documented wheel check used `pip wheel` instead.
 
+The Apache 2.0 `LICENSE` text was synchronized byte for byte with GitHub's license API on 2026-09-27. This changed a leading blank line only; the declared license and program behavior remain the same.
+
 ## Limits and next work
 
 This is an experimental narrow release. It requires h5py to resolve selected dataset metadata from the damaged file. Only v0/v1 superblocks, inline v1 object headers, v3 chunked layouts, a level-one v1 raw-data B-tree, unfiltered fixed-size rank-two `uint32`, and at most one lost root-to-leaf pointer are implemented. A two-sided sibling bridge and parent key interval support structural attribution, not historical byte integrity. The report says when no checksum is available.
