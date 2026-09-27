@@ -24,9 +24,10 @@ def candidate_addresses(reader: ModernH5File, signature: bytes) -> Iterator[int]
     if reader.size > MAX_REPAIR_SCAN_BYTES:
         raise UnsupportedFormat("modern index link reconstruction scan exceeds 512 MiB limit")
     previous = b""
-    for start in range(0, min(reader.size, reader.superblock.eof_address), REPAIR_SCAN_BLOCK):
+    scan_limit = min(reader.size, reader.superblock.eof_address)
+    for start in range(0, scan_limit, REPAIR_SCAN_BLOCK):
         data = reader._read_absolute(
-            start, min(REPAIR_SCAN_BLOCK, reader.superblock.eof_address - start))
+            start, min(REPAIR_SCAN_BLOCK, scan_limit - start))
         window = previous + data
         base = start - len(previous)
         at = window.find(signature)

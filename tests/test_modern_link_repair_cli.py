@@ -12,6 +12,7 @@ from pathlib import Path
 import h5py
 import numpy as np
 
+from h5reclaim.modern_link_repair import candidate_addresses
 from h5reclaim.modern_indexes import ModernH5File
 
 
@@ -20,6 +21,21 @@ class ModernLinkRepairCLITests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.folder = Path(self.temp.name)
+
+    def test_candidate_scan_stops_at_physical_eof_when_declared_eof_is_larger(self):
+        class TailReader:
+            size = 9
+            superblock = type("Superblock", (), {
+                "eof_address": 20, "base_address": 0, "offset_size": 8,
+            })()
+
+            def _read_absolute(self, start, length):
+                payload = b".....EAIB"
+                if start + length > len(payload):
+                    raise AssertionError("scanner read beyond the physical tail")
+                return payload[start:start+length]
+
+        self.assertEqual(list(candidate_addresses(TailReader(), b"EAIB")), [5])
 
     def rescue(self, source: Path) -> dict[str, object]:
         output = self.folder / "recovered.h5"
