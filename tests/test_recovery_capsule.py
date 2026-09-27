@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import shutil
 import tempfile
 import unittest
@@ -207,6 +208,33 @@ class RecoveryCapsuleTests(unittest.TestCase):
         with self.assertRaisesRegex(RecoveryError, "contradicts capsule path"):
             restore_from_capsule(self.damaged, self.capsule, capture["archive_sha256"],
                                  self.output, self.report, dataset_path="/science/other")
+
+    def test_authentic_gwosc_bytes_with_destroyed_root(self) -> None:
+        original = (Path(__file__).resolve().parents[1] / "corpus" / "files" /
+                    "H-H1_GWOSC_4KHZ_R1-1126259447-32.hdf5")
+        if not original.is_file():
+            self.skipTest("the bundled authentic GWOSC file is unavailable")
+        from_manifest = json.loads((original.parents[1] / "manifest.json").read_text())
+        # A pinned source identity prevents an altered or replaced fixture from
+        # being counted as an authentic-data success.
+        entries = from_manifest["entries"]
+        source_entry = next(entry for entry in entries
+                            if entry["path"] == "files/" + original.name)
+        self.assertEqual(sha256_file(original), source_entry["sha256"])
+        dataset = "/strain/Strain"
+        capture = capture_recovery_capsule(original, dataset, self.capsule)
+        shutil.copyfile(original, self.damaged)
+        self.corrupt_root()
+        report = restore_from_capsule(self.damaged, self.capsule,
+                                      capture["archive_sha256"], self.output,
+                                      self.report, dataset_path=dataset)
+        self.assertTrue(report["complete"])
+        self.assertEqual(report["full_chunks"], 64)
+        with h5py.File(original, "r") as truth, h5py.File(self.output, "r") as restored:
+            self.assertEqual(
+                hashlib.sha256(truth[dataset][...].tobytes()).digest(),
+                hashlib.sha256(restored[dataset][...].tobytes()).digest(),
+            )
 
 
 if __name__ == "__main__":
