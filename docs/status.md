@@ -2,6 +2,69 @@
 
 Updated: 2026-09-27
 
+## Version 0.11.0: prior-capture policy, protection drills, bounded context and nested VDS
+
+The guided `rescue` route now separates **current placement/readability** from
+equality to an operator-supplied prospective capture. Its historical-status
+map marks a unit as matching only on the pinned chunk-baseline,
+element-baseline, capsule, replica or parity routes; otherwise historical
+equality remains unknown. `--strict-history` refuses publication without one
+of those routes. A matching pin does not authenticate when evidence was made,
+the custody of its hash, or whether the captured measurements were correct.
+The controlled unchecksummed bit mutation remains a concrete example: an
+ordinary structural read can present the changed current value, while strict
+mode refuses or a pre-incident baseline withholds that unit.
+
+`protect` atomically captures one ZIP with an exact selected schema/physical
+capsule and, for a fully allocated supported numeric grid, a prior coordinate
+baseline and multiple-erasure sidecar. `verify-protection` requires the
+separately retained manifest SHA-256. `drill-protection` uses disposable copies
+to test root-loss capsule restoration and, when parity exists, a two-chunk
+loss in one stripe. Capsule-only capture covers eligible sparse or fixed
+records. `rescue --protection-bundle` directly verifies the retained manifest
+digest, privately extracts capsule or erasure members, and restores through
+the selected existing route. Reports identify durable ZIP components and
+hashes. Capture and drill need an intact source; neither an
+unauthenticated local timestamp nor a hash kept beside the bundle proves
+pre-incident capture or independent storage.
+
+One finite nested VDS hop can now reach a hash-pinned local numeric source.
+Both mapping levels, datatype, leaf allocation and physical ownership are
+checked. Missing or unpinned leaf values stay unknown. A third VDS layer,
+overlap, dynamic source names and transitive external raw storage refuse.
+Guided rescue also records a bounded `scientific_context` audit of selected
+attribute and unit names, small fixed unit strings, scale markers and
+ancestor group links. It describes what was omitted from the derived output;
+when the damaged file cannot be safely opened or is a multi-member driver
+bundle it reports `uninspected`. The observation is tied to the selected
+source hash and does not establish historical values.
+
+Native child launches now apply a Windows Job Object memory and process-tree
+limit before resuming the worker. POSIX address-space limits remain. Windows
+platform tests are configured in CI; local verification on Linux cannot
+assert that they passed on Windows.
+
+The incident intake and blind scorer accept consented naturally damaged files
+with recorded hashes and provenance. Exact historical scoring requires an
+independently held pre-incident truth source or prior evidence. The bundled
+authentic corpus and injected faults remain development calibration, not
+naturally damaged field incidents. No independent field success rate has been
+measured; overwritten unique bytes, ungrounded ownership, absent dependencies
+and missing trustworthy prior evidence still impose hard limits.
+
+Release verification on 2026-09-27: the complete unit suite passed **561
+tests in 428 seconds** (three Windows-only tests skipped on Linux). Eight
+benchmark/evaluator self-checks passed separately. The four pinned authentic
+originals passed size and SHA-256 checks; the 251-dataset survey still found
+six selected chunked structural candidates. The controlled GWOSC broken-index
+trial recovered 128/128 exact chunks against its untouched evaluator original,
+including 57 affected chunks. Public CLI tests also checked direct protected
+root-loss and two-chunk parity restoration, consistent external/embedded
+reports, report-link rollback, and strict refusal without prior capture. A
+0.11.0 wheel built. Actual Windows Job behavior is configured for CI but has
+not been run in this Linux workspace. These are selected tests, not a field
+success estimate.
+
 ## Version 0.10.1: documentation correction
 
 The generalization plan now matches the v0.10.0 implementation of one
