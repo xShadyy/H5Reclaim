@@ -37,7 +37,7 @@ def _check_targets(source: Path, output: Path, manifest: Path) -> None:
         raise FileExistsError(f"manifest already exists: {manifest}")
 
 
-def _inspect_healthy(source: Path, dataset_path: str) -> dict:
+def _inspect_healthy(source: Path, dataset_path: str, child_index: int | None = None) -> dict:
     """Cross-check a selected object's actual tree with HDF5's healthy index."""
     with h5py.File(source, "r") as handle, H5File(source) as raw:
         dataset = handle[dataset_path]
@@ -121,7 +121,7 @@ def _inspect_healthy(source: Path, dataset_path: str) -> dict:
 
         # Select an interior leaf with reciprocal siblings. Both adjacent
         # leaves remain reachable after this parent's pointer is broken.
-        chosen = None
+        eligible = []
         for index in range(1, len(leaves) - 1):
             left, leaf, right = leaves[index - 1 : index + 2]
             if (
@@ -131,10 +131,15 @@ def _inspect_healthy(source: Path, dataset_path: str) -> dict:
                 and left.right_sibling == leaf.address
                 and right.left_sibling == leaf.address
             ):
-                chosen = index
-                break
-        if chosen is None:
+                eligible.append(index)
+        if not eligible:
             raise ValueError("no interior leaf has reciprocal surviving siblings")
+        if child_index is not None and child_index not in eligible:
+            raise ValueError(
+                f"child index {child_index} is not an eligible interior leaf; "
+                f"eligible indices: {eligible}"
+            )
+        chosen = eligible[0] if child_index is None else child_index
         leaf = leaves[chosen]
         pointer = root.entries[chosen]
         return {
@@ -198,14 +203,17 @@ def _observed_damage(clean: Path, damaged: Path, details: dict) -> dict:
     }
 
 
-def make_damage(source: Path, output: Path, manifest: Path, dataset_path: str) -> dict:
+def make_damage(
+    source: Path, output: Path, manifest: Path, dataset_path: str,
+    child_index: int | None = None,
+) -> dict:
     """Validate, damage a temporary copy, observe failure, then publish it."""
     _check_targets(source, output, manifest)
     source_size = source.stat().st_size
     if source_size > MAX_FIXTURE_BYTES:
         raise ValueError("input exceeds 16 MiB controlled-fixture limit")
     before = source.read_bytes()
-    details = _inspect_healthy(source, dataset_path)
+    details = _inspect_healthy(source, dataset_path, child_index=child_index)
     pointer_at = details["pointer_offset"]
     pointer_size = details["pointer_size"]
     original_pointer = details["pointer_value"].to_bytes(pointer_size, "little")
@@ -288,8 +296,15 @@ def main() -> None:
     parser.add_argument("--output", required=True, type=Path, help="new disposable damaged copy")
     parser.add_argument("--manifest", required=True, type=Path, help="benchmark truth kept outside recovery input")
     parser.add_argument("--dataset", default="/measurements", help="selected dataset path")
+    parser.add_argument(
+        "--child-index", type=int,
+        help="verified interior root child slot to damage (default: first eligible slot)",
+    )
     args = parser.parse_args()
-    result = make_damage(args.input, args.output, args.manifest, args.dataset)
+    result = make_damage(
+        args.input, args.output, args.manifest, args.dataset,
+        child_index=args.child_index,
+    )
     print(f"damaged copy: {args.output}")
     print(f"benchmark manifest: {args.manifest}")
     print(f"source SHA-256: {result['source_sha256']}")
