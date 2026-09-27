@@ -17,7 +17,7 @@ MAX_REQUEST_BYTES = 65536
 
 def _apply_memory_limit(max_bytes: int) -> int | None:
     if os.name == "nt":
-        return None  # Windows currently has a wall-clock deadline, but no Job Object quota.
+        return None  # Parent's Windows Job Object caps committed memory.
     try:
         import resource
     except ImportError:

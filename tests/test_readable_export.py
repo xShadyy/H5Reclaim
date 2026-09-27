@@ -551,11 +551,14 @@ class ReadableExportTests(unittest.TestCase):
             def hung_child(*args, **kwargs):
                 self.assertEqual(kwargs["env"]["HDF5_PLUGIN_PRELOAD"], "::")
                 self.assertNotIn("HDF5_PLUGIN_PATH", kwargs["env"])
-                return real_run([sys.executable, "-c", "import time; time.sleep(3)"], **kwargs)
+                return real_run([sys.executable, "-c", "import time; time.sleep(3)"],
+                                env=kwargs["env"], stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                timeout=kwargs["timeout_seconds"])
 
             with patch.dict(os.environ, {"HDF5_PLUGIN_PATH": str(base),
                                          "HDF5_PLUGIN_PRELOAD": "unsafe"}):
-                with patch("h5reclaim.readable_export.subprocess.run", side_effect=hung_child):
+                with patch("h5reclaim.worker_limits.run_worker", side_effect=hung_child):
                     with self.assertRaisesRegex(RecoveryError, "time limit"):
                         export_readable(source, "/values", output, report, timeout_seconds=0.05)
             self.assertEqual(digest(source), original)
@@ -575,9 +578,12 @@ class ReadableExportTests(unittest.TestCase):
 
             def crashed_child(*args, **kwargs):
                 return real_run([sys.executable, "-c", "import os, signal; "
-                                 "os.kill(os.getpid(), signal.SIGKILL)"], **kwargs)
+                                 "os.kill(os.getpid(), signal.SIGKILL)"],
+                                env=kwargs["env"], stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                timeout=kwargs["timeout_seconds"])
 
-            with patch("h5reclaim.readable_export.subprocess.run", side_effect=crashed_child):
+            with patch("h5reclaim.worker_limits.run_worker", side_effect=crashed_child):
                 with self.assertRaisesRegex(RecoveryError, "without a result"):
                     export_readable(source, "/values", output, report)
             self.assertEqual(digest(source), original)

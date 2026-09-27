@@ -15,6 +15,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from .worker_limits import run_worker
+
 MAX_REQUEST = 65536
 MAX_REPORT = 32 * 1024 * 1024
 ROUTES = frozenset({
@@ -150,10 +152,9 @@ def run_route(route: str, output: str | Path, report: str | Path, **args: str) -
             environment.pop("HDF5_PLUGIN_PATH", None)
             environment.pop("HDF5_EXTFILE_PREFIX", None)
             try:
-                result = subprocess.run(
+                result = run_worker(
                     [sys.executable, "-m", "h5reclaim.route_worker", str(request), str(response)],
-                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    env=environment, timeout=900, check=False,
+                    env=environment, timeout_seconds=900, memory_bytes=3 * 1024**3,
                 )
             except subprocess.TimeoutExpired as exc:
                 raise RecoveryError("route worker exceeded the 900-second deadline") from exc

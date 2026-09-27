@@ -758,9 +758,9 @@ def export_readable(source: str | Path, dataset_path: str, output: str | Path,
     """Copy a local dataset in a time-bounded process, publishing only after verification.
 
     The subprocess isolates native HDF5 crashes and hangs from the caller. On
-    POSIX it also limits virtual address space. Windows enforces the deadline
-    but currently has no OS memory quota. Only a successful staged result is
-    linked to the requested output and report destinations.
+    POSIX it also limits virtual address space. On Windows a Job Object caps
+    committed memory and owns the child process tree. Only a successful staged
+    result is linked to the requested output and report destinations.
     """
     source, output, report_path = Path(source), Path(output), Path(report_path)
     _validate_paths(source, output, report_path)
@@ -797,9 +797,9 @@ def export_readable(source: str | Path, dataset_path: str, output: str | Path,
             command = [sys.executable, "-m", "h5reclaim.native_worker",
                        str(request_path), str(response_path)]
             try:
-                completed = subprocess.run(command, env=environment, stdin=subprocess.DEVNULL,
-                                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                           check=False, timeout=timeout_seconds)
+                from .worker_limits import run_worker
+                completed = run_worker(command, env=environment,
+                                       timeout_seconds=timeout_seconds, memory_bytes=memory_bytes)
             except subprocess.TimeoutExpired as exc:
                 raise RecoveryError("native HDF5 worker exceeded its time limit") from exc
             message = _worker_message(response_path) if response_path.exists() else None
