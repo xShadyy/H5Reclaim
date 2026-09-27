@@ -110,6 +110,7 @@ class ModernIndex:
     chunks: tuple[ModernChunk, ...]
     data_block_address: int | None = None
     data_block_pointer_offset: int | None = None
+    reconstructed_data_block_pointer: bool = False
 
 
 class ModernH5File:

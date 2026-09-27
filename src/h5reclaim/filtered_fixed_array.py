@@ -21,8 +21,69 @@ from .modern_indexes import (
 )
 
 
+MAX_REPAIR_SCAN_BYTES = 512 << 20
+REPAIR_SCAN_BLOCK = 4 << 20
+
+
 def _uint(raw: bytes) -> int:
     return int.from_bytes(raw, "little")
+
+
+def _reconstruct_data_block_pointer(
+    reader: ModernH5File, header: bytes, root: int, pointer: int,
+    count: int, entry_size: int, layout_page_bits: int, filtered: bool,
+) -> int:
+    """Bridge one damaged FAHD address only if its original checksum agrees.
+
+    FADB carries the FAHD address as an independent back-pointer. A candidate
+    must also have its own valid checksum, and substituting its *address* into
+    FAHD must restore the on-disk FAHD checksum without changing any other
+    byte. Search is bounded and two matching candidates make the repair
+    ambiguous. A checksum field or a second header field damaged as well
+    therefore cannot be repaired by this route.
+    """
+    sb = reader.superblock
+    if reader.size > MAX_REPAIR_SCAN_BYTES:
+        raise UnsupportedFormat("fixed-array pointer reconstruction scan exceeds 512 MiB limit")
+    offsize = sb.offset_size
+    page_capacity = 1 << layout_page_bits
+    paged = count > page_capacity
+    pages = (count + page_capacity - 1) // page_capacity if paged else 0
+    bitmap_bytes = (pages + 7) // 8
+    prefix_size = 10 + offsize + bitmap_bytes
+    block_size = prefix_size + (count * entry_size + pages * 4 if paged else count * entry_size)
+    if block_size > MAX_READ_BYTES:
+        raise UnsupportedFormat("fixed-array data block exceeds bounded read limit")
+    wanted_checksum = _uint(header[-4:])
+    matches: list[int] = []
+    previous = b""
+    for start in range(0, min(reader.size, sb.eof_address), REPAIR_SCAN_BLOCK):
+        data = reader._read_absolute(start, min(REPAIR_SCAN_BLOCK, sb.eof_address - start))
+        window = previous + data
+        base = start - len(previous)
+        at = window.find(b"FADB")
+        while at >= 0:
+            absolute = base + at
+            candidate = absolute - sb.base_address
+            if (0 <= candidate < 1 << (8 * offsize)
+                    and absolute + block_size <= sb.eof_address
+                    and not any(absolute < end and begin < absolute + block_size
+                                for begin, end, _kind in reader.metadata_ranges)):
+                repaired = bytearray(header)
+                repaired[pointer:pointer+offsize] = candidate.to_bytes(offsize, "little")
+                if lookup3(repaired[:-4]) == wanted_checksum:
+                    raw = reader._read_absolute(absolute, prefix_size if paged else block_size)
+                    if (raw[:4] == b"FADB" and raw[4] == 0 and raw[5] == int(filtered)
+                            and _uint(raw[6:6+offsize]) == root
+                            and lookup3(raw[:-4]) == _uint(raw[-4:])):
+                        matches.append(candidate)
+                        if len(matches) > 1:
+                            raise FormatError("fixed-array pointer reconstruction is ambiguous")
+            at = window.find(b"FADB", at + 1)
+        previous = window[-3:]
+    if not matches:
+        raise FormatError("fixed-array header checksum mismatch; no uniquely verified data-block pointer")
+    return matches[0]
 
 
 def read_fixed_array_variants(
@@ -119,10 +180,11 @@ def read_fixed_array_variants(
         raise FormatError("fixed-array header entry width or page bits contradict selected layout")
     if _uint(header[8:8+lensize]) != count:
         raise FormatError("fixed-array header capacity contradicts selected chunk grid")
-    if lookup3(header[:-4]) != _uint(header[-4:]):
-        raise FormatError("fixed-array header checksum mismatch")
     pointer = 8 + lensize
-    data_block = _uint(header[pointer:pointer+offsize])
+    header_checksum_valid = lookup3(header[:-4]) == _uint(header[-4:])
+    data_block = (_uint(header[pointer:pointer+offsize]) if header_checksum_valid else
+                  _reconstruct_data_block_pointer(reader, header, root, pointer, count,
+                                                  entry_size, layout_page_bits, filtered))
     if data_block == sb.undefined_address:
         if not allow_sparse:
             raise UnsupportedFormat("fixed-array data block is unallocated")
@@ -222,7 +284,10 @@ def read_fixed_array_variants(
                 "metadata_checksums": {
                     "fahd": _uint(header[-4:]), "fadb": _uint(block[-4:]),
                     "page": _uint(page_raw[-4:]) if paged else None,
-                    "validated": True,
+                    "validated": header_checksum_valid,
+                    "fahd_original_checksum_valid": header_checksum_valid,
+                    "fahd_checksum_restored_by_pointer_substitution": not header_checksum_valid,
+                    "fahd_pointer_reconstructed": not header_checksum_valid,
                 },
                 "link_path": link_path,
             }
@@ -239,4 +304,5 @@ def read_fixed_array_variants(
     return ModernIndex("fixed_array", layout_version, object_address, root,
                        layout_pointer_offset, chunks, element_size, tuple(records),
                        data_block_address=data_block,
-                       data_block_pointer_offset=header_absolute + pointer)
+                       data_block_pointer_offset=header_absolute + pointer,
+                       reconstructed_data_block_pointer=not header_checksum_valid)

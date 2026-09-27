@@ -13,7 +13,7 @@ from .evidence import (
     IndexLink, PhysicalExtent, SourceRecord, reconcile,
 )
 from .metadata import DatasetSpec
-from .modern_indexes import ModernH5File, ModernIndex
+from .modern_indexes import ModernH5File, ModernIndex, lookup3
 from .schema_codec import fletcher32_applied
 
 
@@ -137,7 +137,31 @@ def _build(
                    for start, end, kind in reader.metadata_ranges
                    if kind == header_kind):
             raise ModernEvidenceError("index data-block pointer is not in its header")
-        if int.from_bytes(reader._read_absolute(fa_pointer, width), "little") != index.data_block_address:
+        observed_block_address = int.from_bytes(reader._read_absolute(fa_pointer, width), "little")
+        reconstructed = index.reconstructed_data_block_pointer
+        if reconstructed:
+            if index.index_type != "fixed_array" or observed_block_address == index.data_block_address:
+                raise ModernEvidenceError("reconstructed array pointer is not a damaged fixed-array link")
+            root_size = 12 + reader.superblock.length_size + width
+            raw_header = reader.read_at(index.base_address, root_size)
+            patched = bytearray(raw_header)
+            offset = fa_pointer - fa_header
+            patched[offset:offset+width] = index.data_block_address.to_bytes(width, "little")
+            if (lookup3(raw_header[:-4]) == int.from_bytes(raw_header[-4:], "little")
+                    or lookup3(patched[:-4]) != int.from_bytes(raw_header[-4:], "little")):
+                raise ModernEvidenceError("original fixed-array checksum is not restored by one pointer")
+            child = reader.read_at(index.data_block_address, 6 + width)
+            if (child[:4] != b"FADB" or child[4] != 0
+                    or int.from_bytes(child[6:6+width], "little") != index.base_address):
+                raise ModernEvidenceError("fixed-array data block does not point back to anchored header")
+            child_ranges = [(start, end) for start, end, kind in reader.metadata_ranges
+                            if start == fa_block and kind == "fixed-array data block"]
+            if len(child_ranges) != 1:
+                raise ModernEvidenceError("reconstructed fixed-array block is not uniquely reserved")
+            child_raw = reader._read_absolute(fa_block, child_ranges[0][1] - fa_block)
+            if lookup3(child_raw[:-4]) != int.from_bytes(child_raw[-4:], "little"):
+                raise ModernEvidenceError("reconstructed fixed-array block checksum differs")
+        elif observed_block_address != index.data_block_address:
             raise ModernEvidenceError("index header pointer bytes disagree with parsed data block")
         prefix = "fixed" if index.index_type == "fixed_array" else "extensible"
         links.extend((
@@ -145,9 +169,15 @@ def _build(
                       header_start, fa_header, "observed_index", pointer,
                       checks=(EvidenceCheck("address_rule", "pass", "validated layout points to index header"),)),
             IndexLink(f"{prefix}-header:data-block", source_id, spec.path,
-                      fa_header, fa_block, "observed_index",
+                      fa_header, fa_block, "bridged_index" if reconstructed else "observed_index",
                       PhysicalExtent(source_id, fa_pointer, width),
-                      checks=(EvidenceCheck("address_rule", "pass", "validated header points to index block"),)),
+                      checks=(
+                          EvidenceCheck("selected_header_anchor", "pass", "validated layout points to FAHD"),
+                          EvidenceCheck("original_header_checksum_restored", "pass", "only the address bytes are substituted"),
+                          EvidenceCheck("data_block_checksum_and_backpointer", "pass", "FADB checksum and FAHD back-pointer match"),
+                          EvidenceCheck("unique_data_block", "pass", "bounded candidate search found exactly one match"),
+                      ) if reconstructed else
+                      (EvidenceCheck("address_rule", "pass", "validated header points to index block"),)),
         ))
         shared_path = (f"layout:{prefix}-header", f"{prefix}-header:data-block")
     elif index.index_type == "v2_btree" and index.chunks:

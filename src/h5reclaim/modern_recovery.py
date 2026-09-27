@@ -96,7 +96,8 @@ def analyze_modern_snapshot(
                 index=chunk_index, coordinate=coordinate,
                 file_address=chunk.address, absolute_offset=absolute,
                 length=chunk.size, leaf_address=None,
-                route=f"intact_{index.index_type}", evidence=chunk.evidence,
+                route=("reconstructed_fa_header_link" if index.reconstructed_data_block_pointer
+                       else f"intact_{index.index_type}"), evidence=chunk.evidence,
                 payload=payload,
                 filter_mask=chunk.filter_mask,
             ))
@@ -132,8 +133,9 @@ def analyze_modern_snapshot(
         "tool": "h5reclaim",
         "tool_version": VERSION,
         "execution_state": "finished",
-        "operation": "intact_index_export",
-        "structural_repair": False,
+        "operation": "modern_fixed_array_pointer_recovery" if index.reconstructed_data_block_pointer
+                     else "intact_index_export",
+        "structural_repair": index.reconstructed_data_block_pointer,
         "outcome": "complete" if complete else "partial",
         "complete": complete,
         "source": {
@@ -158,11 +160,16 @@ def analyze_modern_snapshot(
             "base_address": index.base_address,
             "fixed_array_data_block_address": index.data_block_address,
             "root_address": None, "root_level": None,
-            "reachable_leaves": 0, "broken_links": 0,
+            "reachable_leaves": 0, "broken_links": int(index.reconstructed_data_block_pointer),
         },
         "counts": counts,
-        "reconstructed_chunks": 0,
-        "unresolved_links": [],
+        "reconstructed_chunks": len(accepted) if index.reconstructed_data_block_pointer else 0,
+        "unresolved_links": [{
+            "type": "fixed_array_header_to_data_block",
+            "damaged_pointer_absolute_offset": index.data_block_pointer_offset,
+            "reconstructed_data_block_address": index.data_block_address,
+            "resolution": "unique checksum-restoring candidate with FADB checksum and FAHD back-pointer",
+        }] if index.reconstructed_data_block_pointer else [],
         "failed_chunks": failed,
         "evidence_ledger": json.loads(json.dumps(ledger.to_dict())),
         "ownership_inventory": ownership_inventory.report(),
@@ -183,12 +190,18 @@ def analyze_modern_snapshot(
             "local selected dataset resolved from same snapshot",
             "version-2/3 superblock and checksum-verified version-2 object header",
             "version-4/5 chunked layout with validated direct, fixed-array, extensible-array, or v2 B-tree index",
-            "index is intact; no broken modern index pointers were inferred",
+            ("one damaged FAHD pointer was uniquely reconstructed while restoring the original "
+             "FAHD checksum; FADB checksum and FAHD back-pointer agreed"
+             if index.reconstructed_data_block_pointer else
+             "index is intact; no broken modern index pointers were inferred"),
         ],
         "coverage_note": (
-            "This route exports allocated chunks whose modern index is intact. "
-            "It does not show that native HDF5 could not already read the dataset "
-            "and must not be scored as repair of damaged index links."
+            ("One broken FAHD-to-FADB pointer was reconstructed; all reported chunks "
+             "follow the uniquely bridged index and remain subject to payload integrity limits."
+             if index.reconstructed_data_block_pointer else
+             "This route exports allocated chunks whose modern index is intact. "
+             "It does not show that native HDF5 could not already read the dataset "
+             "and must not be scored as repair of damaged index links.")
         ),
         "integrity_note": (
             "Chunk address and coordinate follow the selected object's validated index. "

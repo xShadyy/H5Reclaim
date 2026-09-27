@@ -33,6 +33,10 @@ _REQUIRED_CHECKS = frozenset({
 _BRIDGE_CHECKS = frozenset({
     "parent_key_interval", "reciprocal_sibling_links", "unique_node", "node_level"
 })
+_ARRAY_POINTER_BRIDGE_CHECKS = frozenset({
+    "selected_header_anchor", "original_header_checksum_restored",
+    "data_block_checksum_and_backpointer", "unique_data_block",
+})
 
 
 def _digest(value: str) -> bool:
@@ -371,28 +375,30 @@ def _link_chain_valid(
         ):
             return False
         if link.kind == "bridged_index":
-            if (
-                len(link.corroborator_ids) != 2
-                or not _passed(link.checks, _BRIDGE_CHECKS)
-                or any(check.result == "fail" for check in link.checks)
-            ):
+            if any(check.result == "fail" for check in link.checks):
                 return False
-            corroborators = [links.get(link_id) for link_id in link.corroborator_ids]
-            if (
-                link.corroborator_ids[0] == link.corroborator_ids[1]
-                or any(item is None for item in corroborators)
-                or {item.side for item in corroborators} != {"left", "right"}
-                or any(
-                    item.kind != "observed_sibling" or item.source_id != link.source_id
-                    or item.dataset_path != link.dataset_path
-                    or item.child_offset != link.child_offset
-                    or item.pointer_extent is None
-                    or item.parent_offset == link.child_offset
-                    for item in corroborators
-                )
-                or corroborators[0].parent_offset == corroborators[1].parent_offset
-            ):
-                return False
+            if _passed(link.checks, _ARRAY_POINTER_BRIDGE_CHECKS):
+                if link.corroborator_ids:
+                    return False
+            else:
+                if len(link.corroborator_ids) != 2 or not _passed(link.checks, _BRIDGE_CHECKS):
+                    return False
+                corroborators = [links.get(link_id) for link_id in link.corroborator_ids]
+                if (
+                    link.corroborator_ids[0] == link.corroborator_ids[1]
+                    or any(item is None for item in corroborators)
+                    or {item.side for item in corroborators} != {"left", "right"}
+                    or any(
+                        item.kind != "observed_sibling" or item.source_id != link.source_id
+                        or item.dataset_path != link.dataset_path
+                        or item.child_offset != link.child_offset
+                        or item.pointer_extent is None
+                        or item.parent_offset == link.child_offset
+                        for item in corroborators
+                    )
+                    or corroborators[0].parent_offset == corroborators[1].parent_offset
+                ):
+                    return False
         current = link.child_offset
     return current == proposal.extent.offset
 
