@@ -18,6 +18,7 @@ import numpy as np
 from .format import FormatError
 from .metadata import DatasetSpec, UnsupportedCase
 from .modern_indexes import MAX_CHUNKS, ModernH5File
+from .ownership_inventory import inventory_other_allocations, reject_sibling_overlap
 from .schema_codec import (
     ChunkDecodeError as SchemaChunkDecodeError, fletcher32_applied,
     validate_stored_size,
@@ -108,6 +109,9 @@ def analyze_modern_snapshot(
                 if start < meta_end and meta_start < end:
                     raise FormatError(f"chunk {coordinate} overlaps parsed {kind}")
 
+        ownership_inventory = inventory_other_allocations(snapshot, spec.object_address)
+        reject_sibling_overlap(ordered, ownership_inventory)
+
         from .modern_evidence_adapter import build_modern_evidence
         ledger = build_modern_evidence(
             spec, reader, index, accepted,
@@ -161,6 +165,7 @@ def analyze_modern_snapshot(
         "unresolved_links": [],
         "failed_chunks": failed,
         "evidence_ledger": json.loads(json.dumps(ledger.to_dict())),
+        "ownership_inventory": ownership_inventory.report(),
         "mappings": [
             {
                 "coordinate": list(record.coordinate), "chunk_index": list(record.index),

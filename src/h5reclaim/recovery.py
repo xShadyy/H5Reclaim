@@ -18,6 +18,7 @@ import numpy as np
 from .format import FormatError, H5File, SIGNATURE
 from .hints import DatasetHints, compare_hints, require_no_conflicts
 from .metadata import DatasetSpec, UnsupportedCase, read_dataset_spec
+from .ownership_inventory import inventory_other_allocations, reject_sibling_overlap
 from .schema_codec import (
     ChunkDecodeError as SchemaChunkDecodeError,
     MissingFilterDecoder as SchemaMissingFilterDecoder,
@@ -445,6 +446,9 @@ def _analyze_snapshot(
                         f"chunk {coordinate} overlaps parsed {kind} at byte {meta_start}"
                     )
 
+        ownership_inventory = inventory_other_allocations(snapshot, spec.object_address)
+        reject_sibling_overlap(ordered_ranges, ownership_inventory)
+
         from .evidence_adapter import build_recovery_evidence
         ledger = build_recovery_evidence(
             spec, reader, walk, root, leaves, records,
@@ -522,6 +526,7 @@ def _analyze_snapshot(
         "failed_chunks": failed,
         "mappings": mappings,
         "evidence_ledger": ledger.to_dict(),
+        "ownership_inventory": ownership_inventory.report(),
         "assumptions": [
             "one selected chunked numeric dataset; bounded raw filter reversal and nominal chunk bytes",
             (
