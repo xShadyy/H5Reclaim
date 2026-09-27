@@ -68,6 +68,7 @@ def read_v2_btree_chunks(
     chunk_shape: tuple[int, ...],
     element_size: int,
     filters: tuple[int, ...],
+    maxshape: tuple[int | None, ...] | None = None,
     max_chunks: int = MAX_CHUNKS,
 ) -> ModernIndex:
     """Return checked ``ModernIndex`` records for an observed v2 B-tree.
@@ -89,6 +90,14 @@ def read_v2_btree_chunks(
         raise FormatError("invalid dataset dimensions")
     if any(not isinstance(x, int) or x <= 0 for x in (*chunk_shape, element_size)):
         raise FormatError("invalid chunk dimensions or element size")
+    if maxshape is not None:
+        if len(maxshape) != len(shape) or any(
+            bound is not None and (not isinstance(bound, int) or bound < current)
+            for bound, current in zip(maxshape, shape)
+        ):
+            raise FormatError("v2 B-tree maximum extents contradict current dimensions")
+        if sum(bound is None for bound in maxshape) < 2:
+            raise FormatError("v2 B-tree chunk index requires multiple unlimited dimensions")
     if max_chunks < 1 or max_chunks > MAX_CHUNKS:
         raise UnsupportedFormat("v2 B-tree record limit is out of range")
     if len(filters) > 32:

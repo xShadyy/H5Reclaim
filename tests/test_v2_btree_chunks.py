@@ -48,6 +48,7 @@ class V2BTreeChunkTests(unittest.TestCase):
                 layout_version=layout[0], layout_pointer_offset=layout_offset + len(layout) - 8,
                 shape=dataset.shape, chunk_shape=dataset.chunks,
                 element_size=dataset.dtype.itemsize, filters=filters,
+                maxshape=dataset.maxshape,
             )
             self.assertEqual(index.index_type, "v2_btree")
             self.assertEqual(len(index.chunks), dataset.id.get_num_chunks())
@@ -76,6 +77,7 @@ class V2BTreeChunkTests(unittest.TestCase):
                 reader, object_address=obj, index_address=root,
                 layout_version=layout[0], layout_pointer_offset=layout_offset + len(layout) - 8,
                 shape=shape, chunk_shape=(2, 2), element_size=4, filters=filters,
+                maxshape=(None, None),
             )
 
     def test_unfiltered_internal_and_leaf_records_match_native(self):
@@ -210,6 +212,20 @@ class V2BTreeChunkTests(unittest.TestCase):
                     reader, object_address=obj, index_address=root,
                     layout_version=4, layout_pointer_offset=obj,
                     shape=(60, 60), chunk_shape=(2, 2), element_size=4, filters=(),
+                )
+
+    def test_maximum_extents_contradiction_refuses(self):
+        self.fixture(sparse=True)
+        obj, root, _, _ = self.inspect()
+        with ModernH5File(self.path) as reader:
+            layout, layout_offset = reader._parse_object_layout(obj)
+            with self.assertRaisesRegex(FormatError, "multiple unlimited"):
+                read_v2_btree_chunks(
+                    reader, object_address=obj, index_address=root,
+                    layout_version=layout[0],
+                    layout_pointer_offset=layout_offset + len(layout) - 8,
+                    shape=(60, 60), chunk_shape=(2, 2), element_size=4,
+                    filters=(), maxshape=(None, 60),
                 )
 
 
