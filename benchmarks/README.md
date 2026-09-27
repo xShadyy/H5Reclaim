@@ -1,5 +1,51 @@
 # Independent broken-link benchmark
 
+## Seeded scientific damage matrix
+
+From the repository root, with h5py and NumPy installed, run:
+
+```sh
+python benchmarks/run_seeded_matrix.py --seed 20260927 --trials 2
+```
+
+The default run verifies the pinned SHA-256 of all four unchanged scientific
+files and executes 23 cases on disposable copies. Ten fault cases per trial
+cover a broken or redirected version-one root link, two broken links, a
+compressed payload bit flip, combined index and payload faults, a damaged
+selected object header, an invalid HDF5 signature, a lost direct payload
+pointer, and truncation through a compressed payload. The 4 kHz and 16 kHz
+GWOSC files exercise distinct level-zero and level-one index layouts. Three
+additional baselines cover an intact direct index and explicit refusal of
+the representative quantum and aircraft scientific datasets.
+
+The seed reproducibly selects payload chunk indices and bits, a direct-index
+pointer, and the signature bit. `--trials N` selects 1 through 20 distinct
+seeded choices per fault class. Cases share the same original files and are
+correlated; more trials do not establish a population success percentage.
+The unchanged reference is available only to the evaluator's comparison
+code, not as a recovery subprocess argument. This is program-input separation,
+not adversarial filesystem isolation. Recovery uses the damaged copy alone.
+
+The evaluator compares each accepted chunk's exact float64 bits and coordinate
+with the original, checks its claimed source byte range and checksum route,
+and counts native reads that fail or return wrong values. The summary keeps
+exact accepted chunks, unresolved chunks, false accepted chunks, and safe
+refusals separate. A refusal contributes no recovered measurements. If a
+wrong accepted value or an unexpected output appears, the command exits
+nonzero and still saves the full evaluation as `matrix.json`. An evaluator
+regression deliberately alters a claimed measurement after a valid run and
+confirms that the false acceptance is detected. `--json` prints the full
+record; `--work-dir NEW-OR-EMPTY-DIR` retains the copies at a chosen path.
+
+The default 20260927 run passed 23 chosen cases: 954 exactly verified accepted
+chunks, including 226 that native HDF5 could not read correctly from the
+damaged copy; zero false accepted chunks; and 14 safe refusals. The aggregate
+954 includes the intact baseline and chunks that native HDF5 could already
+read, so it is not a recovery percentage. These are scores of controlled
+cases on two structurally supported files plus two refusal-only layouts.
+They are not naturally damaged files or a representative real-world failure
+distribution, so they do not support a 99% success claim.
+
 ## Real-data damage catalog
 
 From the repository root, run:
