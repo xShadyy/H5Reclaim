@@ -136,6 +136,29 @@ class FilteredFixedArrayTests(unittest.TestCase):
                              (selected.id.get_chunk_info_by_coord((0, 0)).filter_mask,
                               selected.id.get_chunk_info_by_coord((0, 0)).size))
 
+    def test_rank_one_fletcher_then_deflate_filtered_fixed_array(self) -> None:
+        values = np.arange(16, dtype="<f8") / 7
+        with h5py.File(self.path, "w", libver="latest") as handle:
+            creation = h5py.h5p.create(h5py.h5p.DATASET_CREATE)
+            creation.set_chunk((1,))
+            creation.set_filter(h5py.h5z.FILTER_FLETCHER32, h5py.h5z.FLAG_MANDATORY, ())
+            creation.set_deflate(6)
+            created = h5py.h5d.create(handle.id, b"science", h5py.h5t.IEEE_F64LE,
+                                      h5py.h5s.create_simple((16,)), dcpl=creation)
+            created.write(h5py.h5s.ALL, h5py.h5s.ALL, values)
+            created.close()
+        with h5py.File(self.path) as handle, ModernH5File(self.path) as reader:
+            selected = handle["science"]
+            filters = tuple(selected.id.get_create_plist().get_filter(i)[0] for i in range(2))
+            self.assertEqual(filters, (3, 1))
+            index = _parse(reader, selected)
+            self.assertEqual(len(index.chunks), 16)
+            for chunk in index.chunks:
+                native = selected.id.get_chunk_info_by_coord(chunk.coordinate)
+                self.assertEqual((reader.absolute(chunk.address), chunk.size, chunk.filter_mask),
+                                 (native.byte_offset, native.size, native.filter_mask))
+            np.testing.assert_array_equal(selected[...], values)
+
     def test_filtered_paged_slots_follow_checked_page_bitmap_and_checksums(self) -> None:
         _create(self.path, (33, 33))
         with h5py.File(self.path) as handle, ModernH5File(self.path) as reader:
