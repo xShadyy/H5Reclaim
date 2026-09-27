@@ -1,7 +1,8 @@
 """Bounded, read-only parser for the first H5Reclaim recovery case.
 
-This module accepts v0/v1 superblocks, v1 object headers with a v3 chunked
-layout, and v1 type-1 B-tree nodes for a rank-two dataset. Addresses exposed
+This module accepts v0/v1 superblocks, bounded v1 object headers with a v3
+chunked layout, and v1 type-1 B-tree nodes for declared rank-one or rank-two
+datasets. Addresses exposed
 by HDF5 metadata are relative to the superblock base; pointer_offset is an
 absolute byte offset in the source file. Parsing a plausible TREE signature
 does not establish that a node belongs to a dataset.
@@ -22,6 +23,7 @@ KEY_SIZE = 32  # 4-byte size, 4-byte mask, three 8-byte offsets (rank 2 + 1).
 DEFAULT_ISTORE_K = 32
 MAX_TREE_NODES = 100_000
 MAX_HEADER_BYTES = 1 << 20
+MAX_CONTINUATIONS = 1
 MAX_READ_BYTES = 16 << 20
 MAX_CHUNK_BYTES = MAX_READ_BYTES
 
@@ -52,7 +54,7 @@ class Superblock:
 @dataclass(frozen=True)
 class DatasetLayout:
     root_address: int
-    chunk_shape: tuple[int, int]
+    chunk_shape: tuple[int, ...]
     element_size: int
     message_version: int
 
@@ -61,7 +63,7 @@ class DatasetLayout:
 class ChunkKey:
     stored_size: int
     filter_mask: int
-    offsets: tuple[int, int, int]
+    offsets: tuple[int, ...]
 
 
 @dataclass(frozen=True)
@@ -213,12 +215,15 @@ class H5File:
             raise UnsupportedFormat("non-default HDF5 file drivers are unsupported")
         return Superblock(version, signature_offset, base, offset_size, length_size, eof, istore_k)
 
-    def read_dataset_layout(self, object_address: int) -> DatasetLayout:
+    def read_dataset_layout(self, object_address: int, *, rank: int = 2) -> DatasetLayout:
         """Read the selected object's own v1 header, never scan for a layout.
 
         The object address must come from an independent trusted dataset-name
-        lookup. A continuation, shared layout, or duplicate layout is refused.
+        lookup. One directly addressed v1 continuation is accepted; nested,
+        shared, cyclic, or duplicate layout messages are refused.
         """
+        if rank not in (1, 2):
+            raise UnsupportedFormat("only rank-one and rank-two chunk keys are supported")
         prefix = self.read_at(object_address, 16)
         if prefix[0] != 1:
             raise UnsupportedFormat(f"object header version {prefix[0]} is unsupported")
@@ -228,47 +233,69 @@ class H5File:
         size = _uint(prefix[8:12])
         if not 1 <= count <= 4096 or not 8 <= size <= MAX_HEADER_BYTES:
             raise UnsupportedFormat("object header message count or size is out of scope")
-        block = self.read_at(object_address + 16, size)
-        cursor = 0
         layout: DatasetLayout | None = None
         found_count = 0
-        while cursor < size:
-            if size - cursor < 8:
-                raise FormatError("truncated v1 object header message")
-            kind = _uint(block[cursor : cursor + 2])
-            message_size = _uint(block[cursor + 2 : cursor + 4])
-            flags = block[cursor + 4]
-            if block[cursor + 5 : cursor + 8] != b"\x00" * 3:
-                raise FormatError("invalid object header message reserved bytes")
-            cursor += 8
-            if message_size % 8 or message_size > size - cursor:
-                raise FormatError("object header message size is invalid")
-            data = block[cursor : cursor + message_size]
-            cursor += message_size
-            found_count += 1
-            if kind == 0x0010:
-                raise UnsupportedFormat("v1 object header continuation is unsupported")
-            if kind == 0x0008:
-                if layout is not None:
-                    raise FormatError("duplicate data layout message")
-                if flags & 0x02:
-                    raise UnsupportedFormat("shared layout message is unsupported")
-                layout = self._parse_layout(data)
+        blocks = [(object_address + 16, size)]
+        header_start = self.absolute(object_address)
+        header_end = header_start + 16 + size
+        continuation_count = 0
+        while blocks:
+            block_address, block_size = blocks.pop(0)
+            block = self.read_at(block_address, block_size)
+            cursor = 0
+            while cursor < block_size:
+                if block_size - cursor < 8:
+                    raise FormatError("truncated v1 object header message")
+                kind = _uint(block[cursor : cursor + 2])
+                message_size = _uint(block[cursor + 2 : cursor + 4])
+                flags = block[cursor + 4]
+                if block[cursor + 5 : cursor + 8] != b"\x00" * 3:
+                    raise FormatError("invalid object header message reserved bytes")
+                cursor += 8
+                if message_size % 8 or message_size > block_size - cursor:
+                    raise FormatError("object header message size is invalid")
+                data = block[cursor : cursor + message_size]
+                cursor += message_size
+                found_count += 1
+                if found_count > count:
+                    raise FormatError("object header has more messages than declared")
+                if kind == 0x0010:
+                    continuation_count += 1
+                    if continuation_count > MAX_CONTINUATIONS:
+                        raise UnsupportedFormat("multiple or nested object header continuations")
+                    offset_size = self.superblock.offset_size
+                    length_size = self.superblock.length_size
+                    if message_size != offset_size + length_size or flags & 0x02:
+                        raise UnsupportedFormat("unsupported v1 object header continuation")
+                    target = _uint(data[:offset_size])
+                    length = _uint(data[offset_size:])
+                    if length < 8 or length > MAX_HEADER_BYTES - size or length % 8:
+                        raise UnsupportedFormat("object header continuation exceeds parser limits")
+                    absolute = self.absolute(target)
+                    if absolute < header_end and header_start < absolute + length:
+                        raise FormatError("object header continuation overlaps the primary header")
+                    blocks.append((target, length))
+                    self.metadata_ranges.append((absolute, absolute + length, "object header continuation"))
+                if kind == 0x0008:
+                    if layout is not None:
+                        raise FormatError("duplicate data layout message")
+                    if flags & 0x02:
+                        raise UnsupportedFormat("shared layout message is unsupported")
+                    layout = self._parse_layout(data, rank=rank)
         if found_count != count:
             raise FormatError("object header message count mismatch")
         if layout is None:
             raise FormatError("selected object has no layout message")
-        start = self.absolute(object_address)
-        self.metadata_ranges.append((start, start + 16 + size, "selected object header"))
+        self.metadata_ranges.append((header_start, header_end, "selected object header"))
         return layout
 
-    def _parse_layout(self, data: bytes) -> DatasetLayout:
+    def _parse_layout(self, data: bytes, *, rank: int) -> DatasetLayout:
         if len(data) < 3 or data[0] != 3 or data[1] != 2:
             raise UnsupportedFormat("only version-3 chunked data layouts are supported")
-        if data[2] != 3:
-            raise UnsupportedFormat("only rank-two chunked layouts are supported")
+        if data[2] != rank + 1:
+            raise UnsupportedFormat("chunked layout rank disagrees with the declared dataset rank")
         offset_size = self.superblock.offset_size
-        fields_end = 3 + offset_size + 12
+        fields_end = 3 + offset_size + 4 * (rank + 1)
         if len(data) < fields_end:
             raise FormatError("truncated chunked layout message")
         root = _uint(data[3 : 3 + offset_size])
@@ -277,27 +304,30 @@ class H5File:
         self.absolute(root)
         dimensions = tuple(
             _uint(data[3 + offset_size + 4 * i : 7 + offset_size + 4 * i])
-            for i in range(3)
+            for i in range(rank + 1)
         )
         if any(value == 0 for value in dimensions):
             raise FormatError("zero chunk dimension or datatype element size")
-        if dimensions[2] != 4:
-            raise UnsupportedFormat("only four-byte datatype elements are supported")
+        if (rank, dimensions[-1]) not in ((1, 8), (2, 4)):
+            raise UnsupportedFormat("only rank-one eight-byte or rank-two four-byte elements")
         if any(data[fields_end:]):
             raise FormatError("nonzero layout message padding")
-        return DatasetLayout(root, (dimensions[0], dimensions[1]), dimensions[2], 3)
+        return DatasetLayout(root, dimensions[:-1], dimensions[-1], 3)
 
     def _address_or_none(self, raw: bytes) -> int | None:
         value = _uint(raw)
         return None if value == self.superblock.undefined_address else value
 
     @staticmethod
-    def _key(data: bytes) -> ChunkKey:
-        offsets = (_uint(data[8:16]), _uint(data[16:24]), _uint(data[24:32]))
+    def _key(data: bytes, *, rank: int) -> ChunkKey:
+        offsets = tuple(_uint(data[8 + 8 * i : 16 + 8 * i]) for i in range(rank + 1))
         return ChunkKey(_uint(data[0:4]), _uint(data[4:8]), offsets)
 
-    def read_tree(self, address: int) -> TreeNode:
-        """Decode only used entries of a rank-two, type-1 v1 B-tree node."""
+    def read_tree(self, address: int, *, rank: int = 2, element_size: int = 4) -> TreeNode:
+        """Decode used entries of an explicitly declared type-1 v1 B-tree node."""
+        if (rank, element_size) not in ((1, 8), (2, 4)):
+            raise UnsupportedFormat("unsupported rank and datatype-element-size pair")
+        key_size = 8 + 8 * (rank + 1)
         header = self.read_at(address, 8 + 2 * self.superblock.offset_size)
         if header[:4] != b"TREE":
             raise FormatError(f"no TREE signature at relative address {address}")
@@ -315,20 +345,20 @@ class H5File:
         # Version-1 nodes reserve 2K child slots and 2K+1 key slots even
         # when only a prefix is used. Their entire allocation is metadata.
         allocated_length = prefix_length + 2 * self.superblock.istore_k * (
-            KEY_SIZE + offsize
-        ) + KEY_SIZE
+            key_size + offsize
+        ) + key_size
         if allocated_length > self.superblock.eof_address - self.absolute(address):
             raise FormatError(f"B-tree node at {address} crosses HDF5 end-of-file")
-        content = self.read_at(address + prefix_length, used * (KEY_SIZE + offsize) + KEY_SIZE)
+        content = self.read_at(address + prefix_length, used * (key_size + offsize) + key_size)
         entries: list[ChildEntry] = []
-        previous_offset: tuple[int, int, int] | None = None
+        previous_offset: tuple[int, ...] | None = None
         for i in range(used + 1):
-            start = i * (KEY_SIZE + offsize)
-            key = self._key(content[start : start + KEY_SIZE])
+            start = i * (key_size + offsize)
+            key = self._key(content[start : start + key_size], rank=rank)
             # HDF5's terminal, unallocated key can use the datatype-element
-            # size as its final coordinate (4 for our supported uint32 case).
-            if key.offsets[2] != 0 and not (
-                i == used and key.stored_size == 0 and key.offsets[2] == 4
+            # size as its final coordinate (4 for uint32, 8 for float64).
+            if key.offsets[-1] != 0 and not (
+                i == used and key.stored_size == 0 and key.offsets[-1] == element_size
             ):
                 raise FormatError(f"nonzero datatype-element offset in node {address}")
             if previous_offset is not None and previous_offset >= key.offsets:
@@ -337,8 +367,8 @@ class H5File:
             if i == used:
                 final = key
                 break
-            pointer_offset = self.absolute(address) + prefix_length + start + KEY_SIZE
-            target = self._address_or_none(content[start + KEY_SIZE : start + KEY_SIZE + offsize])
+            pointer_offset = self.absolute(address) + prefix_length + start + key_size
+            target = self._address_or_none(content[start + key_size : start + key_size + offsize])
             if level == 0 and (target is None or key.stored_size == 0):
                 raise FormatError(f"leaf at {address} has missing chunk data")
             if level == 0 and target is not None:
@@ -352,7 +382,10 @@ class H5File:
         self.metadata_ranges.append((start, start + allocated_length, "B-tree node"))
         return TreeNode(address, level, left, right, tuple(entries), final)
 
-    def walk_tree(self, root_address: int, *, max_nodes: int = MAX_TREE_NODES) -> TreeWalk:
+    def walk_tree(
+        self, root_address: int, *, rank: int = 2, element_size: int = 4,
+        max_nodes: int = MAX_TREE_NODES,
+    ) -> TreeWalk:
         """Traverse rooted child links; preserve undefined internal links as gaps."""
         if max_nodes <= 0:
             raise ValueError("max_nodes must be positive")
@@ -369,7 +402,7 @@ class H5File:
                 raise FormatError(f"B-tree child is repeated or cyclic at {address}")
             if len(visited) >= max_nodes:
                 raise UnsupportedFormat("B-tree traversal node limit reached")
-            node = self.read_tree(address)
+            node = self.read_tree(address, rank=rank, element_size=element_size)
             if expected_level is not None and node.level != expected_level:
                 raise FormatError(f"B-tree level mismatch at {address}")
             if lower is not None and node.entries[0].key != lower:
@@ -394,7 +427,8 @@ class H5File:
         return TreeWalk(tuple(visited.values()), ordered_broken)
 
     def find_missing_child_candidates(
-        self, root_address: int, *, max_nodes: int = MAX_TREE_NODES
+        self, root_address: int, *, rank: int = 2, element_size: int = 4,
+        max_nodes: int = MAX_TREE_NODES,
     ) -> tuple[MissingChildCandidate, ...]:
         """Find only gaps with two reachable neighbors pointing at one node.
 
@@ -403,7 +437,9 @@ class H5File:
         parent key boundaries. This provides attribution evidence, not byte
         integrity evidence. Other malformed links are rejected by walk_tree.
         """
-        walk = self.walk_tree(root_address, max_nodes=max_nodes)
+        walk = self.walk_tree(
+            root_address, rank=rank, element_size=element_size, max_nodes=max_nodes
+        )
         nodes = {node.address: node for node in walk.nodes}
         candidates: list[MissingChildCandidate] = []
         for gap in walk.broken_links:
@@ -418,7 +454,7 @@ class H5File:
             target = left.right_sibling
             if target is None or target != right.left_sibling or target in nodes:
                 continue
-            node = self.read_tree(target)
+            node = self.read_tree(target, rank=rank, element_size=element_size)
             if (
                 node.level != parent.level - 1
                 or node.left_sibling != left_addr

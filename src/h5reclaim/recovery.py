@@ -7,6 +7,7 @@ import json
 import os
 import stat
 import tempfile
+import zlib
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,7 +20,7 @@ from .format import FormatError, H5File
 from .metadata import DatasetSpec, UnsupportedCase, read_dataset_spec
 
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 STATUS_CODES = {
     "recovered": 1,
     "allocation_unknown": 2,
@@ -37,10 +38,14 @@ class RecoveryError(ValueError):
     """Recovery cannot safely produce the requested result."""
 
 
+class ChunkDecodeError(RecoveryError):
+    """An indexed chunk could not be decoded or failed its own checksum."""
+
+
 @dataclass(frozen=True)
 class ChunkRecord:
-    index: tuple[int, int]
-    coordinate: tuple[int, int]
+    index: tuple[int, ...]
+    coordinate: tuple[int, ...]
     file_address: int
     absolute_offset: int
     length: int
@@ -81,6 +86,63 @@ def _verify_source(source: Path, identity: tuple[int, int, int, int, int], diges
 
 def _anchor_address(value: Any) -> int:
     return int(getattr(value, "address", value))
+
+
+def _fletcher32(data: bytes) -> int:
+    """HDF5 Fletcher32 over big-endian 16-bit words, including odd final byte.
+
+    Fold at most 360 pairs at a time, matching HDF5's checksum implementation.
+    The format used here has full, even-length float64 chunks. This helper
+    also handles odd lengths so its behavior can be tested independently.
+    """
+    sum1 = sum2 = 0
+    even_length = len(data) & ~1
+    for group_start in range(0, even_length, 720):
+        for position in range(group_start, min(group_start + 720, even_length), 2):
+            sum1 += (data[position] << 8) | data[position + 1]
+            sum2 += sum1
+        sum1 = (sum1 & 0xFFFF) + (sum1 >> 16)
+        sum2 = (sum2 & 0xFFFF) + (sum2 >> 16)
+    if len(data) & 1:
+        sum1 += data[-1] << 8
+        sum2 += sum1
+        sum1 = (sum1 & 0xFFFF) + (sum1 >> 16)
+        sum2 = (sum2 & 0xFFFF) + (sum2 >> 16)
+    sum1 = (sum1 & 0xFFFF) + (sum1 >> 16)
+    sum2 = (sum2 & 0xFFFF) + (sum2 >> 16)
+    return (sum2 << 16) | sum1
+
+
+def _decode_chunk(raw: bytes, spec: DatasetSpec, filter_mask: int) -> bytes:
+    """Reverse only the two declared built-in filters with an exact size cap."""
+    if not spec.filters:
+        if filter_mask != 0 or len(raw) != spec.chunk_bytes:
+            raise ChunkDecodeError("unfiltered chunk has an unexpected size or filter mask")
+        return raw
+    if spec.filters != (3, 1) or filter_mask & ~0b10 or filter_mask & 0b01:
+        raise ChunkDecodeError("unsupported filter mask or filter pipeline")
+    expected = spec.chunk_bytes + 4  # Fletcher32 appends one checksum word.
+    if filter_mask & 0b10:
+        # The optional deflate filter was skipped for this chunk. The mandatory
+        # Fletcher32 filter must still be present, even when compression fails.
+        if len(raw) != expected:
+            raise ChunkDecodeError("uncompressed filtered chunk has wrong size")
+        decoded = raw
+    else:
+        # zlib.decompress() has no bounded output argument. Stop at one byte
+        # beyond the one possible decoded size, and reject trailing streams.
+        try:
+            decoder = zlib.decompressobj()
+            decoded = decoder.decompress(raw, expected + 1)
+            if len(decoded) != expected or not decoder.eof or decoder.unused_data or decoder.unconsumed_tail:
+                raise ChunkDecodeError("deflate output length or stream boundary is invalid")
+        except zlib.error as exc:
+            raise ChunkDecodeError("deflate stream is corrupt") from exc
+    actual = _fletcher32(decoded[:-4])
+    stored = int.from_bytes(decoded[-4:], "little")
+    if actual != stored:
+        raise ChunkDecodeError("Fletcher32 checksum mismatch")
+    return decoded[:-4]
 
 
 @contextmanager
@@ -138,19 +200,24 @@ def _analyze_snapshot(
 ) -> Analysis:
     spec = read_dataset_spec(snapshot, dataset_path)
     grid = spec.chunk_grid
-    if grid[0] * grid[1] > MAX_CHUNKS:
+    if int(np.prod(grid)) > MAX_CHUNKS:
         raise UnsupportedCase(f"dataset exceeds the {MAX_CHUNKS}-chunk limit")
 
     records: list[ChunkRecord] = []
     unresolved: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
+    rank = len(spec.shape)
+    element_size = np.dtype(spec.dtype).itemsize
     with H5File(snapshot) as reader:
-        layout = reader.read_dataset_layout(spec.object_address)
-        if layout.chunk_shape != spec.chunks or layout.element_size != 4:
+        layout = reader.read_dataset_layout(spec.object_address, rank=rank)
+        if layout.chunk_shape != spec.chunks or layout.element_size != element_size:
             raise FormatError("raw layout disagrees with selected dataset metadata")
-        root = reader.read_tree(layout.root_address)
+        root = reader.read_tree(layout.root_address, rank=rank, element_size=element_size)
         if root.level != 1:
             raise UnsupportedCase("this release requires a level-one v1 B-tree root")
-        walk = reader.walk_tree(layout.root_address, max_nodes=MAX_NODES)
+        walk = reader.walk_tree(
+            layout.root_address, rank=rank, element_size=element_size, max_nodes=MAX_NODES
+        )
         if len(walk.broken_links) > 1:
             raise UnsupportedCase("this release handles at most one broken child link")
         for broken in walk.broken_links:
@@ -172,7 +239,9 @@ def _analyze_snapshot(
                 {"parent_address": root.address, "parent_slot": root_entries[node.address]},
             )
 
-        candidates = reader.find_missing_child_candidates(layout.root_address)
+        candidates = reader.find_missing_child_candidates(
+            layout.root_address, rank=rank, element_size=element_size
+        )
         for broken in walk.broken_links:
             matching = [
                 candidate
@@ -206,34 +275,49 @@ def _analyze_snapshot(
                     }
                 )
 
-        coordinates: set[tuple[int, int]] = set()
-        ranges: list[tuple[int, int, tuple[int, int]]] = []
+        coordinates: set[tuple[int, ...]] = set()
+        ranges: list[tuple[int, int, tuple[int, ...]]] = []
         for leaf, route, evidence in leaves.values():
             for entry in leaf.entries:
                 key = entry.key
-                row, col, element_offset = key.offsets
-                if key.stored_size != spec.chunk_bytes or key.filter_mask != 0:
+                *coordinate, element_offset = key.offsets
+                coordinate = tuple(coordinate)
+                if (not spec.filters and (key.stored_size != spec.chunk_bytes or key.filter_mask != 0)) or (
+                    spec.filters and (key.stored_size < 4 or key.stored_size > 1_048_576
+                                      or key.filter_mask & ~0b10 or key.filter_mask & 0b01)
+                ):
                     raise FormatError("chunk size or filter mask lies outside support")
-                if element_offset != 0 or row % spec.chunks[0] or col % spec.chunks[1]:
+                if element_offset != 0 or any(
+                    start % chunk for start, chunk in zip(coordinate, spec.chunks)
+                ):
                     raise FormatError("chunk key is not aligned to the dataset grid")
-                if row >= spec.shape[0] or col >= spec.shape[1]:
+                if any(start >= length for start, length in zip(coordinate, spec.shape)):
                     raise FormatError("chunk key lies outside the selected dataset")
-                coordinate = (row, col)
                 if coordinate in coordinates:
                     raise FormatError("multiple accepted chunks claim the same coordinate")
                 coordinates.add(coordinate)
                 if entry.address is None:
                     raise FormatError("accepted leaf has an undefined payload address")
-                payload = reader.read_at(entry.address, key.stored_size)
+                raw = reader.read_at(entry.address, key.stored_size)
                 absolute = reader.absolute(entry.address)
-                ranges.append((absolute, absolute + len(payload), coordinate))
+                ranges.append((absolute, absolute + len(raw), coordinate))
+                try:
+                    payload = _decode_chunk(raw, spec, key.filter_mask)
+                except ChunkDecodeError as exc:
+                    failed.append({
+                        "coordinate": list(coordinate),
+                        "chunk_index": [start // chunk for start, chunk in zip(coordinate, spec.chunks)],
+                        "source_address": entry.address,
+                        "reason": str(exc),
+                    })
+                    continue
                 records.append(
                     ChunkRecord(
-                        index=(row // spec.chunks[0], col // spec.chunks[1]),
+                        index=tuple(start // chunk for start, chunk in zip(coordinate, spec.chunks)),
                         coordinate=coordinate,
                         file_address=entry.address,
                         absolute_offset=absolute,
-                        length=len(payload),
+                        length=len(raw),
                         leaf_address=leaf.address,
                         route=route,
                         evidence=evidence,
@@ -256,6 +340,8 @@ def _analyze_snapshot(
         reachable_leaves = sum(node.level == 0 for node in walk.nodes)
 
     status = np.full(grid, STATUS_CODES["allocation_unknown"], dtype="u1")
+    for chunk in failed:
+        status[tuple(chunk["chunk_index"])] = STATUS_CODES["decode_failed"]
     for record in records:
         status[record.index] = STATUS_CODES["recovered"]
     counts = {name: int(np.count_nonzero(status == code)) for name, code in STATUS_CODES.items()}
@@ -270,7 +356,7 @@ def _analyze_snapshot(
             "leaf_address": record.leaf_address,
             "route": record.route,
             "evidence": record.evidence,
-            "integrity": "not_checked_no_checksum",
+            "integrity": "fletcher32_verified" if spec.filters else "not_checked_no_checksum",
         }
         for record in sorted(records, key=lambda item: item.index)
     ]
@@ -292,8 +378,11 @@ def _analyze_snapshot(
             "object_address": spec.object_address,
             "shape": list(spec.shape),
             "chunks": list(spec.chunks),
-            "dtype": "<u4",
+            "dtype": spec.dtype,
             "chunk_grid": list(grid),
+            "filters": list(spec.filters),
+            "attributes_copied": [name for name, _value in spec.attributes],
+            "attributes_omitted": list(spec.omitted_attributes),
         },
         "index": {
             "type": "v1_raw_data_btree",
@@ -307,18 +396,33 @@ def _analyze_snapshot(
         "counts": counts,
         "reconstructed_chunks": sum(record.route == "reconstructed_link" for record in records),
         "unresolved_links": unresolved,
+        "failed_chunks": failed,
         "mappings": mappings,
         "assumptions": [
-            "one selected dataset; fixed rank-two little-endian uint32; no filters",
+            (
+                "one selected dataset; fixed rank-one little-endian IEEE binary64; "
+                "Fletcher32 then deflate"
+                if spec.filters else
+                "one selected dataset; fixed rank-two little-endian uint32; no filters"
+            ),
             "v1 B-tree with level-one root; at most one broken root-to-leaf pointer",
             "detached leaf requires reciprocal sibling links and parent key range",
         ],
         "integrity_note": (
             "Structural placement is supported by the stated links and keys. "
+            "Each exported chunk passed its stored Fletcher32 check; this detects some "
+            "byte errors but does not establish historical authenticity or ownership."
+            if spec.filters else
+            "Structural placement is supported by the stated links and keys. "
             "Unfiltered payload bytes have no independent checksum here; "
             "historical measurement integrity is not established."
         ),
         "metadata_note": (
+            "Only the selected dataset's values, shape, chunking, datatype, and listed "
+            "primitive scalar attributes are exported. Other attributes, dimension scales, "
+            "links, sibling objects, and scientific context are not preserved. This is not "
+            "a replacement GWOSC file."
+            if spec.filters else
             "Only the selected dataset's values, shape, chunking, and datatype are exported. "
             "Original attributes, dimension scales, links, sibling objects, and scientific "
             "context are not preserved."
@@ -360,25 +464,37 @@ def recover(source: Path, dataset_path: str, output: Path, report_path: Path) ->
                         spec.path,
                         shape=spec.shape,
                         chunks=spec.chunks,
-                        dtype="<u4",
+                        dtype=spec.dtype,
                         fillvalue=0,
                     )
                     for record in analysis.records:
-                        row, col = record.coordinate
-                        tile = np.frombuffer(record.payload, dtype="<u4").reshape(spec.chunks)
-                        data[row : row + spec.chunks[0], col : col + spec.chunks[1]] = tile
+                        # The supported chunks have no edge padding and the
+                        # output dataset has no filters. Writing direct raw
+                        # bytes preserves float NaN payloads and signed zero.
+                        data.id.write_direct_chunk(record.coordinate, record.payload, filter_mask=0)
+                    for name, value in spec.attributes:
+                        data.attrs[name] = value
                     meta = handle.create_group("/_h5reclaim")
                     validity = meta.create_dataset("chunk_status", data=analysis.status, dtype="u1")
                     validity.attrs["codes_json"] = json.dumps(STATUS_CODES, sort_keys=True)
-                    validity.attrs["axis_meaning"] = "chunk row, chunk column"
+                    validity.attrs["axis_meaning"] = (
+                        "chunk sample" if len(spec.shape) == 1 else "chunk row, chunk column"
+                    )
                     meta.create_dataset(
                         "report_json", data=report_text, dtype=h5py.string_dtype(encoding="utf-8")
                     )
                     data.attrs["h5reclaim_chunk_status"] = "/_h5reclaim/chunk_status"
                     data.attrs["h5reclaim_complete"] = analysis.report["complete"]
                     data.attrs["h5reclaim_execution_state"] = "finished"
-                    data.attrs["h5reclaim_integrity"] = "not_checked_no_checksum"
+                    data.attrs["h5reclaim_integrity"] = (
+                        "fletcher32_verified_per_recovered_chunk" if spec.filters
+                        else "not_checked_no_checksum"
+                    )
                     data.attrs["h5reclaim_warning"] = (
+                        "Check chunk_status before using values; unallocated output chunks "
+                        "read as fill zero but are not known measurements. The report lists copied "
+                        "attributes; other scientific metadata and sibling objects are not preserved."
+                        if spec.filters else
                         "Check chunk_status before using values; unallocated output chunks "
                         "read as fill zero but are not known measurements. Original scientific "
                         "metadata and sibling objects are not preserved."

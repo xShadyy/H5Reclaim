@@ -97,40 +97,65 @@ def _describe_dataset(dataset: h5py.Dataset, path: str) -> dict[str, Any]:
 
         if path == "/_h5reclaim" or path.startswith("/_h5reclaim/"):
             reasons.append(_reason("reserved_path", "the output metadata namespace is reserved"))
-        if len(shape) != 2 or chunks is None or len(chunks) != 2 or layout != "chunked":
-            reasons.append(_reason("layout", "requires a rank-two chunked dataset"))
+        rank = len(shape)
+        if rank not in (1, 2) or chunks is None or len(chunks) != rank or layout != "chunked":
+            reasons.append(_reason("layout", "requires a rank-one or rank-two chunked dataset"))
         if maxshape != shape:
             reasons.append(_reason("extendible", "extendible datasets are unsupported"))
-        if chunks is not None and len(shape) == len(chunks) == 2:
+        if chunks is not None and rank in (1, 2) and len(chunks) == rank:
             if any(length <= 0 or chunk <= 0 or length % chunk for length, chunk in zip(shape, chunks)):
                 reasons.append(_reason("edge_chunks", "dimensions must be positive and divisible by chunks"))
-            if shape[0] * shape[1] > 1_048_576:
+            element_count = 1
+            chunk_elements = 1
+            grid_count = 1
+            for length, chunk in zip(shape, chunks):
+                element_count *= length
+                chunk_elements *= chunk
+                if chunk > 0:
+                    grid_count *= (length + chunk - 1) // chunk
+            if element_count > 1_048_576:
                 reasons.append(_reason("element_limit", "dataset exceeds 1,048,576 elements"))
-            if chunks[0] * chunks[1] * 4 > 1_048_576:
+            if chunk_elements * (8 if rank == 1 else 4) > 1_048_576:
                 reasons.append(_reason("chunk_size_limit", "chunk exceeds 1 MiB"))
-            if chunks[0] and chunks[1] and shape[0] and shape[1]:
-                grid_count = ((shape[0] + chunks[0] - 1) // chunks[0]) * (
-                    (shape[1] + chunks[1] - 1) // chunks[1]
-                )
-                if grid_count > MAX_CHUNKS:
-                    reasons.append(_reason("chunk_count_limit", f"dataset exceeds {MAX_CHUNKS} chunks"))
+            if grid_count > MAX_CHUNKS:
+                reasons.append(_reason("chunk_count_limit", f"dataset exceeds {MAX_CHUNKS} chunks"))
         else:
             if any(length <= 0 for length in shape):
                 reasons.append(_reason("empty_dimension", "empty dimensions are unsupported"))
 
         datatype = dataset.id.get_type()
-        if (
-            datatype.get_class() != h5py.h5t.INTEGER
-            or datatype.get_size() != 4
-            or datatype.get_sign() != h5py.h5t.SGN_NONE
-            or datatype.get_order() != h5py.h5t.ORDER_LE
-            or datatype.get_precision() != 32
-            or datatype.get_offset() != 0
-            or datatype.get_pad() != (h5py.h5t.PAD_ZERO, h5py.h5t.PAD_ZERO)
-        ):
-            reasons.append(_reason("datatype", "requires canonical little-endian unsigned 32-bit integers"))
-        if nfilters:
-            reasons.append(_reason("filters", "filters or compression are unsupported"))
+        uint32 = (
+            datatype.get_class() == h5py.h5t.INTEGER
+            and datatype.get_size() == 4
+            and datatype.get_sign() == h5py.h5t.SGN_NONE
+            and datatype.get_order() == h5py.h5t.ORDER_LE
+            and datatype.get_precision() == 32
+            and datatype.get_offset() == 0
+            and datatype.get_pad() == (h5py.h5t.PAD_ZERO, h5py.h5t.PAD_ZERO)
+        ) if datatype.get_class() == h5py.h5t.INTEGER else False
+        float64 = (
+            datatype.get_class() == h5py.h5t.FLOAT
+            and datatype.get_size() == 8
+            and datatype.get_order() == h5py.h5t.ORDER_LE
+            and datatype.get_precision() == 64
+            and datatype.get_offset() == 0
+            and datatype.get_pad() == (h5py.h5t.PAD_ZERO, h5py.h5t.PAD_ZERO)
+            and datatype.get_fields() == (63, 52, 11, 0, 52)
+            and datatype.get_ebias() == 1023
+            and datatype.get_norm() == h5py.h5t.NORM_IMPLIED
+        ) if datatype.get_class() == h5py.h5t.FLOAT else False
+        if not ((rank == 2 and uint32) or (rank == 1 and float64)):
+            reasons.append(_reason("datatype", "requires rank-two canonical <u4 or rank-one canonical IEEE <f8"))
+        filter_info = [creation.get_filter(i) for i in range(min(nfilters, 2))]
+        supported_float_filters = (
+            nfilters == 2
+            and [item[0] for item in filter_info] == [h5py.h5z.FILTER_FLETCHER32, h5py.h5z.FILTER_DEFLATE]
+            and filter_info[0][2] == ()
+            and len(filter_info[1][2]) == 1
+            and 0 <= filter_info[1][2][0] <= 9
+        )
+        if not ((rank == 2 and nfilters == 0) or (rank == 1 and supported_float_filters)):
+            reasons.append(_reason("filters", "requires unfiltered rank-two chunks or rank-one Fletcher32 then DEFLATE"))
         if result["external_storage"] or result["virtual_storage"]:
             reasons.append(_reason("external_storage", "external or virtual storage is unsupported"))
         if result["dtype_truncated"]:
@@ -152,13 +177,19 @@ def _probe_index(source: Path, entries: list[dict[str, Any]]) -> None:
             for entry in candidates:
                 reasons: list[dict[str, str]] = entry["support"]["reasons"]
                 try:
-                    layout = reader.read_dataset_layout(entry["object_address"])
+                    rank = entry["rank"]
+                    element_size = 8 if rank == 1 else 4
+                    layout = reader.read_dataset_layout(entry["object_address"], rank=rank)
                     if list(layout.chunk_shape) != entry["chunks"]:
                         raise FormatError("raw chunk layout disagrees with HDF5 metadata")
-                    root = reader.read_tree(layout.root_address)
+                    if layout.element_size != element_size:
+                        raise FormatError("raw chunk element size disagrees with HDF5 metadata")
+                    root = reader.read_tree(layout.root_address, rank=rank,
+                                            element_size=element_size)
                     if root.level != 1:
                         raise UnsupportedFormat("requires a level-one version-1 B-tree root")
-                    walk = reader.walk_tree(layout.root_address, max_nodes=MAX_NODES)
+                    walk = reader.walk_tree(layout.root_address, max_nodes=MAX_NODES,
+                                            rank=rank, element_size=element_size)
                     if len(walk.broken_links) > 1:
                         raise UnsupportedFormat("more than one broken child pointer")
                     if any(gap.parent_address != root.address for gap in walk.broken_links):

@@ -18,6 +18,18 @@ from h5reclaim import survey as survey_module
 
 
 class SurveyTests(unittest.TestCase):
+    def test_bundled_gwosc_candidate_has_no_payload_reads(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "corpus/files/H-H1_GWOSC_16KHZ_R1-1126259447-32.hdf5"
+        original = survey_module.sha256_file(source)
+        with patch.object(h5py.Dataset, "__getitem__", side_effect=AssertionError("payload read")):
+            report = survey_module.survey(source)
+        strain = next(item for item in report["datasets"] if item["selected_path"] == "/strain/Strain")
+        self.assertEqual(strain["shape"], [524288])
+        self.assertEqual(strain["chunks"], [4096])
+        self.assertEqual(strain["support"]["status"], "candidate")
+        self.assertEqual(strain["index"]["root_level"], 1)
+        self.assertEqual(survey_module.sha256_file(source), original)
+
     def test_candidate_uses_no_dataset_reads_and_keeps_source_unchanged(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "input.h5"
