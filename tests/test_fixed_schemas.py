@@ -181,6 +181,27 @@ class FixedSchemaRecoveryTests(unittest.TestCase):
                     self.assertTrue(dataset.id.get_type().equal(original_type))
                     np.testing.assert_array_equal(dataset[:], expected)
 
+    def test_committed_compound_datatype_resolves_through_rooted_shared_message(self):
+        expected = self._records((8,))
+        with h5py.File(self.source, "w", libver="latest") as handle:
+            datatype = h5py.h5t.py_create(RECORD)
+            datatype.commit(handle.id, b"adc_schema")
+            space = h5py.h5s.create_simple((8,))
+            creation = h5py.h5p.create(h5py.h5p.DATASET_CREATE)
+            creation.set_chunk((4,))
+            dataset = h5py.h5d.create(handle.id, b"data", datatype, space, dcpl=creation)
+            dataset.write(h5py.h5s.ALL, h5py.h5s.ALL, expected)
+            original_type = dataset.get_type().copy()
+        fallback = read_dataset_spec_fallback(self.source, "/data")
+        self.assertIn("with_shared_schema", fallback.route)
+        self.assertIsNotNone(fallback.spec.file_type_encoding)
+        result = recover(self.source, "/data", self.output, self.report)
+        self.assertTrue(result["complete"])
+        with h5py.File(self.output) as handle:
+            recovered = handle["/data"]
+            self.assertTrue(recovered.id.get_type().equal(original_type))
+            np.testing.assert_array_equal(recovered[:], expected)
+
 
 if __name__ == "__main__":
     unittest.main()
