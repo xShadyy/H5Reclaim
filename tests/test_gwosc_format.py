@@ -107,12 +107,12 @@ class GwoscFormatTests(unittest.TestCase):
                 self.assertIn((CONTINUATION, CONTINUATION + 8, "object header continuation"),
                               file.metadata_ranges)
 
-    def test_rejects_rank_mismatch_and_unsupported_element_size(self) -> None:
+    def test_rejects_rank_mismatch_and_inconsistent_element_size(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             with H5File(self._path(_image(), directory)) as file:
                 with self.assertRaises(UnsupportedFormat):
                     file.read_dataset_layout(OBJECT)  # Declared default is rank two.
-                with self.assertRaises(UnsupportedFormat):
+                with self.assertRaises(FormatError):
                     file.read_tree(ROOT, rank=1, element_size=4)
 
     def test_rejects_overlapping_continuation_and_duplicate_layout(self) -> None:

@@ -69,7 +69,7 @@ class LevelZeroGWOscTests(unittest.TestCase):
             self.assertEqual(report["index"]["root_level"], 0)
             self.assertEqual(report["counts"]["recovered"], 16)
             self.assertEqual(report["reconstructed_chunks"], 0)
-            self.assertEqual({m["integrity"] for m in report["mappings"]}, {"not_checked_no_checksum"})
+            self.assertEqual({m["integrity"] for m in report["mappings"]}, {"not_independently_verified"})
             with h5py.File(output, "r") as result:
                 np.testing.assert_array_equal(result["/measurements"][...], data)
 

@@ -9,8 +9,6 @@ from pathlib import Path
 import h5py
 import numpy as np
 
-from h5reclaim.format import UnsupportedFormat
-from h5reclaim.metadata import UnsupportedCase
 from h5reclaim.recovery import recover
 from tools.make_broken_link_fixture import make_damage
 
@@ -74,7 +72,7 @@ class SupportEnvelopeTests(unittest.TestCase):
                 self.assertNotIn("/distractor", handle)
                 self.assertNotIn("units", handle["/lab/run/measurements"].attrs)
 
-    def test_paged_latest_fixed_array_is_explicitly_unsupported(self) -> None:
+    def test_paged_latest_fixed_array_matches_native_values(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "latest.h5"
@@ -86,11 +84,16 @@ class SupportEnvelopeTests(unittest.TestCase):
                 )
             before = source.read_bytes()
             output, report = root / "out.h5", root / "out.json"
-            with self.assertRaisesRegex((UnsupportedCase, UnsupportedFormat), "paged fixed arrays"):
-                recover(source, "/measurements", output, report)
+            result = recover(source, "/measurements", output, report)
             self.assertEqual(source.read_bytes(), before)
-            self.assertFalse(output.exists())
-            self.assertFalse(report.exists())
+            self.assertTrue(result["complete"])
+            self.assertEqual(result["counts"]["recovered"], 1089)
+            with h5py.File(output, "r") as handle:
+                np.testing.assert_array_equal(
+                    handle["/measurements"][:],
+                    np.arange(1089, dtype="<u4").reshape(33, 33),
+                )
+                self.assertTrue(np.all(handle["/_h5reclaim/chunk_status"][:] == 1))
 
 
 if __name__ == "__main__":

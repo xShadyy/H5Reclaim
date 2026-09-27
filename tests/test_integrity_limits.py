@@ -50,9 +50,9 @@ class IntegrityLimitsTest(unittest.TestCase):
                     STATUS_CODES["recovered"],
                 )
             self.assertTrue(report["complete"])
-            self.assertIn("historical measurement integrity is not established", report["integrity_note"])
+            self.assertIn("cannot prove historical authenticity", report["integrity_note"])
             mapping = next(item for item in report["mappings"] if item["coordinate"] == [row, col])
-            self.assertEqual(mapping["integrity"], "not_checked_no_checksum")
+            self.assertEqual(mapping["integrity"], "not_independently_verified")
 
 
 if __name__ == "__main__":
