@@ -110,3 +110,24 @@ class RescueCliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         with h5py.File(self.out) as file:
             np.testing.assert_array_equal(file["science"][:], np.arange(14, dtype="<u4"))
+
+    def test_virtual_source_is_materialized_from_pinned_file_not_fill(self) -> None:
+        related = self.base / "source.h5"
+        virtual = self.base / "virtual.h5"
+        with h5py.File(related, "w") as file:
+            file.create_dataset("science", data=np.arange(10, dtype="<u4"))
+        layout = h5py.VirtualLayout(shape=(10,), dtype="<u4")
+        layout[:] = h5py.VirtualSource("source.h5", "science", shape=(10,))
+        with h5py.File(virtual, "w", libver="latest") as file:
+            file.create_virtual_dataset("science", layout, fillvalue=31337)
+        manifest = self.base / "virtual_sources.json"
+        manifest.write_text(json.dumps({"schema_version": 1, "files": [{
+            "declared_name": "source.h5", "path": str(related),
+            "sha256": hashlib.sha256(related.read_bytes()).hexdigest(),
+        }]}), encoding="utf-8")
+        result = self._run(virtual, "--related-files", str(manifest))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(self.report.read_text())["output_path"], str(self.out))
+        with h5py.File(self.out) as file:
+            np.testing.assert_array_equal(file["science"][:], np.arange(10, dtype="<u4"))
+            self.assertTrue(np.all(file["/_h5reclaim/validity"][:] == 1))
