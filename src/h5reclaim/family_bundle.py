@@ -25,7 +25,8 @@ import numpy as np
 from .metadata import UnsupportedCase
 from .ownership_inventory import inventory_other_allocations
 from .readable_export import (
-    MAX_BLOCK_BYTES, MAX_CHUNKS, MAX_DATA_BYTES, NATIVE_FILTERS,
+    MAX_BLOCK_BYTES, MAX_CHUNKS, MAX_DATA_BYTES, MAX_STORED_CHUNK_BYTES,
+    NATIVE_FILTERS,
     _blocks, _create_matching_dataset, _require_no_competing_owner,
     _safe_fixed_type, _selected_dataset,
 )
@@ -59,7 +60,7 @@ def _manifest(value: str | Path | dict[str, Any]) -> tuple[int, list[dict[str, A
         raise RecoveryError("invalid family manifest version or member_size")
     if not isinstance(members, list) or not 1 <= len(members) <= MAX_MEMBERS:
         raise RecoveryError("family manifest needs 1 through 64 members")
-    paths: set[Path] = set()
+    paths: list[Path] = []
     for index, member in enumerate(members):
         if not isinstance(member, dict) or set(member) != {"index", "path", "sha256"} or member["index"] != index or type(member["index"]) is not int:
             raise RecoveryError("family members must have contiguous zero-based indices")
@@ -69,9 +70,9 @@ def _manifest(value: str | Path | dict[str, Any]) -> tuple[int, list[dict[str, A
         if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
             raise RecoveryError("family member hash must be lowercase SHA-256")
         canonical = Path(path).resolve(strict=True)
-        if canonical in paths:
+        if any(canonical.samefile(previous) for previous in paths):
             raise RecoveryError("one physical file was assigned multiple family indices")
-        paths.add(canonical)
+        paths.append(canonical)
     return size, members
 
 
@@ -167,7 +168,10 @@ def export_family(
                     if info.byte_offset is None or not info.size:
                         unknown.append(origin)
                         continue
-                    if tuple(info.chunk_offset) != origin or info.filter_mask & ~((1 << len(filters)) - 1):
+                    if info.size > MAX_STORED_CHUNK_BYTES:
+                        raise UnsupportedCase("Family stored chunk exceeds the 2 MiB limit")
+                    if (tuple(info.chunk_offset) != origin
+                            or info.filter_mask & ~((1 << len(filters)) - 1)):
                         raise RecoveryError("Family chunk index contradicts requested coordinate or filter pipeline")
                     parts = _extent(int(info.byte_offset), int(info.size), member_size, sizes)
                     known.append({"coordinate": list(origin), "logical_address": int(info.byte_offset),

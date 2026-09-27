@@ -94,7 +94,7 @@ def _load_manifest(value: str | Path | dict[str, Any]) -> tuple[Path, str, Path,
                 or not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None):
             raise RecoveryError("Split members need explicit absolute paths and lowercase SHA-256 pins")
         verified.append((Path(path), digest))
-    if verified[0][0].resolve(strict=True) == verified[1][0].resolve(strict=True):
+    if verified[0][0].samefile(verified[1][0]):
         raise RecoveryError("Split metadata and raw members cannot be the same physical file")
     return verified[0][0], verified[0][1], verified[1][0], verified[1][1]
 

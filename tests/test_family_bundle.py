@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import h5py
 import numpy as np
 
 from h5reclaim.family_bundle import export_family
+from h5reclaim.metadata import UnsupportedCase
 from h5reclaim.recovery import RecoveryError
 
 
@@ -53,3 +56,21 @@ class FamilyBundleTests(unittest.TestCase):
     def test_output_cannot_alias_member(self) -> None:
         with self.assertRaisesRegex(RecoveryError, "new paths|destinations must differ"):
             export_family(self.manifest, "/science", self.members[0], self.report)
+
+    def test_distinct_hardlink_names_cannot_claim_two_family_indices(self) -> None:
+        # Both manifest paths can be SHA-256-pinned yet identify the same
+        # physical file. Without this refusal a native read reports the
+        # wrong latter-member bytes as complete measurements.
+        self.members[4].unlink()
+        os.link(self.members[3], self.members[4])
+        self.manifest["members"][4]["sha256"] = hashlib.sha256(self.members[4].read_bytes()).hexdigest()
+        with self.assertRaisesRegex(RecoveryError, "one physical file"):
+            export_family(self.manifest, "/science", self.output, self.report)
+        self.assertFalse(self.output.exists() or self.report.exists())
+
+    def test_stored_chunk_size_is_bounded_before_native_read(self) -> None:
+        from h5reclaim import family_bundle
+        with patch.object(family_bundle, "MAX_STORED_CHUNK_BYTES", 100):
+            with self.assertRaisesRegex(UnsupportedCase, "stored chunk exceeds"):
+                export_family(self.manifest, "/science", self.output, self.report)
+        self.assertFalse(self.output.exists() or self.report.exists())

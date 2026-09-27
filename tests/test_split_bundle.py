@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -173,6 +174,16 @@ class SplitBundleTests(unittest.TestCase):
         manifest["members"][0]["path"] = "instrument-m.h5"
         with self.assertRaisesRegex(RecoveryError, "absolute paths"):
             export_split(manifest, "/exp/strain", self.output, self.report)
+
+    def test_distinct_hardlink_names_cannot_claim_metadata_and_raw_members(self) -> None:
+        # A contiguous Split dataset has no payload checksum. The driver can
+        # read metadata bytes as raw values if two paths are the same inode.
+        self._create(layout="contiguous")
+        self.raw.unlink()
+        os.link(self.metadata, self.raw)
+        with self.assertRaisesRegex(RecoveryError, "same physical file"):
+            export_split(self._manifest(), "/exp/strain", self.output, self.report)
+        self.assertFalse(self.output.exists() or self.report.exists())
 
     def test_rechecked_sources_must_remain_pinned_before_publish(self) -> None:
         self._create()
