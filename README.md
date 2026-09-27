@@ -22,7 +22,7 @@ H5Reclaim is an experimental, open-source project exploring recovery of scientif
 
 The repository contains an experimental Python command-line tool, controlled fixtures, tests, and a small corpus of attributed scientific HDF5 files. Supported cases depend on the file's actual structure. H5Reclaim is not a general repair utility, and a readable output alone does not prove the historical integrity of its values.
 
-For current support boundaries and verified results, see the [project status](docs/status.md). The [technical brief](docs/project-brief.md) explains the longer-term goal and design principles.
+For current support boundaries and verified results, see the [project status](docs/status.md) and [damage taxonomy](docs/damage-taxonomy.md). The [technical brief](docs/project-brief.md) explains the longer-term goal and design principles. No representative field success percentage has been established.
 
 ## Get started
 

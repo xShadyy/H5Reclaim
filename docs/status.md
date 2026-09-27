@@ -2,6 +2,81 @@
 
 Updated: 2026-09-27
 
+## Version 0.8.0: additional damage routes and independent integrity gates
+
+This release adds narrow, evidence-gated routes for several different failure
+families. `rescue --status-trial` checks an original version-3 superblock
+checksum, a write flag without reserved bits, and an end-of-address within
+physical EOF. It changes only the flag and superblock checksum in a disposable
+copy, then runs the bounded native-readable export. The original is untouched.
+An openable trial does not establish that the interrupted acquisition finished
+or that any measurement matches its pre-incident value. This route does not
+invoke `h5clear`; the separate `probe-status` command can do so if installed.
+
+`rescue --related-files` also supports one selected external link into one
+explicit, SHA-256-pinned HDF5 target. It follows only local hard links within
+the target, checks its current native-readable dataset, physical ranges and
+observed competing owners, and materializes the selected dataset locally.
+The reported storage offsets belong to the target file. Soft links, recursive
+or transitive external links, missing targets, and unsupported target values
+refuse. As with external raw and VDS sources, the manifest pins current bytes;
+it cannot authenticate historical measurements.
+
+Two prospective integrity checks can now withhold changed unchecksummed
+payloads. `capture-element-baseline` records per-stored-element hashes in a
+separate ZIP for a complete rooted compact or contiguous canonical numeric
+dataset. Later `rescue --element-baseline` accepts only complete elements that
+match that independently retained baseline. For chunked numeric data, the
+existing `capture-baseline` JSON can now gate `rescue --chunk-baseline`: each
+accepted decoded chunk must match its prior coordinate hash. Both rescue
+commands require the baseline path and its independently retained SHA-256.
+Mismatches or physically missing data remain unknown. A hash cannot restore
+overwritten bytes, and a baseline made after damage is not prior evidence.
+The replica and parity routes remain separate ways to supply replacement
+bytes when their own conditions hold.
+
+Structural parsing gained one **specific** modern damaged-index repair: a
+missing fixed-array header (FAHD) to data-block (FADB) pointer can be
+substituted only when a unique bounded candidate restores the original FAHD
+checksum, the checked FADB points back, and all coordinate, size, and
+overlap checks agree. Its scan is bounded at 512 MiB. Generated filtered
+and paged examples recovered exactly, with checksum-only corruption,
+rechecksummed redirection, and contradictory child damage refused. This is
+not a repair strategy for arbitrary modern fixed-array, extensible-array,
+or version-2 B-tree links.
+
+The selected raw-metadata fallback now covers more older v0/v1 rooted
+numeric layouts and bounded object-header continuations, including generated
+rank-three/rank-four filtered, edge and sparse examples. A controlled
+optional metadata fault on an authentic GWOSC numeric dataset recovered the
+selected value exactly against its untouched evaluator original. A bounded
+complete rooted hard-link census now compares observed aliases with the
+selected object's declared count on old native and raw fallback paths,
+modern raw fallback, and nonchunked export. It rejects a demonstrated
+redirected-link false export into an aliased sibling. Older links lack
+on-disk checksums. Traversal beyond its group, link or time limits refuses;
+coordinated changes to unchecksummed links and counts can still leave a
+consistent but historically false graph. This check is a contradiction gate,
+not independent proof of unseen file history.
+Selected SOHM v2 B-tree shared-message indexes now accept checked leaf or
+one-internal-level nodes and bounded managed-heap records. Deeper and mixed
+record variants, and huge, tiny, or filtered heap IDs still refuse.
+
+The new [damage taxonomy](damage-taxonomy.md) records route, evidence and hard
+limit by fault family. `benchmarks/run_heldout_trials.py` accepts a separately
+specified hash-pinned panel and reports planned, eligible and excluded trials,
+exact and wrong accepted values, unknowns and refusals by fault class. Bundled
+scientific originals and deliberate mutations are development calibration,
+not a naturally damaged held-out multi-lab sample. One calibration mutation
+of an unchecksummed payload was falsely accepted without a prior baseline;
+the new integrity gate detects that class only when a trustworthy prior
+capture exists. No measured representative damage distribution or defensible
+50% or 99% field success rate exists. Some erased payloads, missing ownership
+anchors and absent dependent files cannot be exactly reconstructed from one
+damaged container.
+
+The sections below describe older releases and are historical.
+
 ## Version 0.7.0: additional evidence routes, dependency bundles, and prospective checks
 
 The guided `rescue` command now chooses among bounded chunked structural

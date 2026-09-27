@@ -36,6 +36,12 @@ from the present prefix of a shorter external raw segment and marks the rest
 unknown. It can materialize bounded VDS mappings after separately opening
 pinned private source snapshots. A VDS target itself backed by other files
 and dynamic VDS filenames remain unsupported.
+For one selected external link, the same command requires exactly its declared
+filename in the manifest. It snapshots and hashes the distinct HDF5 target,
+then follows only local hard links to its selected native-readable dataset.
+The output materializes that dataset locally, and physical evidence offsets
+refer to the target file. A target-side soft or external link, a recursive
+dependency, or a missing pinned target is refused.
 Related-file manifests reject duplicate JSON keys. An external raw member
 that aliases the selected HDF5 container is refused so container metadata
 cannot be assigned as external measurements.
@@ -44,7 +50,7 @@ A matching hash identifies the supplied bytes at inspection time. It does not
 prove that the file is the original instrument output or that its scientific
 values are correct. The new value-export routes map current bytes to selected
 coordinates with per-element validity; they do not reconstruct damaged VDS
-metadata, follow external links or dependencies recursively, or prove that
+metadata, follow external links beyond the single explicit pinned target, or prove that
 unchecksummed historical measurements were unchanged. A virtual fill value
 from a missing source is never accepted as a measurement.
 
@@ -59,9 +65,17 @@ configurations remain unsupported. See [guided rescue](usage.md#open-a-family-dr
 
 For a version-3 superblock only, a raw write-access bit can indicate an
 interrupted writer. Earlier versions do not assign that meaning to their
-consistency field. H5Reclaim records the raw end-of-address (EOA) and physical
-end-of-file (EOF) relationship, while marking the raw superblock checksum
+consistency field. `diagnose` records the raw end-of-address (EOA) and physical
+end-of-file (EOF) relationship, while marking its raw superblock checksum
 unvalidated. A discrepancy alone does not establish what bytes were lost.
+
+`h5reclaim rescue FILE --dataset PATH --status-trial --output OUT.h5 --report
+EVIDENCE.json` independently checks the original version-3 superblock
+checksum, write flag without reserved bits, and EOA inside physical EOF.
+It changes only status and checksum in a disposable copy, then applies the
+bounded native-readable export and publishes a selected derived dataset.
+The original remains unchanged. A readable trial does not establish whether
+the acquisition finished or authenticate its measurements.
 
 If metadata will not open and the observed version-3 write bit is set,
 `h5reclaim probe-status FILE --json` can optionally run `h5clear --status`

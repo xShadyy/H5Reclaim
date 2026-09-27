@@ -30,6 +30,24 @@ The compact/contiguous structural route can retain fully present elements at the
 Structural routes refuse a selected physical range when another observed rooted local dataset claims those bytes. Reports state when bounded sibling enumeration was incomplete; a complete native inventory is still not a historical ownership certificate. A manifest rejects duplicate keys and a related raw file that aliases the main HDF5 container.
 Native-readable, VDS source, Family, and Split value exports also reject observed competing sibling allocations; they refuse if their bounded native sibling inventory cannot complete.
 
+### Inspect an interrupted-write status flag
+
+If diagnosis shows a version-3 write flag, the explicit status trial can check
+the original superblock checksum and end-of-address, change only the flag and
+checksum in a **disposable private copy**, and attempt a bounded native-readable
+export of the selected dataset:
+
+```powershell
+python -m h5reclaim rescue damaged.h5 --dataset /experiment/readings --status-trial --output trial-values.h5 --report trial-evidence.json
+```
+
+It refuses a bad original checksum, reserved status bits, or end-of-address
+past physical EOF. The published file is a derived selected dataset with a
+validity map, not a status-cleared copy of the original container. A successful
+native read does not show that an interrupted write finished correctly or
+that its historical measurements are intact. `probe-status` below is a
+separate optional experiment using `h5clear` when installed.
+
 ### Supply related files
 
 For external raw storage or a virtual dataset, use the exact-name, pinned related-file manifest described below:
@@ -38,7 +56,7 @@ For external raw storage or a virtual dataset, use the exact-name, pinned relate
 python -m h5reclaim rescue damaged.h5 --dataset /experiment/readings --related-files related.json --output rescued.h5 --report evidence.json
 ```
 
-The external route maps complete elements through ordered, explicitly supplied raw segments; missing bytes and the portion past physical EOF are unknown. The VDS route maps finite ALL/regular selections from pinned, local, native-readable numeric source datasets and marks missing or unallocated sources unknown instead of accepting virtual fill. It refuses overlapping mappings, dynamic source names, transitive dependencies, and unsupported selections. Both materialize a local dataset rather than pretending to preserve external or virtual storage configuration. Native HDF5 operations in guided rescue run in a deadline-bound child with plugin loading disabled. See [dependency bundles](dependency-bundles.md).
+The external raw route maps complete elements through ordered, explicitly supplied raw segments; missing bytes and the portion past physical EOF are unknown. The VDS route maps finite ALL/regular selections from pinned, local, native-readable numeric source datasets and marks missing or unallocated sources unknown instead of accepting virtual fill. It refuses overlapping mappings, dynamic source names, transitive dependencies, and unsupported selections. One selected **external link** can also name a pinned HDF5 target. The route traverses only local hard links inside that target, validates its selected native-readable dataset and materializes the values locally. It does not follow target-side soft/external links, recursive or transitive dependencies. Its evidence ranges refer to the target file, not the referring HDF5 container. These routes produce local selected datasets rather than preserving external or virtual storage configuration. Native HDF5 operations in guided rescue run in a deadline-bound child with plugin loading disabled. See [dependency bundles](dependency-bundles.md).
 
 ### Use an independently captured baseline and replicas
 
@@ -46,9 +64,53 @@ If a dataset is still intact, record decoded chunk hashes and keep the JSON inde
 
 ```powershell
 python -m h5reclaim capture-baseline healthy.h5 --dataset /experiment/readings --output baseline.json
+$priorChunkSha = (Get-FileHash .\baseline.json -Algorithm SHA256).Hash.ToLowerInvariant()
 ```
 
-Every selected chunk must be allocated and structurally decodable. The JSON records bytes **observed when this command ran**, not evidence that earlier readings were correct. It cannot be created retrospectively from a lost healthy file. An optional later replica manifest has this shape, with actual hashes and absolute paths:
+Retain `$priorChunkSha` independently from the ZIP or file containing the
+baseline. Every selected chunk must be allocated and structurally decodable.
+The JSON records bytes **observed when this command ran**, not evidence that
+earlier readings were correct. It cannot be created retrospectively from a
+lost healthy file.
+
+For a later file whose selected chunked dataset still has rooted, parseable
+metadata, compare every currently decoded chunk with that prior JSON before
+publishing it:
+
+```powershell
+$priorChunkSha = '<paste the lowercase SHA-256 retained before damage>'
+python -m h5reclaim rescue damaged.h5 --dataset /experiment/readings --chunk-baseline baseline.json --chunk-baseline-sha256 $priorChunkSha --output verified-chunks.h5 --report chunk-evidence.json
+```
+
+The JSON and its SHA-256 must have been retained independently before the
+damage. An unchanged chunk may be accepted; changed, missing, undecodable,
+or unowned chunks remain unknown in `/_h5reclaim/chunk_status`. A digest does
+not supply replacement bytes. The path and lowercase digest are required as
+a pair. The separate replica and parity routes below can use an independent
+copy or prospective sidecar for replacement under their own limits.
+
+For a complete rooted **compact or contiguous** canonical numeric dataset,
+capture per-element hashes while it is still intact:
+
+```powershell
+python -m h5reclaim capture-element-baseline healthy.h5 --dataset /experiment/readings --output element-baseline.zip
+```
+
+Keep the printed ZIP SHA-256 independently. Later, on a damaged file with
+surviving selected schema and physical offsets:
+
+```powershell
+$priorElementSha = '<paste the lowercase SHA-256 retained before damage>'
+python -m h5reclaim rescue damaged.h5 --dataset /experiment/readings --element-baseline element-baseline.zip --element-baseline-sha256 $priorElementSha --output verified-elements.h5 --report element-evidence.json
+```
+
+Only complete stored elements with matching prior hashes are accepted in
+`/_h5reclaim/element_status`. Changed or truncated elements are unknown, even
+where the output dataset displays zero. This route does not reconstruct the
+old bits. It requires a matching selected shape, type and layout; use a new
+destination and keep the original and baseline separate.
+
+An optional later replica manifest has this shape, with actual hashes and absolute paths:
 
 ```json
 {
@@ -138,6 +200,21 @@ python -m unittest discover -s tests -q
 
 Benchmark readable summaries include paths to retained HDF5 and JSON evidence. Use `--json` for complete output where offered. The original healthy file and mutation manifest are evaluator truth, never arguments to recovery. These constructed experiments cannot measure a real-world success percentage.
 
+For a **separately supplied, previously unused** hash-pinned panel, see the
+manifest contract in [the benchmark guide](../benchmarks/README.md) and run:
+
+```powershell
+python benchmarks/run_heldout_trials.py --manifest C:\Lab\panel.json --work-dir C:\Lab\heldout-evaluation
+```
+
+The evaluator records planned, eligible and excluded cases by fault family,
+exact/wrong accepted values, unknowns, refusals and protocol failures. It
+uses intact originals only for controlled mutation and evaluator-only truth;
+the recovery subprocess receives a damaged copy. Exit 1 flags a false accept
+or protocol failure, including a silent unchecksummed bit change that passes
+without prospective prior evidence. Self-declared provenance and a chosen
+fault mix do not yield a general field success percentage.
+
 ## Diagnose a damaged file
 
 ```powershell
@@ -195,14 +272,14 @@ An optional `source_sha256` refers to the **damaged input**. Observed conflicts 
 python -m h5reclaim recover damaged.h5 --dataset /experiment/readings --output result.h5 --report result.json
 ```
 
-The destinations must not exist. Recovery reads only the damaged input through a private snapshot. Native HDF5 normally locates the selected local dataset and schema; when native metadata lookup fails, a narrower rooted parser can resolve surviving old symbol-table or modern compact-group links and required messages. It refuses unsupported paths and records this route in `metadata_resolution`. A bounded independent parser validates raw indexes and decodes chunks. Version-1 trees can bridge one lost **leaf** pointer only through a unique matching parent interval and reciprocal left/right sibling links. Modern indexes require intact anchored pointer paths; missing modern index links are not reconstructed. The report's `evidence_ledger` records index chains, physical ranges, checksums or their absence, decoding checks, contradictions, and per-region decisions.
+The destinations must not exist. Recovery reads only the damaged input through a private snapshot. Native HDF5 normally locates the selected local dataset and schema; when native metadata lookup fails, a narrower rooted parser can resolve surviving old symbol-table or modern compact/dense-group links and required messages. It refuses unsupported paths and records this route in `metadata_resolution`. A bounded independent parser validates raw indexes and decodes chunks. Version-1 trees can bridge one lost **leaf** pointer only through a unique matching parent interval and reciprocal left/right sibling links. One modern fixed-array header to data-block pointer can be reconstructed only when a unique candidate restores the **original header checksum**, has a checked back-pointer, and passes bounded coordinate and range checks. Other broken modern links remain unsupported. The report's `evidence_ledger` records index chains, physical ranges, checksums or their absence, decoding checks, contradictions, and per-region decisions.
 
 | Structural condition | Supported behavior |
 | --- | --- |
 | Dataset | One local rank-one through rank-four chunked canonical integer (8/16/32/64 bit signed or unsigned) or IEEE float32/64 dataset, either byte order. Positive current dimensions, partial edge chunks, sparse allocation, and growing maxima are supported when the index parser validates their mapping. |
-| Older format | Superblock v0/v1, object header v1 with bounded continuation, layout v3, version-1 B-tree with intact level-zero or deeper tree. One missing leaf link can be bridged even below a deeper root. Internal subtree loss or multiple lost links is refused. Older raw metadata fallback has a narrower original numeric/filter envelope and unchecksummed link ownership. |
-| Newer format | Checksummed superblock v2/v3, checksummed selected object header v2 with bounded continuations, layout v4/v5 and intact single-chunk, implicit, filtered/paged/sparse fixed array, bounded extensible array including validated initialized pages, or version-2 B-tree. Missing modern index links remain unsupported. Raw metadata fallback follows rooted compact links or a bounded checksummed dense-group name index and managed fractal heap; unsupported variants refuse. |
-| Selected shared messages | A committed canonical numeric datatype can resolve through a checked v2 object header. Bounded SOHM single-list managed-heap references can resolve selected shared dataspace or datatype messages. Unsupported SOHM index and heap variants refuse. |
+| Older format | Superblock v0/v1, object header v1 with up to eight supported continuations, layout v3, version-1 B-tree with intact level-zero or deeper tree. One missing leaf link can be bridged even below a deeper root. Internal subtree loss or multiple lost links is refused. Older rooted fallback covers bounded canonical rank-one through four numeric and supported shuffle/DEFLATE/Fletcher32 layouts; old links themselves are unchecksummed. |
+| Newer format | Checksummed superblock v2/v3, checksummed selected object header v2 with bounded continuations, layout v4/v5 and intact single-chunk, implicit, filtered/paged/sparse fixed array, bounded extensible array including validated initialized pages, or version-2 B-tree. A single missing FAHD-to-FADB link has a narrow unique-checksum reconstruction with a 512 MiB candidate scan; other broken modern links remain unsupported. Raw metadata fallback follows rooted compact links or a bounded checksummed dense-group name index and managed fractal heap; unsupported variants refuse. |
+| Selected shared messages | A committed canonical numeric datatype can resolve through a checked v2 object header. Bounded SOHM single-list or type-7 v2 B-tree leaf/one-internal-level managed-heap references can resolve selected shared dataspace, datatype or filter messages. Deeper and unsupported heap/index variants refuse. |
 | Filters | Bounded built-in shuffle, DEFLATE, and Fletcher32 in their actual declared order; per-chunk optional skip masks. Missing unknown decoders are reported separately, never treated as verified measurements. |
 | Resource bounds | Source snapshot at most 4 GiB, 30-minute 1 MiB-buffer copy, temporary disk for full logical source size plus 32 MiB reserve; structural dataset at most 1,048,576 elements, 4,096 chunks and traversed nodes, 1 MiB decoded chunk. |
 
