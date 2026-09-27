@@ -26,6 +26,44 @@ _PASS = tuple(EvidenceCheck(code, "pass") for code in (
 ))
 
 
+def _ea_page_rule(reader: ModernH5File, index: ModernIndex,
+                  step: Mapping[str, object], preceding: Mapping[str, object]) -> bool:
+    """Independently derive a paged EA bitmap bit from checksummed headers."""
+    sb = reader.superblock
+    root = reader.read_at(index.base_address, 12)
+    max_bits, min_elems, page_bits = root[7], root[9], root[11]
+    if not min_elems or min_elems & (min_elems - 1) or not 1 <= page_bits <= 24:
+        return False
+    offset_width = (max_bits + 7) // 8
+    sblock_address = preceding.get("parent_address")
+    block_address = step.get("parent_address")
+    page_index = step.get("page_index")
+    if not all(isinstance(x, int) for x in (sblock_address, block_address, page_index)):
+        return False
+    sblock = reader.read_at(sblock_address, 6 + sb.offset_size + offset_width)
+    start = int.from_bytes(sblock[6+sb.offset_size:], "little")
+    dblock = reader.read_at(block_address, 6 + sb.offset_size + offset_width)
+    offset = int.from_bytes(dblock[6+sb.offset_size:], "little")
+    row_start = 0
+    for row in range(1 + max_bits - (min_elems.bit_length() - 1)):
+        blocks = 1 << (row // 2)
+        elements = min_elems << ((row + 1) // 2)
+        if row_start == start:
+            page_elems = 1 << page_bits
+            if (elements <= page_elems or elements % page_elems
+                    or offset < start or (offset - start) % elements):
+                return False
+            block_index = (offset - start) // elements
+            page_count = elements // page_elems
+            bit = block_index * page_count + page_index
+            return (block_index < blocks and 0 <= page_index < page_count
+                    and step.get("bitmap_bit") == bit
+                    and step.get("bitmap_offset") == reader.absolute(sblock_address)
+                    + 6 + sb.offset_size + offset_width + bit // 8)
+        row_start += blocks * elements
+    return False
+
+
 def build_modern_evidence(
     spec: DatasetSpec, reader: ModernH5File, index: ModernIndex,
     records: Sequence[Any], *, source_sha256: str,
@@ -142,7 +180,8 @@ def _build(
             valid_kinds = (
                 ("fixed-array data block", "fixed-array data block page")
                 if index.index_type == "fixed_array" else
-                ("extensible-array index block", "extensible-array data block")
+                ("extensible-array index block", "extensible-array data block",
+                 "extensible-array data block page")
             )
             if index.index_type == "extensible_array":
                 chain = chunk.evidence.get("index_chain")
@@ -154,6 +193,45 @@ def _build(
                 for number, step in enumerate(chain[2:]):
                     if not isinstance(step, dict):
                         raise ModernEvidenceError("invalid extensible-array chain step")
+                    if step.get("kind") == "eadb_to_page":
+                        # Pages have no literal parent pointer. The EASB bitmap
+                        # and fixed contiguous allocation prove this offset;
+                        # retain EADB as the conceptual parent in the ledger.
+                        page_address = step.get("target_address")
+                        page_index = step.get("page_index")
+                        page_size = step.get("page_size")
+                        block_size = step.get("data_block_size")
+                        bitmap_offset = step.get("bitmap_offset")
+                        bitmap_bit = step.get("bitmap_bit")
+                        block_address = step.get("parent_address")
+                        header = reader.read_at(index.base_address, 12)
+                        expected_page_size = (1 << header[11]) * header[6] + 4
+                        if (number != len(chain[2:]) - 1 or number < 1
+                                or chain[number + 1].get("kind") != "easb_to_eadb"
+                                or chain[number + 1].get("target_address") != block_address
+                                or not all(isinstance(x, int) for x in (
+                                    page_address, page_index, page_size, block_size,
+                                    bitmap_offset, bitmap_bit, block_address))
+                                or page_index < 0 or page_size != expected_page_size
+                                or not _ea_page_rule(reader, index, step, chain[number + 1])
+                                or reader.absolute(block_address) != parent
+                                or page_address != block_address + block_size + page_index * page_size
+                                or page_address != chunk.evidence.get("slot_owner_address")
+                                or not any(start == parent and end - start == block_size
+                                           for start, end, kind in reader.metadata_ranges
+                                           if kind == "extensible-array data block")
+                                or not any(start == reader.absolute(page_address)
+                                           and end - start == page_size
+                                           for start, end, kind in reader.metadata_ranges
+                                           if kind == "extensible-array data block page")
+                                or not any(start == reader.absolute(chain[number + 1]["parent_address"])
+                                           and start <= bitmap_offset < end
+                                           for start, end, kind in reader.metadata_ranges
+                                           if kind == "extensible-array secondary block")
+                                or not reader._read_absolute(bitmap_offset, 1)[0]
+                                       & (0x80 >> (bitmap_bit % 8))):
+                            raise ModernEvidenceError("extensible-array page has no checked bitmap and offset")
+                        continue
                     parent_address, target = step["parent_address"], step["target_address"]
                     offset = step["pointer_offset"]
                     if (not isinstance(offset, int) or not isinstance(target, int)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import hashlib
 from itertools import product
 from pathlib import Path
 
@@ -13,6 +14,7 @@ import numpy as np
 from h5reclaim.extensible_array import read_extensible_array
 from h5reclaim.format import FormatError, UnsupportedFormat
 from h5reclaim.modern_indexes import ModernH5File, lookup3
+from h5reclaim.recovery import recover
 
 
 def _created(path: Path, shape: tuple[int, ...], chunks: tuple[int, ...],
@@ -182,6 +184,116 @@ class ExtensibleArrayTests(unittest.TestCase):
         modified.write_bytes(bad)
         with self.assertRaises(FormatError):
             _parse(modified)
+
+    def test_paged_secondary_blocks_match_native_slots_and_public_export(self):
+        # A large fixed maximum gives a high EA linear slot without requiring
+        # a million selected chunks or expanding the current dataset extent.
+        for filtered, version in ((False, "latest"), (True, "v4"), (True, "latest")):
+            with self.subTest(filtered=filtered, version=version):
+                _created(self.path, (2, 2), (1, 1), (1_000_000, None),
+                         filtered=filtered, version=version)
+                index, metadata = _parse(self.path)
+                self.assertEqual({item.coordinate for item in index.chunks},
+                                 {(0, 0), (0, 1), (1, 0), (1, 1)})
+                paged = [item for item in index.chunks
+                         if item.evidence["slot_owner_kind"] == "extensible-array data block page"]
+                self.assertEqual(len(paged), 2)
+                self.assertTrue(any(kind == "extensible-array data block page"
+                                    for _, _, kind in metadata))
+                with h5py.File(self.path, "r") as file, ModernH5File(self.path) as reader:
+                    dataset = file["data"]
+                    for item in index.chunks:
+                        mask, raw = dataset.id.read_direct_chunk(item.coordinate)
+                        self.assertEqual((item.filter_mask, reader.read_at(item.address, item.size)),
+                                         (mask, raw))
+                source_hash = hashlib.sha256(self.path.read_bytes()).digest()
+                output = Path(self.temp.name) / f"export_{int(filtered)}_{version}.h5"
+                report = recover(self.path, "/data", output,
+                                 Path(self.temp.name) / f"report_{int(filtered)}_{version}.json")
+                self.assertEqual(report["counts"]["recovered"], 4)
+                self.assertEqual(hashlib.sha256(self.path.read_bytes()).digest(), source_hash)
+                with h5py.File(self.path) as source, h5py.File(output) as recovered:
+                    self.assertEqual(source["data"][...].tobytes(), recovered["data"][...].tobytes())
+
+    def test_paged_checksum_and_reserved_bitmap_refuse_without_attribution(self):
+        _created(self.path, (2, 2), (1, 1), (1_000_000, None))
+        index, metadata = _parse(self.path)
+        page = next((start, end) for start, end, kind in metadata
+                    if kind == "extensible-array data block page")
+        sblock = next((start, end) for start, end, kind in metadata
+                      if kind == "extensible-array secondary block")
+        good = self.path.read_bytes()
+        damaged = bytearray(good)
+        damaged[page[0]+3] ^= 1
+        bad_page = Path(self.temp.name) / "bad_page.h5"
+        bad_page.write_bytes(damaged)
+        with self.assertRaisesRegex(FormatError, "page checksum mismatch"):
+            _parse(bad_page, selected_metadata_from=self.path)
+
+        # A checked page cannot assign a chunk to the reserved but still
+        # uninitialized next page in the same data-block allocation.
+        damaged = bytearray(good)
+        paged = next(item for item in index.chunks if item.coordinate == (0, 1))
+        damaged[paged.pointer_offset:paged.pointer_offset+8] = page[1].to_bytes(8, "little")
+        damaged[page[1]-4:page[1]] = lookup3(
+            bytes(damaged[page[0]:page[1]-4])).to_bytes(4, "little")
+        inside_uninitialized_page = Path(self.temp.name) / "inside_page.h5"
+        inside_uninitialized_page.write_bytes(damaged)
+        with self.assertRaisesRegex(FormatError, "overlaps a paged data block allocation"):
+            _parse(inside_uninitialized_page, selected_metadata_from=self.path)
+
+        # The EASB holds reserved bitmap bytes beyond the actual page count.
+        # A fresh EASB checksum alone is insufficient to accept contradictory
+        # page-allocation information.
+        damaged = bytearray(good)
+        damaged[sblock[0] + 18 + 100] |= 1
+        damaged[sblock[1]-4:sblock[1]] = lookup3(
+            bytes(damaged[sblock[0]:sblock[1]-4])).to_bytes(4, "little")
+        bad_bitmap = Path(self.temp.name) / "bad_bitmap.h5"
+        bad_bitmap.write_bytes(damaged)
+        with self.assertRaisesRegex(FormatError, "reserved bit"):
+            _parse(bad_bitmap, selected_metadata_from=self.path)
+
+        # Erasing the initialization bit and rechecksumming the EASB removes
+        # the page from accepted data. It must never promote its old bytes.
+        damaged = bytearray(good)
+        page_step = paged.evidence["index_chain"][-1]
+        bitmap_offset = page_step["bitmap_offset"]
+        damaged[bitmap_offset] &= ~(0x80 >> (page_step["bitmap_bit"] % 8))
+        damaged[sblock[1]-4:sblock[1]] = lookup3(
+            bytes(damaged[sblock[0]:sblock[1]-4])).to_bytes(4, "little")
+        missing_page = Path(self.temp.name) / "missing_page.h5"
+        missing_page.write_bytes(damaged)
+        partial, _ = _parse(missing_page, sparse=True, selected_metadata_from=self.path)
+        self.assertEqual({item.coordinate for item in partial.chunks}, {(0, 0), (1, 0)})
+        with self.assertRaises(UnsupportedFormat):
+            _parse(missing_page, selected_metadata_from=self.path)
+
+    def test_sparse_paged_secondary_multiple_pages_remain_unknown_elsewhere(self):
+        # The fixed maximum swizzles coordinates from the second, unlimited
+        # dimension into distant EA rows. Selected first-axis cells land in
+        # pages 1, 2, and 3 of the same data block.
+        with h5py.File(self.path, "w", libver="latest") as file:
+            dataset = file.create_dataset("data", shape=(1700, 2),
+                                          maxshape=(1_001_000, None),
+                                          chunks=(1, 1), dtype="<u4", fillvalue=777)
+            for i, value in ((0, 17), (500, 29), (1500, 41)):
+                dataset[i, 1] = value
+        index, _ = _parse(self.path, sparse=True)
+        self.assertEqual({item.coordinate for item in index.chunks},
+                         {(0, 1), (500, 1), (1500, 1)})
+        pages = {item.evidence["index_chain"][-1]["page_index"] for item in index.chunks}
+        self.assertEqual(pages, {1, 2, 3})
+        with h5py.File(self.path, "r") as file, ModernH5File(self.path) as reader:
+            for item in index.chunks:
+                mask, raw = file["data"].id.read_direct_chunk(item.coordinate)
+                self.assertEqual((mask, raw),
+                                 (item.filter_mask, reader.read_at(item.address, item.size)))
+        result = recover(self.path, "/data", Path(self.temp.name) / "sparse_export.h5",
+                         Path(self.temp.name) / "sparse_report.json")
+        self.assertEqual(result["counts"]["recovered"], 3)
+        self.assertEqual(result["counts"]["allocation_unknown"], 3397)
+        self.assertEqual(result["outcome"], "partial")
 
 
 if __name__ == "__main__":

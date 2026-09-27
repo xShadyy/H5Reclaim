@@ -3,14 +3,14 @@
 The selected object's layout pointer, shape, maximum shape, chunk dimensions,
 filter IDs, and object address must all come from the *same immutable snapshot*.
 This module never scans for orphan signatures or infers missing pointers. It
-checks the EAHD, EAIB, EASB, and nonpaged EADB metadata checksums and their
-parent/back pointers before attributing a raw byte range to a coordinate.
+checks the EAHD, EAIB, EASB, EADB, and initialized data-block page checksums
+and their parent/back pointers before attributing bytes to a coordinate.
 
 Format reference: https://support.hdfgroup.org/documentation/hdf5/latest/_f_m_t4.html
 Appendix VII.D. Mapping and sizes are cross-checked against the HDF Group's
 H5EA.c, H5EAhdr.c, H5EAiblock.c, H5EAcache.c, and H5Dearray.c source.
-Paged data blocks are deliberately refused until their page initialization
-bitmaps and each page checksum are validated independently.
+Paged data blocks use the secondary block's per-data-block page bitmap. An
+uninitialized page never supplies a fill measurement.
 """
 
 from __future__ import annotations
@@ -37,6 +37,21 @@ def _ceil_grid(shape: tuple[int, ...], chunks: tuple[int, ...]) -> tuple[int, ..
     return tuple((length + width - 1) // width for length, width in zip(shape, chunks))
 
 
+def _bitmap_bit(bitmap: bytes, bit: int) -> bool:
+    return bool(bitmap[bit // 8] & (0x80 >> (bit % 8)))
+
+
+def _bitmap_any(bitmap: bytes, start: int, count: int) -> bool:
+    """Check one block's bits without borrowing its neighbor's padding bits."""
+    first, last = start // 8, (start + count - 1) // 8
+    if first == last:
+        return bool(bitmap[first] & (0xFF >> (start % 8))
+                    & ((0xFF << (7 - ((start + count - 1) % 8))) & 0xFF))
+    return (bool(bitmap[first] & (0xFF >> (start % 8)))
+            or any(bitmap[first + 1:last])
+            or bool(bitmap[last] & ((0xFF << (7 - ((start + count - 1) % 8))) & 0xFF)))
+
+
 @dataclass(frozen=True)
 class _SuperblockRow:
     start: int
@@ -52,7 +67,8 @@ class _Reader:
         self.seen: dict[int, tuple[bytes, int, str]] = {}
         self.bytes_read = 0
 
-    def meta(self, address: int, size: int, signature: bytes, kind: str) -> bytes:
+    def _checked(self, address: int, size: int, kind: str,
+                 signature: bytes | None) -> bytes:
         if address in self.seen:
             previous = self.seen[address]
             if previous[1:] != (size, kind):
@@ -67,7 +83,7 @@ class _Reader:
             if absolute < end and start < absolute + size:
                 raise FormatError("extensible-array metadata overlaps previously validated metadata")
         raw = self.reader.read_at(address, size)
-        if raw[:4] != signature or raw[4] != 0:
+        if signature is not None and (raw[:4] != signature or raw[4] != 0):
             raise FormatError(f"{kind} signature or version is invalid")
         if lookup3(raw[:-4]) != _uint(raw[-4:]):
             raise FormatError(f"{kind} checksum mismatch")
@@ -75,6 +91,14 @@ class _Reader:
         self.bytes_read += size
         self.reader.metadata_ranges.append((absolute, absolute + size, kind))
         return raw
+
+    def meta(self, address: int, size: int, signature: bytes, kind: str) -> bytes:
+        return self._checked(address, size, kind, signature)
+
+    def page(self, address: int, size: int) -> bytes:
+        # EA pages have no signature or back-pointer; the checked EASB bitmap,
+        # checked EADB, and contiguous allocation identify their coordinates.
+        return self._checked(address, size, "extensible-array data block page", None)
 
 
 def read_extensible_array(
@@ -198,6 +222,8 @@ def read_extensible_array(
     page_elems = 1 << page_bits
 
     block_cache: dict[int, tuple[bytes, int, int, int]] = {}
+    page_cache: dict[int, bytes] = {}
+    paged_allocations: dict[int, tuple[int, int]] = {}
     # Address -> raw block, first slot, capacity, expected row-specific offset.
     records: list[ModernChunk] = []
     for cell in product(*(range(d) for d in grid)):
@@ -230,9 +256,13 @@ def read_extensible_array(
             if position < 0 or position >= row.data_blocks * row.elements_per_block:
                 raise FormatError("extensible-array index mapping contradicts row bounds")
             db_index = position // row.elements_per_block
-            if row.elements_per_block > page_elems:
-                raise UnsupportedFormat("paged extensible-array data blocks require page validation")
+            paged = row.elements_per_block > page_elems
+            pages_per_block = row.elements_per_block // page_elems if paged else 0
+            bitmap_bytes_per_block = (pages_per_block + 7) // 8 if paged else 0
+            page_bitmap = b""
             if row_index < first_indirect:
+                if paged:
+                    raise UnsupportedFormat("paged direct extensible-array blocks have no secondary bitmap")
                 pointer_slot = direct_start + (row.start_data_pointer + db_index) * offsize
                 address = _uint(index[pointer_slot:pointer_slot+offsize])
                 pointer_parent = index_address
@@ -247,7 +277,9 @@ def read_extensible_array(
                     raise UnsupportedFormat("extensible-array secondary block is unallocated")
                 if n_sblocks < 1:
                     raise FormatError("extensible-array header denies observed secondary block")
-                sblock_size = 10 + offsize + (max_bits + 7)//8 + row.data_blocks * offsize
+                sblock_prefix = 6 + offsize + (max_bits + 7)//8
+                bitmap_length = row.data_blocks * bitmap_bytes_per_block
+                sblock_size = sblock_prefix + bitmap_length + row.data_blocks * offsize + 4
                 sblock = state.meta(sblock_address, sblock_size, b"EASB", "extensible-array secondary block")
                 if (sblock[5] != int(filtered) or _uint(sblock[6:6+offsize]) != root
                         or _uint(sblock[6+offsize:6+offsize+(max_bits+7)//8]) != row.start):
@@ -256,12 +288,23 @@ def read_extensible_array(
                 chain.append({"kind": "eaib_to_easb", "parent_address": index_address,
                               "target_address": sblock_address,
                               "pointer_offset": reader.absolute(index_address)+sblock_slot})
-                pointer_slot = 6 + offsize + (max_bits+7)//8 + db_index * offsize
+                if paged:
+                    bitmap_start = sblock_prefix
+                    page_bitmap = sblock[bitmap_start:bitmap_start+bitmap_length]
+                    used_bits = row.data_blocks * pages_per_block
+                    if (used_bits % 8 and page_bitmap[used_bits // 8]
+                            & ((1 << (8 - used_bits % 8)) - 1)) or any(
+                                page_bitmap[(used_bits+7)//8:]):
+                        raise FormatError("extensible-array page bitmap sets a reserved bit")
+                pointer_slot = sblock_prefix + bitmap_length + db_index * offsize
                 address = _uint(sblock[pointer_slot:pointer_slot+offsize])
                 pointer_parent = sblock_address
                 expected_block_offset = row.start + db_index * row.elements_per_block
                 parent_kind = "easb_to_eadb"
             if address == undefined:
+                if paged and _bitmap_any(page_bitmap, db_index * pages_per_block,
+                                         pages_per_block):
+                    raise FormatError("extensible-array page bitmap claims an absent data block")
                 if allow_sparse:
                     continue
                 raise UnsupportedFormat("extensible-array data block is unallocated")
@@ -270,12 +313,13 @@ def read_extensible_array(
             chain.append({"kind": parent_kind, "parent_address": pointer_parent,
                           "target_address": address,
                           "pointer_offset": reader.absolute(pointer_parent)+pointer_slot})
+            block_prefix = 6 + offsize + (max_bits+7)//8
+            block_size = block_prefix + (0 if paged else row.elements_per_block*entry_size) + 4
             if address in block_cache:
                 _, _, capacity, prior_offset = block_cache[address]
                 if (capacity, prior_offset) != (row.elements_per_block, expected_block_offset):
                     raise FormatError("extensible-array data block is claimed by two different rows")
             else:
-                block_size = 10 + offsize + (max_bits+7)//8 + row.elements_per_block*entry_size
                 block = state.meta(address, block_size, b"EADB", "extensible-array data block")
                 if (block[5] != int(filtered) or _uint(block[6:6+offsize]) != root
                         or _uint(block[6+offsize:6+offsize+(max_bits+7)//8]) != expected_block_offset):
@@ -283,9 +327,36 @@ def read_extensible_array(
                 block_cache[address] = (block, 6+offsize+(max_bits+7)//8,
                                         row.elements_per_block, expected_block_offset)
             block, elements_start, _, _ = block_cache[address]
-            slot_owner = block
-            slot = elements_start + (position % row.elements_per_block) * entry_size
-            slot_address = address
+            if paged:
+                page_size = page_elems * entry_size + 4
+                block_span = block_size + pages_per_block * page_size
+                if reader.absolute(address) + block_span > reader.superblock.eof_address:
+                    raise FormatError("extensible-array data block pages cross declared file end")
+                paged_allocations[address] = (
+                    reader.absolute(address), reader.absolute(address) + block_span)
+                page_index, page_slot = divmod(position % row.elements_per_block, page_elems)
+                page_bit = db_index * pages_per_block + page_index
+                if not _bitmap_bit(page_bitmap, page_bit):
+                    if allow_sparse:
+                        continue
+                    raise UnsupportedFormat("extensible-array data block page is uninitialized")
+                page_address = address + block_size + page_index * page_size
+                if page_address not in page_cache:
+                    page_cache[page_address] = state.page(page_address, page_size)
+                slot_owner = page_cache[page_address]
+                slot = page_slot * entry_size
+                slot_address = page_address
+                chain.append({"kind": "eadb_to_page", "parent_address": address,
+                              "target_address": page_address,
+                              "bitmap_offset": reader.absolute(sblock_address) + bitmap_start + page_bit // 8,
+                              "bitmap_bit": page_bit,
+                              "page_index": page_index,
+                              "page_size": page_size,
+                              "data_block_size": block_size})
+            else:
+                slot_owner = block
+                slot = elements_start + (position % row.elements_per_block) * entry_size
+                slot_address = address
         entry = slot_owner[slot:slot+entry_size]
         if len(entry) != entry_size:
             raise FormatError("extensible-array slot extends outside validated metadata")
@@ -312,6 +383,9 @@ def read_extensible_array(
              "extensible_array_header_address": root,
              "extensible_array_index_block_address": index_address,
              "slot_owner_address": slot_address,
+             "slot_owner_kind": ("extensible-array data block page" if paged else
+                                 "extensible-array data block") if linear >= index_elems else
+                                "extensible-array index block",
              "index_chain": chain},
             pointer_offset=slot_offset,
         ))
@@ -325,6 +399,20 @@ def read_extensible_array(
     for low, high in ranges:
         if any(low < end and start < high for start, end, _ in reader.metadata_ranges):
             raise FormatError("extensible-array chunk overlaps validated metadata")
+        if any(low < end and start < high for start, end in paged_allocations.values()):
+            raise FormatError("extensible-array chunk overlaps a paged data block allocation")
+    allocations = sorted(paged_allocations.values())
+    if any(left[1] > right[0] for left, right in zip(allocations, allocations[1:])):
+        raise FormatError("extensible-array paged data block allocations overlap")
+    for low, high in allocations:
+        if any(low < end and start < high
+               and not (kind in ("extensible-array data block",
+                                  "extensible-array data block page")
+                        and low <= start and end <= high)
+               for start, end, kind in reader.metadata_ranges):
+            raise FormatError("extensible-array paged allocation overlaps other metadata")
+    reader.metadata_ranges.extend((low, high, "extensible-array paged allocation")
+                                  for low, high in allocations)
     return ModernIndex("extensible_array", layout_version, object_address, root,
                        layout_pointer_offset, chunks, element_size, tuple(records),
                        data_block_address=index_address,
