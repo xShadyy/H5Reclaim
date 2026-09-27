@@ -2,6 +2,28 @@
 
 Updated: 2026-09-27
 
+## Version 0.3.3: vary the supported damage position
+
+The fixture damage tool accepts `--child-index` to change a specified,
+verified interior root child pointer in a disposable copy. Its default still
+selects the first eligible position. A new test constructs a second synthetic
+layout with random measurement values and separately breaks all four eligible
+interior child positions. Each damaged copy is passed by itself to the public
+recovery subprocess, and its output is compared against the healthy reference
+by the test. Invalid child positions are refused before any output is made.
+The existing authentic GWOSC file has only one interior position with two
+surviving neighbors, so its real-data benchmark remains one controlled break.
+
+This adds location coverage within the existing single-pointer failure mode.
+It does not randomize other corruption types, validate arbitrary HDF5 layouts,
+or show that absent or overwritten payload bytes can be reconstructed. The
+healthy reference is used to make and score controlled test cases; recovery
+still receives only a damaged file, selected dataset path, and new output
+destinations. A structurally located unfiltered payload has no independent
+checksum and is not guaranteed to match its historical value.
+The updated Linux suite passes 57 discovered tests, including the four-position
+matrix case.
+
 ## Version 0.3.2: readable command summaries
 
 `h5reclaim survey` and `h5reclaim inspect` now present a concise readable

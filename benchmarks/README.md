@@ -50,6 +50,14 @@ measurements, or attempt recovery. `python -m unittest discover -s tests -q`
 runs Python's discovered tests in quiet mode; success does not independently
 score a naturally damaged user file.
 
+The GWOSC file has one interior leaf position that can be detached while
+leaving two adjacent anchors. `tests/test_mutation_positions.py` separately
+damages all four eligible positions in another synthetic layout with random
+measurement values, passing only each damaged copy to a public recovery
+subprocess. The fixture tool's optional `--child-index N` selects a verified
+position; its default remains the first eligible position. This expands
+position coverage for one break type, not arbitrary corruption coverage.
+
 ## Synthetic random-value trial
 
 Run from the repository root in an environment with h5py and NumPy:

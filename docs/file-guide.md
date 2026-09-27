@@ -65,6 +65,7 @@ The benchmark keeps `truth/pristine.h5`, `truth/challenge.json`, and `truth/muta
 | `tests/test_datatype.py` | Canonical little-endian `uint32` is accepted while reduced precision, shifted bits, and nonstandard padding are refused. |
 | `tests/test_survey.py` | Survey candidates, independent local datasets, skipped links, support reasons, traversal limits, and CLI text and JSON output. |
 | `tests/test_corpus_cli.py` | Corpus survey command's readable summary and opt-in JSON output. |
+| `tests/test_mutation_positions.py` | Exercises every eligible broken child position in one synthetic index, using damaged-only recovery subprocesses and exact value comparisons against independent test truth. |
 | `tests/test_recovery_safety.py` | Destination aliases, contradictory or out-of-bounds metadata, missing sibling evidence, and failures while publishing output do not produce falsely trusted results. |
 | `tests/test_integrity_limits.py` | Deliberately changed payload bytes can still be copied under a structurally valid mapping, so the report must not claim a historical integrity check. |
 | `tests/test_end_to_end.py` | Runs the recovery path on damaged input and checks exact placement, output status, source preservation, and benchmark error categories. |

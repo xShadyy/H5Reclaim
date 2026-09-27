@@ -109,6 +109,45 @@ The directory must be new or empty. See [benchmark details](../benchmarks/README
 
 ## Supported input
 
+### How recovery works without a healthy reference
+
+`h5reclaim recover DAMAGED --dataset /path --output NEW.h5 --report NEW.json`
+receives the damaged file, a selected dataset path, and two new destinations.
+It does not receive a healthy original, a mutation manifest, or benchmark
+truth. It makes a temporary read-only snapshot of the **damaged** bytes so
+h5py and the raw index parser inspect the same source. The damaged file's
+surviving dataset metadata supplies the selected object's address, chunk
+shape, datatype, filter pipeline, and B-tree root. If the dataset cannot be
+resolved through that metadata, this release cannot proceed.
+
+The parser follows intact root pointers to reachable leaves. For one missing
+interior root-to-leaf pointer, the reachable leaf on each side must both name
+the same detached leaf through their sibling links. The detached leaf must
+point back to both neighbors, have the expected tree level, and match the
+missing parent's exact key interval. Its entries then give chunk coordinates
+and payload addresses within the **damaged file itself**. The program checks
+bounds, uniqueness, overlaps, sizes, filter masks, and supported decoding;
+on the filtered path it also verifies the stored Fletcher32 checksum. Only
+accepted payloads are exported. Missing or undecodable regions retain a
+nonrecovered status in `/_h5reclaim/chunk_status` in the new HDF5 output.
+
+The healthy original appears only in controlled experiments: a benchmark
+creates a damaged copy from it and independently scores the output after
+recovery. In the bundled GWOSC file there is only one interior root child
+that has both surviving neighbors for this failure mode. The synthetic
+benchmark randomizes measurement values, but its earlier default mutation
+selected the first eligible index pointer. Random measurement values are
+not randomized corruption. A separate matrix test now selects each of four
+eligible interior pointer positions in a synthetic file, one damaged copy per
+position, and checks the public recovery command against independently held
+random values. The fixture damage tool accepts `--child-index` for that
+verified selection. This varies *where* the one supported break occurs, not
+the type of damage or the scientific layout. It does not establish success on
+unrelated damage or layouts, and missing physical payload bytes cannot be
+reconstructed from the damaged file alone. A structurally mapped unfiltered
+chunk also has no independent checksum, so its historical value may still be
+wrong; read the report's integrity note and chunk status.
+
 | Requirement | Current behavior |
 | --- | --- |
 | Dataset | One explicitly selected local, fixed-size rank-two canonical little-endian `uint32` dataset **or** rank-one canonical little-endian IEEE `float64` dataset; dimensions divisible by chunks; other local datasets may coexist |
