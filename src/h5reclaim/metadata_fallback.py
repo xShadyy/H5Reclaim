@@ -330,13 +330,96 @@ def _old_group(reader: H5File, address: int, cached: tuple[int, int] | None) -> 
     return links
 
 
+def _old_compact_group(reader: H5File, address: int,
+                       messages: tuple[HeaderMessage, ...]) -> dict[str, LinkStep | None]:
+    """Read compact link messages stored in an unchecksummed v1 header.
+
+    A v0/v1 superblock does not imply that every group uses a symbol table.
+    HDF5 can put modern-style compact links in older padded object headers.
+    Dense heaps under this combination need a separate parser and are refused.
+    """
+    info, group = (_unique(messages, kind) for kind in (2, 10))
+    if info is None or group is None:
+        raise UnsupportedFormat("older rooted object is not a supported group")
+    raw = info.data
+    if len(raw) < 2 or raw[0] != 0 or raw[1] & ~3:
+        raise FormatError("invalid older compact group link-info message")
+    pos = 2 + (8 if raw[1] & 1 else 0)
+    osize = reader.superblock.offset_size
+    expected = pos + (3 if raw[1] & 2 else 2) * osize
+    if (len(raw) != (expected + 7) // 8 * 8 or any(raw[expected:])
+        or len(group.data) != 8):
+        raise FormatError("older compact group message length or padding invalid")
+    addresses = [_uint(raw[pos + i*osize:pos + (i+1)*osize])
+                 for i in range(3 if raw[1] & 2 else 2)]
+    if any(pointer != reader.superblock.undefined_address for pointer in addresses):
+        raise UnsupportedFormat("older compact group declares a dense link index")
+    links: dict[str, LinkStep | None] = {}
+    for message in messages:
+        if message.kind != 6:
+            continue
+        if message.flags & 2:
+            raise UnsupportedFormat("shared older compact link message")
+        data = message.data
+        if len(data) < 3 or data[0] != 1 or data[1] & 0xE0:
+            raise FormatError("invalid older compact link message")
+        flags = data[1]
+        pos = 2
+        link_type = 0
+        if flags & 8:
+            link_type = data[pos]; pos += 1
+            if link_type not in (1, 64):
+                raise UnsupportedFormat("unknown older compact link type")
+        if flags & 4:
+            pos += 8
+        if flags & 16:
+            if pos >= len(data) or data[pos] != 1:
+                raise UnsupportedFormat("unsupported older compact link-name character set")
+            pos += 1
+        width = 1 << (flags & 3)
+        if pos + width > len(data):
+            raise FormatError("truncated older compact link name length")
+        length = _uint(data[pos:pos+width]); pos += width
+        if not 1 <= length <= MAX_PATH_BYTES or pos + length > len(data):
+            raise FormatError("invalid older compact link name length")
+        try:
+            name = data[pos:pos+length].decode("utf-8" if flags & 16 else "ascii", "strict")
+        except UnicodeDecodeError as exc:
+            raise FormatError("invalid older compact link name encoding") from exc
+        if "\x00" in name or "/" in name or name in (".", "..") or name in links:
+            raise FormatError("invalid or duplicate older compact link component")
+        pos += length
+        if link_type:
+            if len(data) - pos < 2:
+                raise FormatError("truncated older soft or external link")
+            pos += 2 + _uint(data[pos:pos+2])
+            links[name] = None
+        else:
+            if pos + osize > len(data):
+                raise FormatError("truncated older compact hard-link address")
+            target = _uint(data[pos:pos+osize]); pos += osize
+            reader.absolute(target)
+            links[name] = LinkStep(address, name, target, message.absolute_offset + pos - osize)
+        if pos > len(data) or len(data) != (pos + 7) // 8 * 8 or any(data[pos:]):
+            raise FormatError("older compact link length or padding invalid")
+    return links
+
+
+def _old_group_links(reader: H5File, address: int,
+                     cached: tuple[int, int] | None) -> dict[str, LinkStep | None]:
+    messages = _old_messages(reader, address)
+    if _unique(messages, 0x11) is not None:
+        return _old_group(reader, address, cached)
+    return _old_compact_group(reader, address, messages)
+
+
 def _old_selected_address(
     reader: H5File, root: int, cached: tuple[int, int] | None, parts: list[str],
 ) -> tuple[int, tuple[LinkStep, ...]]:
     address = root
     chain: list[LinkStep] = []
     for part in parts:
-        links = _old_group(reader, address, cached)
+        links = _old_group_links(reader, address, cached)
         if part not in links:
             raise UnsupportedFormat(f"selected component {part!r} has no rooted symbol-table entry")
         step = links[part]
@@ -377,7 +460,7 @@ def _old_global_link_count(reader: H5File, root: int,
                     raise FormatError("older aliased group cache contradicts object header")
             continue
         seen_groups.add(group)
-        links = _old_group(reader, group, expected_cached)
+        links = _old_group_links(reader, group, expected_cached)
         links_seen += len(links)
         if links_seen > MAX_OLD_LINKS:
             raise UnsupportedFormat("older rooted hard-link census exceeds link limit")
@@ -390,7 +473,9 @@ def _old_global_link_count(reader: H5File, root: int,
             if counts[step.object_address] > MAX_OLD_LINKS:
                 raise UnsupportedFormat("older rooted target has excessive aliases")
             child_messages = _old_messages(reader, step.object_address)
-            if _unique(child_messages, 0x11) is not None:
+            if (_unique(child_messages, 0x11) is not None or
+                _unique(child_messages, 2) is not None and
+                _unique(child_messages, 10) is not None):
                 pending.append((step.object_address, step.cached_group))
     prefix = reader.read_at(selected_address, 16)
     if prefix[0] != 1:

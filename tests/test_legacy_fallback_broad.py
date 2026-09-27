@@ -170,6 +170,54 @@ class LegacyFallbackBroaderTests(unittest.TestCase):
         self.assertEqual(read_dataset_spec_fallback(
             self.source, "/lab/readings").spec.object_address, address)
 
+    def test_v0_superblock_with_compact_group_links_and_external_sibling(self):
+        related = self.root / "related.h5"
+        with h5py.File(related, "w") as handle:
+            handle.create_dataset("secret", data=np.arange(4, dtype="<u4"))
+        # Default h5py creation can mix a v0 superblock, v1 object headers,
+        # and modern-style compact link messages with eight-byte padding.
+        with h5py.File(self.source, "w") as handle:
+            group = handle.create_group("experiment")
+            selected = group.create_dataset("hard", data=np.arange(4, dtype="<u4"),
+                                            chunks=(4,))
+            group["soft"] = h5py.SoftLink("/experiment/hard")
+            group["external"] = h5py.ExternalLink(str(related), "/secret")
+            handle.create_group("elsewhere")["alias"] = selected
+            address = int(h5py.h5o.get_info(selected.id).addr)
+        with H5File(self.source) as reader:
+            self.assertEqual(reader.superblock.version, 0)
+        for path in ("/experiment/hard", "/elsewhere/alias"):
+            self.assertEqual(read_dataset_spec(self.source, path).object_address, address)
+            self.assertEqual(read_dataset_spec_fallback(
+                self.source, path).spec.object_address, address)
+        with self.assertRaisesRegex(UnsupportedFormat, "not a local hard link"):
+            read_dataset_spec_fallback(self.source, "/experiment/soft")
+        with self.assertRaisesRegex(UnsupportedFormat, "not a local hard link"):
+            read_dataset_spec_fallback(self.source, "/experiment/external")
+
+    def test_mixed_legacy_compact_link_padding_must_be_zero(self):
+        with h5py.File(self.source, "w") as handle:
+            group = handle.create_group("experiment")
+            selected = group.create_dataset(
+                "hard", data=np.arange(4, dtype="<u4"), chunks=(4,))
+            group["soft"] = h5py.SoftLink("/experiment/hard")
+            group["external"] = h5py.ExternalLink("related.h5", "/secret")
+            handle["root_soft"] = h5py.SoftLink("/experiment")
+            address = int(h5py.h5o.get_info(selected.id).addr)
+            group_address = int(h5py.h5o.get_info(group.id).addr)
+        with H5File(self.source) as reader:
+            link = next(m for m in _old_messages(reader, group_address)
+                        if m.kind == 6 and b"hard" in m.data)
+            self.assertEqual(reader.read_at(address, 1), b"\x01")
+        raw = bytearray(self.source.read_bytes())
+        # Version, flags, name-length, 4-byte name, and 8-byte address.
+        padding = link.absolute_offset + 3 + len("hard") + 8
+        self.assertEqual(raw[padding], 0)
+        raw[padding] = 0x5a
+        self.source.write_bytes(raw)
+        with self.assertRaisesRegex(FormatError, "compact link length or padding"):
+            read_dataset_spec_fallback(self.source, "/experiment/hard")
+
     def test_cross_group_alias_redirection_refuses_native_and_raw_routes(self):
         with h5py.File(self.source, "w", libver="earliest") as handle:
             group = handle.create_group("lab")
