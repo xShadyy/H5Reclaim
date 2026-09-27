@@ -69,12 +69,23 @@ class FixedSchemaRecoveryTests(unittest.TestCase):
             original_pointer = root.entries[1].address
             self.assertIsNotNone(original_pointer)
             self.assertNotEqual(root.entries[0].address, original_pointer)
+            detached_coordinate = root.entries[1].key.offsets[:2]
+        with h5py.File(self.source) as handle:
+            dataset = handle["/lab/readings"]
+            original_chunks = {
+                coordinate: dataset.id.read_direct_chunk(coordinate)[1]
+                for coordinate in ((0, 0), detached_coordinate, (248, 248))
+            }
         image = bytearray(self.source.read_bytes())
         image[pointer:pointer+8] = b"\xff" * 8
         self.source.write_bytes(image)
         damaged_hash = hashlib.sha256(image).hexdigest()
         self._recover_and_check(expected, original_type, damaged_hash)
         self.assertGreater(self.report.read_text().count('"reconstructed_link"'), 0)
+        with h5py.File(self.output) as handle:
+            dataset = handle["/lab/readings"]
+            for coordinate, raw_bytes in original_chunks.items():
+                self.assertEqual(dataset.id.read_direct_chunk(coordinate)[1], raw_bytes)
 
     def test_older_damaged_optional_message_recovers_filtered_edge_records(self):
         expected = self._records((5, 7))
