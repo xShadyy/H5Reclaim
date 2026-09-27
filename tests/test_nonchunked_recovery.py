@@ -12,6 +12,7 @@ import h5py
 import numpy as np
 
 from h5reclaim.format import FormatError, UnsupportedFormat
+from h5reclaim.hints import DatasetHints, HintsError
 from h5reclaim.metadata_fallback import _messages
 from h5reclaim.modern_indexes import ModernH5File, lookup3
 from h5reclaim.nonchunked_recovery import export_nonchunked, read_nonchunked_spec
@@ -207,6 +208,26 @@ class NonchunkedRecoveryTests(unittest.TestCase):
         with self.assertRaisesRegex(UnsupportedFormat, "no rooted hard link"):
             export_nonchunked(self.source, "/instrument/absent", self.output, self.report_path)
         self.assertFalse(self.output.exists())
+
+    def test_operator_hints_can_reject_conflicts_but_do_not_assign_bytes(self) -> None:
+        self._create(latest=True, compact=False)
+        with self.assertRaisesRegex(HintsError, "assert chunks"):
+            export_nonchunked(
+                self.source, "/instrument/values", self.output, self.report_path,
+                hints=DatasetHints("/instrument/values", chunks=(3, 4)),
+            )
+        with self.assertRaisesRegex(HintsError, "conflict"):
+            export_nonchunked(
+                self.source, "/instrument/values", self.output, self.report_path,
+                hints=DatasetHints("/instrument/values", dtype=">u4"),
+            )
+        self.assertFalse(self.output.exists())
+        report = export_nonchunked(
+            self.source, "/instrument/values", self.output, self.report_path,
+            hints=DatasetHints("/instrument/values", shape=(3, 4), dtype="<i2"),
+        )
+        self.assertEqual([comparison["status"] for comparison in
+                          report["operator_hints"]["comparisons"]], ["matches"] * 3)
 
 
 if __name__ == "__main__":

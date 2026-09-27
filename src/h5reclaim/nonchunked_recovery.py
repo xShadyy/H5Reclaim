@@ -32,6 +32,7 @@ from .metadata_fallback import (
     _validate_metadata_ranges,
 )
 from .modern_indexes import ModernH5File, ModernSuperblock, lookup3
+from .hints import DatasetHints, HintsError, compare_hints, require_no_conflicts
 
 
 MAX_ELEMENTS = 1_048_576
@@ -468,7 +469,8 @@ def analyze_nonchunked_snapshot(
 
 
 def export_nonchunked(
-    source: Path, dataset_path: str, output: Path, report_path: Path,
+    source: Path, dataset_path: str, output: Path, report_path: Path, *,
+    hints: DatasetHints | None = None,
 ) -> dict[str, Any]:
     """Publish a separate HDF5/JSON pair only after source identity rechecks."""
     from .recovery import (_validate_paths, _verify_source, sha256_file,
@@ -480,6 +482,26 @@ def export_nonchunked(
         analysis = analyze_nonchunked_snapshot(
             snapshot, dataset_path, source, source_hash, identity, size,
         )
+        if hints is not None:
+            if hints.chunks is not None:
+                raise HintsError("operator hints assert chunks for observed compact/contiguous storage")
+            comparisons = compare_hints(
+                hints, observed_fields={
+                    "path": analysis.spec.path, "shape": analysis.spec.shape,
+                    "dtype": analysis.spec.dtype, "filters": (),
+                }, input_sha256=source_hash,
+            )
+            require_no_conflicts(comparisons)
+            analysis.report["operator_hints"] = {
+                "trust_level": hints.trust_level,
+                "comparisons": [
+                    {"field": item.field, "asserted": item.asserted,
+                     "observed": item.observed, "status": item.status}
+                    for item in comparisons
+                ],
+                "note": hints.note,
+                "warning": "Matching hints do not authenticate current or pre-damage measurements.",
+            }
         if sha256_file(snapshot) != source_hash:
             raise RecoveryError("private source snapshot changed during analysis")
         report_text = json.dumps(analysis.report, indent=2, sort_keys=True) + "\n"
