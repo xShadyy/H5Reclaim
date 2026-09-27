@@ -13,7 +13,7 @@ from pathlib import Path
 from .baseline import capture_baseline
 from .diagnose import diagnose
 from .dependency_routes import (
-    DependencyError, load_dependency_manifest, probe_status_copy,
+    DependencyError, inspect_dependencies, load_dependency_manifest, probe_status_copy,
     validate_dependency_manifest,
 )
 from .evidence import export_unassigned_fragments, load_evidence_report
@@ -22,6 +22,7 @@ from .hints import HintsError, compare_hints, load_hints, require_no_conflicts
 from .metadata import UnsupportedCase
 from .readable_export import export_readable
 from .recovery import RecoveryError, analyze, recover
+from .route_worker import run_route
 from .survey import SurveyError, survey
 
 
@@ -287,6 +288,17 @@ def main(argv: list[str] | None = None) -> int:
     baseline_cmd.add_argument("source", type=Path)
     baseline_cmd.add_argument("--dataset", required=True)
     baseline_cmd.add_argument("--output", required=True, type=Path, help="new baseline JSON destination, stored separately")
+    rescue_cmd = commands.add_parser(
+        "rescue", help="select a bounded recovery route and publish an output with validity evidence",
+    )
+    rescue_cmd.add_argument("source", type=Path, help="damaged HDF5 file, or member zero for a Family bundle")
+    rescue_cmd.add_argument("--dataset", required=True, help="absolute selected HDF5 dataset path")
+    rescue_cmd.add_argument("--output", required=True, type=Path)
+    rescue_cmd.add_argument("--report", required=True, type=Path)
+    choices = rescue_cmd.add_mutually_exclusive_group()
+    choices.add_argument("--related-files", type=Path, help="pinned manifest for external raw or virtual datasets")
+    choices.add_argument("--family-members", type=Path, help="pinned HDF5 Family member manifest")
+    choices.add_argument("--replicas", type=Path, help="pinned replica manifest and prospective baseline")
     args = parser.parse_args(argv)
 
     if args.command == "capture-baseline":
@@ -299,6 +311,62 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         except (FormatError, UnsupportedCase, RecoveryError, OSError, ValueError, RuntimeError) as exc:
             print(f"h5reclaim: baseline capture failed: {_display_path(exc, 300)}", file=sys.stderr)
+            return 2
+
+    if args.command == "rescue":
+        try:
+            source = str(args.source.absolute())
+            if args.replicas is not None:
+                report = run_route("replicas", args.output, args.report, source=source,
+                                   dataset=args.dataset, manifest=str(args.replicas.absolute()))
+            elif args.family_members is not None:
+                from .family_bundle import _manifest
+                _, members = _manifest(args.family_members)
+                if args.source.resolve(strict=True) != Path(members[0]["path"]).resolve(strict=True):
+                    raise RecoveryError("Family source argument must be manifest member zero")
+                report = run_route("family", args.output, args.report,
+                                   dataset=args.dataset, manifest=str(args.family_members.absolute()))
+            elif args.related_files is not None:
+                inventory = inspect_dependencies(args.source, args.dataset)
+                kinds = {item["kind"] for item in inventory["dependencies"]}
+                if inventory["outcome"] != "complete" or len(kinds) != 1:
+                    raise UnsupportedCase("selected dependency metadata is incomplete or mixes unsupported routes")
+                if kinds == {"external_raw_storage"}:
+                    route = "external_raw"
+                elif kinds == {"virtual_source"}:
+                    route = "vds"
+                else:
+                    raise UnsupportedCase("selected dependency kind has no safe value-export route")
+                report = run_route(route, args.output, args.report, source=source,
+                                   dataset=args.dataset, manifest=str(args.related_files.absolute()))
+            else:
+                try:
+                    report = recover(args.source, args.dataset, args.output, args.report)
+                except UnsupportedCase as chunked_error:
+                    try:
+                        report = run_route("nonchunked", args.output, args.report,
+                                           source=source, dataset=args.dataset)
+                    except RecoveryError as nonchunked_error:
+                        raise UnsupportedCase(
+                            f"chunked route: {chunked_error}; compact/contiguous route: {nonchunked_error}"
+                        ) from nonchunked_error
+            accepted = report.get("accepted_elements")
+            if accepted is None and report.get("validity", {}).get("dataset") == "/_h5reclaim/element_status":
+                accepted = report.get("counts", {}).get("recovered", 0)
+                unit = "elements"
+            elif accepted is None:
+                accepted = report.get("counts", {}).get("recovered", 0)
+                unit = "chunks"
+            else:
+                unit = "elements"
+            print(f"H5Reclaim rescue | {report['outcome']} | {accepted} accepted {unit}")
+            print(f"Output: {_display_path(args.output, 240)}")
+            print(f"Evidence report: {_display_path(args.report, 240)}")
+            print("Check the validity map before using output values. Accepted values may still lack historical authentication.")
+            return 0
+        except (FormatError, DependencyError, UnsupportedCase, RecoveryError, OSError,
+                ValueError, RuntimeError, KeyError, TypeError, UnicodeError) as exc:
+            print(f"h5reclaim: rescue failed: {_display_path(exc, 300)}", file=sys.stderr)
             return 2
 
     if args.command == "export-fragments":
