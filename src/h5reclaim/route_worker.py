@@ -17,7 +17,11 @@ from typing import Any
 
 MAX_REQUEST = 65536
 MAX_REPORT = 32 * 1024 * 1024
-ROUTES = frozenset({"family", "split", "vds", "external_raw", "external_link", "nonchunked", "replicas", "parity", "status", "element_baseline", "chunk_baseline"})
+ROUTES = frozenset({
+    "family", "split", "vds", "external_raw", "external_link", "nonchunked",
+    "replicas", "parity", "erasure", "status", "metadata_trial", "capsule",
+    "truncated_chunks", "large_readable", "element_baseline", "chunk_baseline",
+})
 
 
 def _child(request_path: Path, response_path: Path) -> int:
@@ -72,6 +76,24 @@ def _child(request_path: Path, response_path: Path) -> int:
             from .chunk_integrity import export_verified_chunks
             export_verified_chunks(args["source"], args["dataset"], args["baseline"],
                                    args["baseline_sha256"], output, report)
+        elif route == "erasure":
+            from .erasure_sidecar import restore_from_erasure
+            restore_from_erasure(args["source"], args["dataset"], args["manifest"], output, report)
+        elif route == "metadata_trial":
+            from .metadata_trial_export import export_metadata_trial
+            export_metadata_trial(args["source"], args["dataset"], output, report,
+                                  kind=args["kind"], published_output=request["published_output"])
+        elif route == "capsule":
+            from .recovery_capsule import restore_from_capsule
+            restore_from_capsule(args["source"], args["capsule"], args["capsule_sha256"],
+                                 output, report, dataset_path=args["dataset"])
+        elif route == "truncated_chunks":
+            from .chunk_truncation import recover_truncated
+            recover_truncated(args["source"], args["dataset"], output, report)
+        elif route == "large_readable":
+            from .large_streaming import export_large_readable
+            export_large_readable(args["source"], args["dataset"], output, report,
+                                  published_output=request["published_output"])
         else:
             from .parity_sidecar import restore_from_parity
             restore_from_parity(args["source"], args["dataset"], args["manifest"], output, report)

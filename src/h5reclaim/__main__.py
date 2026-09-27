@@ -303,6 +303,21 @@ def main(argv: list[str] | None = None) -> int:
     parity_cmd.add_argument("--baseline", required=True, type=Path)
     parity_cmd.add_argument("--output", required=True, type=Path, help="new parity ZIP destination, stored independently")
     parity_cmd.add_argument("--stripe-width", type=int, default=4, help="1 to 16 chunks per stripe (default: 4)")
+    erasure_cmd = commands.add_parser(
+        "capture-erasure", help="capture two to four independent parity shards per stripe before damage"
+    )
+    erasure_cmd.add_argument("source", type=Path)
+    erasure_cmd.add_argument("--dataset", required=True)
+    erasure_cmd.add_argument("--baseline", required=True, type=Path, help="prior complete coordinate-hash baseline")
+    erasure_cmd.add_argument("--output", required=True, type=Path, help="new independently retained erasure ZIP")
+    erasure_cmd.add_argument("--stripe-width", type=int, default=4, help="2 through 16 data chunks per stripe")
+    erasure_cmd.add_argument("--parity-shards", type=int, default=2, help="2 through 4 parity shards per stripe")
+    capsule_cmd = commands.add_parser(
+        "capture-capsule", help="capture a prospective independent schema, physical map, and block hashes"
+    )
+    capsule_cmd.add_argument("source", type=Path)
+    capsule_cmd.add_argument("--dataset", required=True)
+    capsule_cmd.add_argument("--output", required=True, type=Path, help="new independently retained recovery capsule")
     rescue_cmd = commands.add_parser(
         "rescue", help="select a bounded recovery route and publish an output with validity evidence",
     )
@@ -316,12 +331,21 @@ def main(argv: list[str] | None = None) -> int:
     choices.add_argument("--split-members", type=Path, help="pinned HDF5 Split metadata and raw member manifest")
     choices.add_argument("--replicas", type=Path, help="pinned replica manifest and prospective baseline")
     choices.add_argument("--parity", type=Path, help="pinned baseline plus prospective parity sidecar manifest")
+    choices.add_argument("--erasure", type=Path, help="pinned baseline plus multiple-erasure sidecar manifest")
+    choices.add_argument("--capsule", type=Path, help="prospective pinned schema and physical map capsule")
     choices.add_argument("--element-baseline", type=Path, help="prior compact/contiguous element-hash ZIP")
     choices.add_argument("--chunk-baseline", type=Path, help="prior coordinate chunk-hash JSON for integrity-gated export")
     rescue_cmd.add_argument("--element-baseline-sha256", help="independently retained SHA-256 of the element baseline ZIP")
     rescue_cmd.add_argument("--chunk-baseline-sha256", help="independently retained SHA-256 of the chunk baseline JSON")
+    rescue_cmd.add_argument("--capsule-sha256", help="independently retained SHA-256 of the recovery capsule")
     choices.add_argument("--status-trial", action="store_true",
                          help="trial a validated v3 write flag on a disposable copy before native-readable export")
+    choices.add_argument("--metadata-trial", choices=("root", "layout"),
+                         help="trial one checksum-constrained modern root or selected layout pointer on a copy")
+    choices.add_argument("--truncated-chunks", action="store_true",
+                         help="retain complete rooted chunks before a physical tail truncation")
+    choices.add_argument("--large-readable", action="store_true",
+                         help="bounded streaming export of a large currently native-readable numeric dataset")
     args = parser.parse_args(argv)
 
     if args.command == "capture-baseline":
@@ -364,6 +388,38 @@ def main(argv: list[str] | None = None) -> int:
             print(f"h5reclaim: parity capture failed: {_display_path(exc, 300)}", file=sys.stderr)
             return 2
 
+    if args.command == "capture-erasure":
+        try:
+            from .erasure_sidecar import capture_erasure_sidecar
+            result = capture_erasure_sidecar(
+                args.source, args.dataset, args.baseline, args.output,
+                stripe_width=args.stripe_width, parity_shards=args.parity_shards,
+            )
+            print("H5Reclaim prospective multiple-erasure capture")
+            print(f"Dataset: {_display_path(args.dataset)} | {len(result['stripes'])} stripes "
+                  f"| {result['parity_shards']} parity shards per stripe")
+            print(f"Sidecar: {_display_path(args.output, 240)}")
+            print(f"SHA-256 to retain separately: {result['archive_sha256']}")
+            print("Keep the baseline, sidecar, and their hashes before an incident.")
+            return 0
+        except (FormatError, UnsupportedCase, RecoveryError, OSError, ValueError, RuntimeError, KeyError) as exc:
+            print(f"h5reclaim: erasure capture failed: {_display_path(exc, 300)}", file=sys.stderr)
+            return 2
+
+    if args.command == "capture-capsule":
+        try:
+            from .recovery_capsule import capture_recovery_capsule
+            result = capture_recovery_capsule(args.source, args.dataset, args.output)
+            print("H5Reclaim prospective recovery capsule")
+            print(f"Dataset: {_display_path(args.dataset)}")
+            print(f"Capsule: {_display_path(args.output, 240)}")
+            print(f"SHA-256 to retain separately: {result['archive_sha256']}")
+            print("Keep this capsule and its hash independently before damage.")
+            return 0
+        except (FormatError, UnsupportedCase, RecoveryError, OSError, ValueError, RuntimeError, KeyError) as exc:
+            print(f"h5reclaim: capsule capture failed: {_display_path(exc, 300)}", file=sys.stderr)
+            return 2
+
     if args.command == "rescue":
         try:
             source = str(args.source.absolute())
@@ -371,16 +427,27 @@ def main(argv: list[str] | None = None) -> int:
                 raise RecoveryError("--element-baseline and --element-baseline-sha256 must be supplied together")
             if (args.chunk_baseline is None) != (args.chunk_baseline_sha256 is None):
                 raise RecoveryError("--chunk-baseline and --chunk-baseline-sha256 must be supplied together")
+            if (args.capsule is None) != (args.capsule_sha256 is None):
+                raise RecoveryError("--capsule and --capsule-sha256 must be supplied together")
             if args.element_baseline_sha256 is not None and args.element_baseline is None:
                 raise RecoveryError("an element baseline digest cannot be supplied with another route")
             if args.chunk_baseline_sha256 is not None and args.chunk_baseline is None:
                 raise RecoveryError("a chunk baseline digest cannot be supplied with another route")
+            if args.capsule_sha256 is not None and args.capsule is None:
+                raise RecoveryError("a capsule digest cannot be supplied with another route")
             if args.replicas is not None:
                 report = run_route("replicas", args.output, args.report, source=source,
                                    dataset=args.dataset, manifest=str(args.replicas.absolute()))
             elif args.parity is not None:
                 report = run_route("parity", args.output, args.report, source=source,
                                    dataset=args.dataset, manifest=str(args.parity.absolute()))
+            elif args.erasure is not None:
+                report = run_route("erasure", args.output, args.report, source=source,
+                                   dataset=args.dataset, manifest=str(args.erasure.absolute()))
+            elif args.capsule is not None:
+                report = run_route("capsule", args.output, args.report, source=source,
+                                   dataset=args.dataset, capsule=str(args.capsule.absolute()),
+                                   capsule_sha256=args.capsule_sha256)
             elif args.element_baseline is not None:
                 report = run_route("element_baseline", args.output, args.report,
                                    source=source, dataset=args.dataset,
@@ -393,6 +460,15 @@ def main(argv: list[str] | None = None) -> int:
                                    baseline_sha256=args.chunk_baseline_sha256)
             elif args.status_trial:
                 report = run_route("status", args.output, args.report, source=source,
+                                   dataset=args.dataset)
+            elif args.metadata_trial is not None:
+                report = run_route("metadata_trial", args.output, args.report, source=source,
+                                   dataset=args.dataset, kind=args.metadata_trial)
+            elif args.truncated_chunks:
+                report = run_route("truncated_chunks", args.output, args.report, source=source,
+                                   dataset=args.dataset)
+            elif args.large_readable:
+                report = run_route("large_readable", args.output, args.report, source=source,
                                    dataset=args.dataset)
             elif args.family_members is not None:
                 from .family_bundle import _manifest
@@ -452,6 +528,8 @@ def main(argv: list[str] | None = None) -> int:
                 print("Route: native-readable copy of currently accessible values; no damaged index was reconstructed.")
             elif report.get("mode") == "status_trial_readable_export":
                 print("Route: status-only trial on a disposable copy, then native-readable export; historical values are unverified.")
+            elif report.get("mode") == "metadata_trial_readable_export":
+                print("Route: single metadata pointer correction on a disposable copy, then readable export; historical values are unverified.")
             print(f"Output: {_display_path(args.output, 240)}")
             print(f"Evidence report: {_display_path(args.report, 240)}")
             print("Check the validity map before using output values. Accepted values may still lack historical authentication.")
