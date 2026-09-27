@@ -347,9 +347,13 @@ def main(argv: list[str] | None = None) -> int:
                         report = run_route("nonchunked", args.output, args.report,
                                            source=source, dataset=args.dataset)
                     except RecoveryError as nonchunked_error:
-                        raise UnsupportedCase(
-                            f"chunked route: {chunked_error}; compact/contiguous route: {nonchunked_error}"
-                        ) from nonchunked_error
+                        try:
+                            report = export_readable(args.source, args.dataset, args.output, args.report)
+                        except (RecoveryError, UnsupportedCase) as readable_error:
+                            raise UnsupportedCase(
+                                f"chunked route: {chunked_error}; compact/contiguous route: "
+                                f"{nonchunked_error}; native-readable route: {readable_error}"
+                            ) from readable_error
             accepted = report.get("accepted_elements")
             if accepted is None and report.get("validity", {}).get("dataset") == "/_h5reclaim/element_status":
                 accepted = report.get("counts", {}).get("recovered", 0)
@@ -360,6 +364,8 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 unit = "elements"
             print(f"H5Reclaim rescue | {report['outcome']} | {accepted} accepted {unit}")
+            if report.get("mode") == "readable_export":
+                print("Route: native-readable copy of currently accessible values; no damaged index was reconstructed.")
             print(f"Output: {_display_path(args.output, 240)}")
             print(f"Evidence report: {_display_path(args.report, 240)}")
             print("Check the validity map before using output values. Accepted values may still lack historical authentication.")
