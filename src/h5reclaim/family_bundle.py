@@ -103,12 +103,17 @@ def export_family(
         captures = []
         sizes = []
         total = 0
+        saw_zero_tail = False
         for index, (entry, source) in enumerate(zip(members, sources)):
             with source_snapshot(source, max_source_bytes=MAX_BUNDLE_BYTES - total) as (snapshot, digest, identity, length):
                 if digest != entry["sha256"]:
                     raise RecoveryError(f"family member {index} does not match its pinned hash")
-                if not 0 < length <= member_size or (index < len(members) - 1 and length != member_size):
-                    raise UnsupportedCase("non-final Family members must be physically complete")
+                if length == 0:
+                    if index == 0:
+                        raise UnsupportedCase("the Family superblock member is empty")
+                    saw_zero_tail = True
+                elif length > member_size or saw_zero_tail:
+                    raise UnsupportedCase("Family member sizes are inconsistent")
                 shutil.copyfile(snapshot, root / f"member{index:03d}.h5")
                 captures.append((source, digest, identity))
                 sizes.append(length)
@@ -116,6 +121,11 @@ def export_family(
                 if total > MAX_BUNDLE_BYTES:
                     raise UnsupportedCase("family bundle exceeds the 4 GiB limit")
         with h5py.File(template, "r", driver="family", memb_size=member_size) as handle:
+            physical_end = max(i * member_size + size for i, size in enumerate(sizes) if size)
+            if handle.id.get_filesize() > physical_end:
+                raise UnsupportedCase("Family logical end exceeds supplied physical members")
+            if any(size != member_size for size in sizes[:max(i for i, size in enumerate(sizes) if size)]):
+                raise UnsupportedCase("a non-final Family member is physically incomplete")
             selected = _selected_dataset(handle, dataset_path)
             creation = selected.id.get_create_plist()
             if selected.is_virtual or creation.get_external_count():
