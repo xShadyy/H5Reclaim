@@ -17,7 +17,7 @@
       "representative_dataset": "/strain/Strain",
       "expected_observation": {
         "dataset_count": 15,
-        "candidate_count": 1,
+        "candidate_count": 3,
         "representative_support": "candidate",
         "representative_reason_codes": []
       }
@@ -37,7 +37,7 @@
       "representative_dataset": "/strain/Strain",
       "expected_observation": {
         "dataset_count": 15,
-        "candidate_count": 1,
+        "candidate_count": 3,
         "representative_support": "candidate",
         "representative_reason_codes": []
       }
@@ -60,7 +60,7 @@
         "dataset_count": 214,
         "candidate_count": 0,
         "representative_support": "unsupported",
-        "representative_reason_codes": ["layout", "datatype"]
+        "representative_reason_codes": ["layout"]
       }
     },
     {
@@ -81,7 +81,7 @@
         "dataset_count": 7,
         "candidate_count": 0,
         "representative_support": "unsupported",
-        "representative_reason_codes": ["layout", "datatype", "filters", "dtype_limit"]
+        "representative_reason_codes": ["layout", "datatype", "dtype_limit"]
       }
     }
   ]

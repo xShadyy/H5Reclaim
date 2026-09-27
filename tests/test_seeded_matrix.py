@@ -31,6 +31,7 @@ class SeededMatrixTest(unittest.TestCase):
             report = json.loads(completed.stdout)
             self.assertEqual(report, json.loads((work_dir / "matrix.json").read_text(encoding="utf-8")))
             self.assertEqual(report["original_files_verified"], 4)
+            self.assertEqual(report["survey_candidate_count"], 6)
             self.assertEqual(report["case_count"], 13)
             self.assertTrue(report["all_cases_passed"])
             self.assertEqual(report["false_accepted_chunks"], 0)

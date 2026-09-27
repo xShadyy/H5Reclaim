@@ -1,5 +1,26 @@
 # Independent broken-link benchmark
 
+## Intact authentic candidate exports
+
+Run `python benchmarks/run_real_candidate_exports.py` to verify all pinned
+scientific original hashes, survey all 251 local datasets, and give each
+currently classified structural candidate a disposable source copy. The
+public recovery subprocess sees only that copy and a selected path. The
+evaluator separately checks every accepted output chunk's exact value bits,
+coordinate, datatype, physical source range, the unchanged original/input
+hashes, and consistency of the embedded report. `--json` prints the full
+evaluation; `--work-dir NEW-OR-EMPTY-DIR` retains trial inputs and outputs.
+
+With the pinned six-candidate baseline, six intact exports passed: 196/196
+chunks matched the original at their coordinates, comprising 192 strain
+chunks and one quality mask chunk in each of four quality datasets. Neither
+the survey nor this evaluator applies damage to those four quality datasets;
+these outcomes establish intact export on their particular scientific
+layouts, not their ability to repair a broken index. Candidate status alone
+does not guarantee an accepted measurement, and 245 other corpus datasets
+remain structurally unsupported. These figures do not estimate recovery
+probability for damaged files.
+
 ## Stratified HDF5 layout and fault matrix
 
 From the repository root, with h5py and NumPy installed, run:

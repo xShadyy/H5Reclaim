@@ -119,6 +119,10 @@ def run(manifest_path: Path = DEFAULT_MANIFEST) -> dict[str, Any]:
             "survey_outcome": observed["outcome"],
             "dataset_count": len(datasets),
             "support_counts": dict(sorted(counts.items())),
+            "candidate_paths": sorted(
+                row["selected_path"] for row in datasets
+                if row["support"]["status"] == "candidate"
+            ),
             "representative_dataset": {
                 "path": representative["selected_path"],
                 "shape": representative.get("shape"),
@@ -186,6 +190,12 @@ def render_text(result: dict[str, Any]) -> str:
             + (f", {other_counts}" if other_counts else ""),
             f"    Example {representative['path']}: {support['status']}",
         ])
+        if entry.get("candidate_paths"):
+            shown = ", ".join(json.dumps(path, ensure_ascii=True)[1:-1]
+                              for path in entry["candidate_paths"][:5])
+            remaining = len(entry["candidate_paths"]) - 5
+            lines.append(f"    Candidate paths: {shown}"
+                         + (f", ... {remaining} more" if remaining > 0 else ""))
         if support["reasons"]:
             lines.extend(textwrap.wrap(
                 "; ".join(reason["detail"] for reason in support["reasons"]),

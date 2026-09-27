@@ -259,7 +259,7 @@ def score_output(
             errors.append("reconstructed-link count disagrees with mappings")
         counts = report.get("counts", {})
         for code, name in STATUS_NAMES.items():
-            if counts.get(name) != int(np.count_nonzero(status == code)):
+            if counts.get(name, 0) != int(np.count_nonzero(status == code)):
                 errors.append(f"reported {name} count contradicts the validity map")
         exact = accepted - wrong_values - unproven
     except (OSError, ValueError, TypeError, KeyError, IndexError, AttributeError,
@@ -435,6 +435,10 @@ def run_matrix(work_dir: Path, *, seed: int = 20260927, trials: int = 2,
         "schema_version": 1,
         "experiment": "seeded controlled damage on pinned scientific sources",
         "seed": seed, "trials": trials, "original_files_verified": len(indexed),
+        "survey_candidate_count": sum(
+            int(entry["expected_observation"]["candidate_count"])
+            for entry in indexed.values()
+        ),
         "case_count": len(cases), "decisions": decisions,
         "exact_verified_chunks": sum(case["observed"]["exact_verified_chunks"] for case in cases),
         "newly_accessible_exact_chunks": sum(case["observed"].get("newly_accessible_exact_chunks", 0)
@@ -444,7 +448,7 @@ def run_matrix(work_dir: Path, *, seed: int = 20260927, trials: int = 2,
         "all_cases_passed": all(case["passed"] for case in cases),
         "cases": cases,
         "limits": (
-            "Four authentic originals, two structurally supported GWOSC layouts, and deliberately "
+            "Four authentic originals, two selected GWOSC strain layouts, and deliberately "
             "selected, seeded fault classes. Refusal contributes zero recovered chunks. Repeated "
             "mutations of the same files are correlated. Truth is evaluator-only by program input, "
             "not protected by filesystem isolation. No naturally damaged case, representative "

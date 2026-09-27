@@ -29,6 +29,7 @@ class DamageCatalogTest(unittest.TestCase):
             self.assertEqual(completed.returncode, 0, completed.stderr)
             report = json.loads(completed.stdout)
             self.assertEqual(report["four_originals_verified"], 4)
+            self.assertEqual(report["survey_candidate_count"], 6)
             self.assertTrue(report["all_cases_passed"])
             self.assertEqual(report["case_count"], 10)
             self.assertEqual(report["reference_gwosc_chunks"], {"16khz": 128, "4khz": 64})

@@ -36,7 +36,12 @@ class CorpusCliTests(unittest.TestCase):
         result = json.loads(machine.stdout)
         self.assertEqual(result["kind"], "real_intact_data_coverage_survey")
         self.assertEqual(result["recovery_evaluation"], "not_performed_by_this_survey")
-        self.assertEqual(result["dataset_support_counts"], {"candidate": 2, "unsupported": 249})
+        self.assertEqual(result["dataset_support_counts"], {"candidate": 6, "unsupported": 245})
+        for entry in result["files"][:2]:
+            self.assertEqual(entry["candidate_paths"], [
+                "/quality/injections/Injmask", "/quality/simple/DQmask", "/strain/Strain",
+            ])
+        self.assertFalse(any(item["candidate_paths"] for item in result["files"][2:]))
         self.assertTrue(result["baseline_matches_manifest"])
 
     def test_changed_baseline_is_visible_in_summary(self) -> None:

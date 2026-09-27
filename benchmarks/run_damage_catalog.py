@@ -38,6 +38,7 @@ from h5reclaim.format import H5File  # noqa: E402
 STATUS_NAMES = {
     1: "recovered", 2: "allocation_unknown", 3: "ambiguous",
     4: "unavailable", 5: "unsupported", 6: "decode_failed",
+    7: "decoder_unavailable",
 }
 
 
@@ -232,7 +233,7 @@ def _evaluate_output(
         raise CatalogError("reconstructed-link count differs from the intended trial")
     counts = report.get("counts", {})
     actual_counts = {name: int(np.count_nonzero(validity == code)) for code, name in STATUS_NAMES.items()}
-    if any(counts.get(name) != number for name, number in actual_counts.items()):
+    if any(counts.get(name, 0) != number for name, number in actual_counts.items()):
         raise CatalogError("report and embedded status map counts disagree")
     complete = not rejected
     if report.get("complete") is not complete or report.get("outcome") != ("complete" if complete else "partial"):
@@ -417,6 +418,7 @@ def run_catalog(work_dir: Path, *, python: str = sys.executable) -> dict[str, An
         "schema_version": 1,
         "experiment": "controlled damage and refusal catalog on authentic scientific layouts",
         "four_originals_verified": 4,
+        "survey_candidate_count": inventory["dataset_support_counts"].get("candidate", 0),
         "all_cases_passed": all(case["passed"] for case in cases),
         "case_count": len(cases),
         "reference_gwosc_chunks": {"16khz": expected_chunks, "4khz": 64},
@@ -436,6 +438,8 @@ def render_text(report: dict[str, Any]) -> str:
         "=" * 48,
         f"RESULT: {'PASS' if report['all_cases_passed'] else 'FAIL'} | "
         f"{report['case_count']} cases | {report['four_originals_verified']} authentic sources verified",
+        f"Corpus survey candidates: {report['survey_candidate_count']} "
+        "(the fault catalog exercises only the selected strain layouts)",
         "",
     ]
     for case in report["cases"]:
