@@ -51,7 +51,7 @@ class ModernFixedArrayPointerRecoveryTests(unittest.TestCase):
     def test_exact_filtered_chunks_after_one_broken_header_pointer(self) -> None:
         values, index, _, _ = self._fixture((4, 4), filtered=True)
         damaged_hash = self._damage_pointer(index)
-        with self.assertRaises(Exception):
+        with self.assertRaises((OSError, RuntimeError, KeyError)):
             with h5py.File(self.source) as handle:
                 _ = handle["science"][:]
         result = recover(self.source, "/science", self.output, self.report)
@@ -104,7 +104,7 @@ class ModernFixedArrayPointerRecoveryTests(unittest.TestCase):
             recover(self.source, "/science", self.output, self.report)
         self.assertFalse(self.report.exists())
 
-    def test_pointer_with_new_valid_checksum_does_not_override_ambiguous_history(self) -> None:
+    def test_rechecksummed_redirect_does_not_trigger_pointer_reconstruction(self) -> None:
         _, index, _, lensize = self._fixture((4, 4))
         raw = bytearray(self.source.read_bytes())
         raw[index.data_block_pointer_offset] ^= 0x67
