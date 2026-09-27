@@ -7,8 +7,8 @@ This is a data recovery project, not a robotics simulator. An HDF5 file may cont
 ## How the pieces fit
 
 1. `corpus/files/` provides four unchanged scientific HDF5 files. `benchmarks/run_real_corpus.py` verifies their hashes; `run_gwosc_recovery.py`, `run_damage_catalog.py`, and `run_seeded_matrix.py` create disposable controlled damage and independently score values and refusals. These do not establish a real-world success rate.
-2. `h5reclaim diagnose` triages some unreadable files and declared dependencies. `survey` inventories local metadata, `inspect` checks one supported index, and `recover` exports evidence-backed chunks. `export-readable` copies bounded currently native-readable local data with sparse unknowns marked explicitly. `probe-status` tests an eligible status flag only on a disposable copy; `export-fragments` publishes unresolved raw bytes without coordinates. Hints cannot supply missing structural evidence.
-3. The new file contains a chunk status map. A separate JSON report and an embedded copy of that report explain which chunks were copied, where they came from, and which regions remain unknown.
+2. `h5reclaim diagnose` triages some unreadable files and declared dependencies. `survey` inventories local metadata, `inspect` checks one supported index, and `recover` exports evidence-backed chunks. `rescue` selects among separate structural, related-file, replica, and native-readable routes. `capture-baseline` records hashes while a complete dataset is still accessible. `probe-status` tests an eligible status flag only on a disposable copy; `export-fragments` publishes unresolved raw bytes without coordinates. Hints cannot supply missing structural evidence.
+3. The new file contains a chunk or element validity map. A separate JSON report and often an embedded copy explain which values were copied, where they came from, and which regions remain unknown.
 4. The controlled recovery benchmarks compare output with pristine references at exact chunk coordinates. This comparison is evaluation work; it is not part of the recovery algorithm.
 
 ## Project setup and entry points
@@ -29,7 +29,7 @@ This is a data recovery project, not a robotics simulator. An HDF5 file may cont
 | File | What it does |
 | --- | --- |
 | `src/h5reclaim/__init__.py` | Marks the directory as the Python package and describes its scope. |
-| `src/h5reclaim/__main__.py` | Parses the seven public commands and prints readable or detailed results. |
+| `src/h5reclaim/__main__.py` | Parses public commands, selects the guided route, and prints readable summaries. |
 | `src/h5reclaim/format.py` | Reads bounded byte ranges from the snapshot and interprets older superblocks, v1 object headers, chunked layout, and rank-one through rank-four version-1 B-tree records. It checks neighboring leaves and parent key boundaries before proposing a missing child. |
 | `src/h5reclaim/modern_indexes.py`, `extensible_array.py`, `filtered_fixed_array.py`, `v2_btree_chunks.py`, `modern_recovery.py`, `modern_evidence_adapter.py` | Validate checksummed newer metadata and all five chunk-index families within bounded variants; attribute intact chunk ranges and reconcile literal pointer chains. |
 | `src/h5reclaim/evidence.py`, `evidence_adapter.py` | Record anchors, pointer paths, physical ranges, checksums, contradictions, accepted/unknown decisions, and bounded raw-fragment export. The adapter independently checks version-1 parser records. |
@@ -41,6 +41,11 @@ This is a data recovery project, not a robotics simulator. An HDF5 file may cont
 | `src/h5reclaim/hints.py` | Parses size-limited scientist assertions about one dataset and compares them with independently observed metadata and the damaged input hash. Conflicts stop export; unobserved assertions remain unverified. |
 | `src/h5reclaim/recovery.py` | Analyzes a private snapshot, combines selected metadata and parsed index, rejects overlapping payload and metadata ranges, decodes bounded DEFLATE and verifies Fletcher32 where applicable, and writes a new dataset, status map, and provenance report. It rechecks source identity and hash before publication and rejects unsafe destination paths. |
 | `src/h5reclaim/readable_export.py`, `native_worker.py` | Copies bounded native-readable fixed-size schemas in a deadline-bound child, verifies current bytes, and marks sparse regions unknown. It does not repair structural damage or verify historical measurements. |
+| `src/h5reclaim/nonchunked_recovery.py` | Follows rooted metadata to compact/contiguous numeric bytes, including complete prefix elements of a physically truncated payload, with element validity. |
+| `src/h5reclaim/external_raw_export.py`, `vds_export.py` | Materialize selected values from explicit hash-pinned related files, map every accepted element to a source extent/selection, and refuse unknown source fill. |
+| `src/h5reclaim/family_bundle.py` | Reconstructs a bounded Family driver address space from explicit numbered members and exports currently readable selected values with physical member provenance. |
+| `src/h5reclaim/baseline.py`, `replica_recovery.py` | Record prospective decoded-chunk hashes and later reconcile independently parsed copies against that separate baseline, leaving conflicts unknown. |
+| `src/h5reclaim/route_worker.py` | Runs new native routes under a child deadline, disables dynamic plugins, applies a POSIX address-space cap, and publishes only completed output/report pairs. |
 
 The recovery program does not import the fixture generator or the benchmark. It receives the damaged file and the selected dataset path. Other local datasets may coexist; the selected object's header anchors the index. If mandatory metadata or coordinate ownership cannot be established, it stops or leaves a region unknown. It copies only bounded primitive scalar attributes for rank-one data, listing omissions. Links, dimension scales, sibling objects, and larger scientific context remain outside the derived output.
 
@@ -86,6 +91,9 @@ The benchmark keeps `truth/pristine.h5`, `truth/challenge.json`, and `truth/muta
 | `tests/test_recovery_safety.py` | Destination aliases, contradictory or out-of-bounds metadata, missing sibling evidence, and failures while publishing output do not produce falsely trusted results. |
 | `tests/test_integrity_limits.py` | Deliberately changed payload bytes can still be copied under a structurally valid mapping, so the report must not claim a historical integrity check. |
 | `tests/test_end_to_end.py` | Runs the recovery path on damaged input and checks exact placement, output status, source preservation, and benchmark error categories. |
+| `tests/test_baseline.py`, `test_replica_recovery.py` | Complete capture baselines, independently parsed replica attribution, hash conflicts, ambiguity and source preservation. |
+| `tests/test_nonchunked_recovery.py`, `test_external_raw_export.py`, `test_vds_export.py` | Structural nonchunked, ordered external segments and finite virtual mappings with positive, truncated, missing and contradictory evidence cases. |
+| `tests/test_family_bundle.py`, `test_route_worker.py`, `test_rescue_cli.py` | Family address mapping, child staging and public route selection, including absence of output on refusals. |
 
 ## Documentation and decisions
 

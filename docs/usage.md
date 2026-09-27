@@ -15,6 +15,74 @@ python -m h5reclaim --help
 
 On Linux or macOS, activate with `. .venv/bin/activate`. `pip install -e .` installs this local checkout, not a PyPI copy of H5Reclaim. Pip may fetch NumPy, h5py, and build tools if they are absent. The installed `h5reclaim` and `python -m h5reclaim` commands are equivalent.
 
+## Guided rescue
+
+Select one dataset from the damaged file and choose new destinations:
+
+```powershell
+python -m h5reclaim rescue damaged.h5 --dataset /experiment/readings --output rescued.h5 --report evidence.json
+```
+
+Without additional files, `rescue` first attempts rooted chunked structural recovery. If its schema is unsupported, it tries rooted compact/contiguous numeric recovery; if that cannot justify output, it tries the separate bounded native-readable copy route. An actual structural contradiction is never silently reinterpreted as another layout. The printed route and JSON report distinguish recovery from copying values HDF5 could already read. The original is read-only; output and report must be new paths. Examine `/_h5reclaim/chunk_status`, `/_h5reclaim/element_status`, or `/_h5reclaim/validity`, whichever the report names. Fill at an unknown position is not a measurement.
+
+The compact/contiguous structural route can retain fully present elements at their justified offsets after physical tail truncation, and leaves incomplete elements unknown. It currently supports a rooted local numeric dataset of rank zero through four, canonical fixed-width integers or IEEE floats, and selected layout messages v3–v5. It does not restore missing bytes or claim historical authenticity for unchecksummed values. The readable fallback preserves bounded fixed-size local schema when native HDF5 can already read it; its report says `readable_export`.
+
+### Supply related files
+
+For external raw storage or a virtual dataset, use the exact-name, pinned related-file manifest described below:
+
+```powershell
+python -m h5reclaim rescue damaged.h5 --dataset /experiment/readings --related-files related.json --output rescued.h5 --report evidence.json
+```
+
+The external route maps complete elements through ordered, explicitly supplied raw segments; missing bytes and the portion past physical EOF are unknown. The VDS route maps finite ALL/regular selections from pinned, local, native-readable numeric source datasets and marks missing or unallocated sources unknown instead of accepting virtual fill. It refuses overlapping mappings, dynamic source names, transitive dependencies, and unsupported selections. Both materialize a local dataset rather than pretending to preserve external or virtual storage configuration. Native HDF5 operations in guided rescue run in a deadline-bound child with plugin loading disabled. See [dependency bundles](dependency-bundles.md).
+
+### Use an independently captured baseline and replicas
+
+If a dataset is still intact, record decoded chunk hashes and keep the JSON independently from the acquisition:
+
+```powershell
+python -m h5reclaim capture-baseline healthy.h5 --dataset /experiment/readings --output baseline.json
+```
+
+Every selected chunk must be allocated and structurally decodable. The JSON records bytes **observed when this command ran**, not evidence that earlier readings were correct. It cannot be created retrospectively from a lost healthy file. An optional later replica manifest has this shape, with actual hashes and absolute paths:
+
+```json
+{
+  "schema_version": 1,
+  "damaged_sha256": "<SHA-256 of the current damaged HDF5 file>",
+  "baseline": {"path": "C:\\Lab\\baseline.json", "sha256": "<SHA-256 of the separate baseline JSON>"},
+  "replicas": [{"path": "C:\\Lab\\other-copy.h5", "sha256": "<SHA-256 of the supplied copy>"}]
+}
+```
+
+```powershell
+python -m h5reclaim rescue damaged.h5 --dataset /experiment/readings --replicas replicas.json --output rescued.h5 --report evidence.json
+```
+
+Each copy must independently provide a rooted, matching dataset and justified chunk coordinates. A chunk is accepted only if its decoded bytes match the prior baseline; conflicting replicas remain ambiguous. This route cannot use an arbitrary raw fragment as a substitute for an indexed copy. The operator must establish the baseline's provenance.
+
+### Open a Family driver bundle
+
+An HDF5 Family file spans numbered physical members. A separate manifest gives its actual member size and every member in order:
+
+```json
+{
+  "schema_version": 1,
+  "member_size": 1048576,
+  "members": [
+    {"index": 0, "path": "C:\\Lab\\run000.h5", "sha256": "<actual SHA-256>"},
+    {"index": 1, "path": "C:\\Lab\\run001.h5", "sha256": "<actual SHA-256>"}
+  ]
+}
+```
+
+```powershell
+python -m h5reclaim rescue C:\Lab\run000.h5 --dataset /experiment/readings --family-members family.json --output rescued.h5 --report evidence.json
+```
+
+The source argument must be member zero. This route performs a bounded **native-readable export** of the pinned Family address space with physical member provenance and sparse validity; it does not reconstruct broken driver metadata. Missing or truncated member bytes are refused. The manifest must reflect the producer's member size, not a guessed value.
+
 ## Run on supplied scientific data
 
 Four unchanged attributed HDF5 files and pinned hashes are bundled in `corpus/`. No fixture generation or data download is required:
@@ -82,7 +150,7 @@ For an external raw segment, virtual source, or external link, diagnosis reports
 python -m h5reclaim diagnose damaged.h5 --dataset /measurements --related-files related.json
 ```
 
-The validator matches declared names exactly, hashes supplied files, checks fixed external byte ranges, and can inspect local target-object metadata of an explicit HDF5 dependency. It does not infer paths, read dependent values, follow transitive links, or export external/VDS measurements. Dynamic VDS names and unlimited raw ranges stay unresolved. A matching hash confirms identity relative to the supplied hash, not historical correctness. See [dependency bundles](dependency-bundles.md).
+The **diagnosis validator** matches declared names exactly, hashes supplied files, checks fixed external byte ranges, and can inspect local target-object metadata. Diagnosis does not read values. The separate `rescue --related-files` route can export bounded, justified external raw or finite VDS values, including partial external byte ranges. It never infers paths, follows transitive dependencies, or treats a missing source's fill as a measurement. A matching hash pins supplied current bytes, not historical correctness. See [dependency bundles](dependency-bundles.md).
 
 ### Optional scientist hints
 
@@ -106,7 +174,7 @@ The destinations must not exist. Recovery reads only the damaged input through a
 | --- | --- |
 | Dataset | One local rank-one through rank-four chunked canonical integer (8/16/32/64 bit signed or unsigned) or IEEE float32/64 dataset, either byte order. Positive current dimensions, partial edge chunks, sparse allocation, and growing maxima are supported when the index parser validates their mapping. |
 | Older format | Superblock v0/v1, object header v1 with bounded continuation, layout v3, version-1 B-tree with intact level-zero or deeper tree. One missing leaf link can be bridged even below a deeper root. Internal subtree loss or multiple lost links is refused. Older raw metadata fallback has a narrower original numeric/filter envelope and unchecksummed link ownership. |
-| Newer format | Checksummed superblock v2/v3, checksummed selected object header v2 with bounded continuations, layout v4/v5 and intact single-chunk, implicit, filtered/paged/sparse fixed array, bounded extensible array, or version-2 B-tree. Extensible-array paged data blocks and damaged modern index links remain unsupported. Raw metadata fallback follows rooted compact links or a bounded checksummed dense-group name index and managed fractal heap; unsupported dense variants refuse. |
+| Newer format | Checksummed superblock v2/v3, checksummed selected object header v2 with bounded continuations, layout v4/v5 and intact single-chunk, implicit, filtered/paged/sparse fixed array, bounded extensible array including validated initialized pages, or version-2 B-tree. Missing modern index links remain unsupported. Raw metadata fallback follows rooted compact links or a bounded checksummed dense-group name index and managed fractal heap; unsupported variants refuse. |
 | Filters | Bounded built-in shuffle, DEFLATE, and Fletcher32 in their actual declared order; per-chunk optional skip masks. Missing unknown decoders are reported separately, never treated as verified measurements. |
 | Resource bounds | Source snapshot at most 4 GiB, 30-minute 1 MiB-buffer copy, temporary disk for full logical source size plus 32 MiB reserve; structural dataset at most 1,048,576 elements, 4,096 chunks and traversed nodes, 1 MiB decoded chunk. |
 
@@ -139,7 +207,7 @@ python -m h5reclaim export-readable damaged.h5 --dataset /experiment/readings --
 
 This distinct route needs native HDF5 to read the selected local dataset. Bounded compact, contiguous, and chunked layouts of rank one through four can include canonical fixed-width numeric, boolean/enum, complex, fixed strings/opaque bytes, and fixed-size compound/array fields. The selected HDF5 datatype, shape/maxshape, fill rules, chunking, and built-in filter order are copied. Native output readback checks bytes. Sparse chunked input is `partial`, with `/_h5reclaim/validity`: 1 accepted current value, 0 unknown element whose output fill must be ignored. The report records physical extents, masks, and raw hashes when available.
 
-Logical data is limited to 512 MiB in 1 MiB blocks, with 2 MiB stored chunks and at most 8,192 grid entries. References, variable-length data, external/VDS storage, custom filters, and noncanonical numeric types are refused. Native reads run in a child process with a 900-second default deadline and disabled dynamic filter plugin loading. POSIX applies a 3 GiB address-space cap and disables core dumps; Windows has the deadline but no enforced worker memory cap. This is process isolation for crashes and resource bounds, not a security sandbox for hostile native code. This route cannot repair an inaccessible index or verify values before damage.
+Logical data is limited to 512 MiB in 1 MiB blocks, with 2 MiB stored chunks and at most 8,192 grid entries. Supported compiled-in filters include DEFLATE, shuffle, Fletcher32, NBIT, SCALEOFFSET and SZIP when the linked HDF5 library provides both SZIP directions. SCALEOFFSET can be lossy at acquisition. Bounded top-level object and region references to the selected dataset are remapped and checked by logical target and selection. Outside or dangling references, nested reference graphs, variable-length heap values, plugin filters, and arbitrary bit representations are refused. External/VDS values use the separate pinned-bundle routes above. Native reads run in a child process with a 900-second deadline and disabled dynamic filter plugin loading. POSIX applies a 3 GiB address-space cap and disables core dumps; Windows has the deadline but no enforced worker memory cap. This is process isolation for crashes and resource bounds, not a security sandbox for hostile native code. This route cannot repair an inaccessible index or verify values before damage.
 
 ## Interpreting results
 

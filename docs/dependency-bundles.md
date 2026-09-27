@@ -28,17 +28,27 @@ example; it is not a known hash of a scientific file. The manifest has a 64
 KiB limit and at most 64 entries. Declared names never become filesystem
 paths, and H5Reclaim does not scan sibling directories or expand wildcards.
 It hashes explicitly supplied files in bounded blocks, up to 4 GiB for a
-selected bundle. For a fixed-size external raw segment, its declared offset
-and length must fit the supplied file. For VDS and external links, H5Reclaim
-checks that the pinned HDF5 file has a local hard-linked target object without
-reading values. A VDS target itself backed by other files remains unresolved;
-unlimited external raw segments and dynamic VDS filename patterns also remain
-unresolved.
+selected bundle. The `diagnose --related-files` validator checks whether a
+fixed-size external raw range fits its supplied file and whether a VDS or
+external-link target has local metadata. This diagnosis does not read values.
+The distinct `rescue --related-files` export may accept **complete elements**
+from the present prefix of a shorter external raw segment and marks the rest
+unknown. It can materialize bounded VDS mappings after separately opening
+pinned private source snapshots. A VDS target itself backed by other files
+and dynamic VDS filenames remain unsupported.
 
 A matching hash identifies the supplied bytes at inspection time. It does not
 prove that the file is the original instrument output or that its scientific
-values are correct. This release does not reconstruct VDS measurements or
-export external raw data using the manifest.
+values are correct. The new value-export routes map current bytes to selected
+coordinates with per-element validity; they do not reconstruct damaged VDS
+metadata, follow external links or dependencies recursively, or prove that
+unchecksummed historical measurements were unchanged. A virtual fill value
+from a missing source is never accepted as a measurement.
+
+The Family driver has a separate `--family-members` manifest with a member
+size and numbered physical files. Family addresses can span member boundaries;
+joining the files by ordinary concatenation is not a general repair. See
+[guided rescue](usage.md#open-a-family-driver-bundle) for the exact manifest.
 
 ## Superblock status
 
