@@ -379,6 +379,8 @@ def analyze_nonchunked_snapshot(
     identity: tuple[int, int, int, int, int], size: int,
 ) -> NonchunkedAnalysis:
     """Inspect immutable snapshot bytes and mark every unobserved element unknown."""
+    from .recovery import VERSION
+
     spec = read_nonchunked_spec(snapshot, dataset_path)
     offset = spec.source_absolute_offset
     available = (0 if offset is None else
@@ -404,6 +406,11 @@ def analyze_nonchunked_snapshot(
         "sha256_of_damaged_snapshot_bytes": hashlib.sha256(raw).hexdigest(),
         "coordinate_rule": "C row-major: offset + linear_element * element_size",
         "integrity": "not_independently_verified",
+        "on_disk_checksum": (
+            "v2 object-header checksum covers current compact bytes"
+            if spec.layout == "compact" and "checksummed" in spec.metadata_route
+            and "unchecksummed" not in spec.metadata_route else "none"
+        ),
     }] if recovered else [])
     fragments = ([{
         "reason": "incomplete final element in physically truncated source",
@@ -412,7 +419,8 @@ def analyze_nonchunked_snapshot(
         "sha256_of_damaged_snapshot_bytes": hashlib.sha256(remainder).hexdigest(),
     }] if remainder else [])
     report: dict[str, Any] = {
-        "schema_version": 1, "tool": "h5reclaim", "execution_state": "finished",
+        "schema_version": 1, "tool": "h5reclaim", "tool_version": VERSION,
+        "execution_state": "finished",
         "operation": "structural_nonchunked_export", "structural_repair": False,
         "outcome": "complete" if recovered == spec.elements else "partial",
         "complete": recovered == spec.elements,
@@ -425,6 +433,9 @@ def analyze_nonchunked_snapshot(
         "metadata_resolution": {
             "route": spec.metadata_route, "superblock_root_address": spec.root_address,
             "selected_hard_link_chain": list(spec.link_chain),
+            "checksum_status": ("traversed v2/3 superblock and v2 object headers checked"
+                                if "unchecksummed" not in spec.metadata_route else
+                                "older graph has no structural checksums"),
             "warning": (
                 "Older group and object-header metadata lacks checksums; internal consistency "
                 "does not prove historical ownership."
