@@ -1,4 +1,89 @@
-# Independent broken-link benchmark
+# Recovery benchmarks
+
+## Independently supplied held-out panel
+
+`python benchmarks/run_heldout_trials.py --manifest PANEL.json --work-dir NEW-DIRECTORY`
+evaluates a **predeclared panel** of previously unused, intact HDF5 files.
+The source files are used only to choose documented mutation sites and to score
+bit-exact values after each public `h5reclaim rescue` subprocess has processed
+a disposable damaged copy. The recovery subprocess receives the damaged file,
+selected dataset path, and output destinations. The pristine files remain on
+the same filesystem and are not hidden from a malicious process with the same
+permissions. This protocol separates program inputs, not adversarial access.
+
+The manifest must sit beside the original files and name them through safe
+relative paths. Each source is checked against a recorded size and SHA-256
+before the trials. Example format:
+
+```json
+{
+  "schema_version": 1,
+  "cohort": "laboratory-2026-independent-panel",
+  "entries": [
+    {
+      "id": "detector_a",
+      "path": "files/detector_a.h5",
+      "size_bytes": 123456,
+      "sha256": "replace-with-64-lowercase-hex-digits",
+      "dataset": "/measurements/signal",
+      "provenance": "Instrument, acquisition date, producer, and permission to evaluate"
+    }
+  ]
+}
+```
+
+The displayed size and hash are placeholders, not a bundled source. A real
+held-out result requires a panel selected and pinned before examining the
+tool's outcomes. The four bundled scientific originals have been used during
+development and cannot count as independent held-out validation. This command
+accepts 1 to 128 files of up to 64 MiB each, with one fixed-size numeric
+dataset per entry (rank at most four, at most 1,048,576 elements and 16 MiB
+decoded truth). More than one dataset from a file can be entered under
+different IDs, but their trials remain correlated by source.
+
+By default, one seeded trial per source is planned for each of six classes:
+intact control, HDF5 signature byte, selected object-header byte, one payload
+bit, an up-to-eight-byte payload burst, and truncation inside the physically
+last allocated payload. `--seed N`, `--trials N`, and `--faults
+intact,payload_bit,...` change the declared design. Compact and virtual data
+have no independently located local payload for this injection; their payload
+cases are counted as **excluded**, with reasons, rather than included in a
+success rate. A truncation may also remove metadata physically after the
+selected payload, which its mutation record makes visible. These chosen
+injections do not reproduce all real acquisition and storage failures.
+
+`evaluation.json` records each case's pristine and damaged hashes, mutation
+site, validity map comparison, exact accepted elements, wrong accepted
+elements, unknown elements, refused elements, and protocol errors. The
+readable table shows both **planned** and **eligible** cases for each fault
+class. A safe refusal contributes zero exact values. The command exits 1
+if any wrong historical value is accepted or evaluation is invalid, but still
+writes the complete report for investigation. An unchecksummed payload flip
+can trigger that exit intentionally. Run the evaluator's own regression with
+`python -m unittest benchmarks.test_heldout_trials -q`.
+
+This panel reports conditional counts and denominators, not a field
+probability or a claim of 99% recovery. Repeated injections on one file are
+correlated, the fault classes are chosen, and pristine originals are not
+naturally damaged files. Real damaged samples without an independent truth
+record cannot be scored for exact historical values. The [HDF5 format
+specification](https://support.hdfgroup.org/documentation/hdf5/latest/_f_m_t4.html)
+distinguishes metadata structures and payload layouts. [Fletcher32 and other
+filters](https://support.hdfgroup.org/documentation/hdf5/latest/_h5_z__u_g.html)
+change which byte edits the library detects. [VDS missing sources can appear
+as fill](https://support.hdfgroup.org/documentation/hdf5-docs/advanced_topics/intro_VDS.html),
+and [SWMR writes and file locking](https://support.hdfgroup.org/documentation/hdf5/latest/_file_lock.html)
+require different acquisition histories from an isolated bit flip. The
+[h5clear guide](https://support.hdfgroup.org/documentation/hdf5/latest/_h5_t_o_o_l__c_r__u_g.html)
+also warns that clearing a status flag is not general corruption repair.
+
+The next validation gates are to pre-register independent laboratories and
+their failure histories, add redirections and stale allocations with repaired
+checksums across *every* modern index family, test missing related files and
+transitive VDS mappings with pinned bundles, and separately quantify the
+benefit of independently retained replicas or parity. Each new fault class
+must have a precise eligibility rule, positive and deliberately misleading
+cases, independent truth where possible, and a stated denominator.
 
 ## Authentic native-readable scientific representatives
 
