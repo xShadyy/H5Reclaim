@@ -17,6 +17,12 @@ h5reclaim --help
 
 `python -m venv .venv` creates an isolated Python environment; the next line activates it. `python -m pip install -e .` installs **this local checkout** in editable mode and makes the `h5reclaim` command available. It does not download H5Reclaim from PyPI. Pip may download the declared h5py/NumPy dependencies and build requirements; with those already installed and `--no-deps --no-build-isolation`, an offline editable installation is possible. On Windows PowerShell, activate with `.venv\Scripts\Activate.ps1`. The first experiment ran on Python 3.12.14, h5py 3.12.1, HDF5 1.14.4, and NumPy 2.3.5. The current tests were also checked with h5py 3.16.0, HDF5 2.0.0, and NumPy 2.5.3.
 
+The repository's GitHub Actions workflow runs the unit tests, corpus survey,
+and GWOSC trial on Windows and Linux. The Windows source snapshot regression
+is also exercised in the local suite. A native Windows run for version 0.3.1
+is still pending; the fix was developed and tested on Linux with a simulated
+Windows difference between pathname and open-handle metadata.
+
 ## Run the bundled real-data trial
 
 The ZIP includes four untouched, hash-pinned scientific HDF5 files from gravitational-wave, superconducting-qubit, and aircraft cloud experiments. No fixture-generation commands or downloads are required for this trial:

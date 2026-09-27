@@ -2,6 +2,27 @@
 
 Updated: 2026-09-27
 
+## Version 0.3.1: Windows source snapshot fix
+
+On Windows, both bundled commands could stop before inspecting HDF5 with
+`input changed while it was being opened`. The source snapshot had required
+the complete metadata tuple from `os.fstat(open_handle)` to equal the tuple
+from `Path.stat()`. Those two APIs can report different file IDs or timestamps
+for an unchanged Windows file. The check now compares pathname metadata with
+pathname metadata before and after opening/copying, compares descriptor
+metadata with descriptor metadata before and after copying, checks regular-file
+type and size, and still rehashes and checks the pathname before accepting the
+analysis or publishing output. A replaced path with identical bytes and
+changed bytes are both refused by the regression tests.
+
+The Linux run passed 50 tests, verified all four original corpus hashes and
+the 1-candidate/250-unsupported baseline, and recovered all 128 GWOSC chunks
+in the controlled trial with 57 via the severed link and no wrong bits.
+A test simulates discrepant Windows `stat` and `fstat` metadata. A GitHub
+Actions workflow runs the tests and both bundled commands on Windows and Linux
+after the code is uploaded to GitHub. A native Windows result has not yet been
+observed for this revision.
+
 ## Version 0.3.0: authentic scientific data
 
 Four unchanged, license-attributed scientific HDF5 files are bundled in
