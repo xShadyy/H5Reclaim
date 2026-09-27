@@ -154,6 +154,39 @@ class IncidentIntakeTests(unittest.TestCase):
             score_incidents(workspace / "run.json", digest(workspace / "run.json"),
                             truth, "0" * 64)
 
+    def test_filtered_chunk_unknown_is_not_counted_as_recovered(self) -> None:
+        healthy = self.folder / "private" / "chunked.h5"
+        damaged = self.inputs / "chunked_damaged.h5"
+        with h5py.File(healthy, "w", libver="latest") as file:
+            file.create_dataset("science", data=np.arange(32, dtype="<u4"),
+                                chunks=(8,), fletcher32=True)
+        shutil.copyfile(healthy, damaged)
+        with h5py.File(healthy, "r") as file:
+            start = file["science"].id.get_chunk_info(1).byte_offset
+        with damaged.open("r+b") as stream:
+            stream.seek(start + 4)
+            old = stream.read(1)
+            stream.seek(start + 4)
+            stream.write(bytes([old[0] ^ 1]))
+        row = json.loads(self.manifest.read_text())["cases"][0]
+        self._write_intake([dict(row, id="chunked", path="inputs/chunked_damaged.h5",
+                                 sha256=digest(damaged), size_bytes=damaged.stat().st_size,
+                                 dataset="/science")])
+        workspace = self.folder / "work"
+        run = run_incidents(self.manifest, workspace)
+        self.assertEqual(run["run_outcomes"]["output"], 1)
+        truth = self.folder / "private" / "chunked_truth.json"
+        truth.write_text(json.dumps({"schema_version": 1, "cases": [{
+            "id": "chunked", "kind": "healthy_file", "path": healthy.name,
+            "sha256": digest(healthy), "size_bytes": healthy.stat().st_size,
+            "dataset": "/science", "provenance": "independent synthetic self-check",
+        }]}), encoding="utf-8")
+        score = score_incidents(workspace / "run.json", digest(workspace / "run.json"),
+                                truth, digest(truth))
+        self.assertEqual((score["exact_accepted_elements"],
+                          score["wrong_accepted_elements"], score["unknown_elements"]),
+                         (24, 0, 8))
+
 
 if __name__ == "__main__":
     unittest.main()
