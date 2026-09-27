@@ -24,3 +24,10 @@ datatype resolves through the same bounded SOHM list and managed heap path.
 It is also generated test data, not a naturally damaged scientific file.
 
 SHA-256: `59bc1829a4ab4958a65e0175d016f4d6a8665dc67a95661a378dd96d139f7f21`
+
+`sohm_shared_filter_pipeline.h5` uses index flags `2048` for the filter
+pipeline, otherwise the same shape, values, chunking, and filters as the
+datatype fixture. `/d1`'s v3 shared filter pipeline resolves through the
+checked SOHM list and managed heap. It is also generated test data.
+
+SHA-256: `327e3f17fc47337df48da06611d5f8923e3597d03bdbe4148ac3ee9d5fa9a87c`

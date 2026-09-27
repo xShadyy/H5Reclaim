@@ -148,6 +148,23 @@ class SharedMessageTests(unittest.TestCase):
                             for item in result.resolved_shared_messages))
         self.assertEqual(self.path.read_bytes(), source)
 
+    def test_sohm_list_and_managed_heap_resolve_filter_pipeline(self):
+        fixture = Path(__file__).parent / "fixtures" / "sohm_shared_filter_pipeline.h5"
+        source = fixture.read_bytes()
+        self.assertEqual(hashlib.sha256(source).hexdigest(),
+                         "327e3f17fc47337df48da06611d5f8923e3597d03bdbe4148ac3ee9d5fa9a87c")
+        self.path.write_bytes(source)
+        with ModernH5File(self.path) as reader, h5py.File(self.path, "r") as file:
+            address = h5py.h5o.get_info(file["d1"].id).addr
+            pipeline = next(m for m in _messages(reader, address) if m.kind == 11)
+            self.assertTrue(pipeline.flags & 2)
+        result = read_dataset_spec_fallback(self.path, "/d1")
+        self.assertEqual(result.spec.shape, (128,))
+        self.assertEqual(result.spec.filters, (2, 1, 3))
+        self.assertTrue(any("type 11: checksummed_sohm_list_managed_heap" in item
+                            for item in result.resolved_shared_messages))
+        self.assertEqual(self.path.read_bytes(), source)
+
     def test_sohm_schema_recovers_values_from_copy_native_cannot_open(self):
         truth, address, _ = self._sohm()
         with ModernH5File(self.path) as reader:
