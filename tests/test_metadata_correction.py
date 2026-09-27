@@ -12,11 +12,11 @@ import h5py
 import numpy as np
 
 from h5reclaim.format import FormatError
-from h5reclaim.metadata import UnsupportedCase
+from h5reclaim.metadata import UnsupportedCase, read_dataset_spec
 from h5reclaim.metadata_correction import (
     _unique_one_byte, create_layout_pointer_trial, create_root_address_trial,
 )
-from h5reclaim.modern_indexes import lookup3
+from h5reclaim.modern_indexes import ModernH5File, lookup3
 
 
 def _layout_pointer(raw: bytearray, address: int) -> int:
@@ -93,6 +93,34 @@ class ModernMetadataCorrectionTests(unittest.TestCase):
         self.assertEqual(self.trial.read_bytes()[-1], damaged[-1])
         with h5py.File(self.trial, "r") as handle:
             np.testing.assert_array_equal(handle["science"][:], self.values)
+
+    def test_selected_index_pointer_in_extensible_array_and_v2_btree(self) -> None:
+        for shape, maxshape, chunks, expected_kind in (
+            ((32,), (None,), (8,), 4),
+            ((16, 16), (None, None), (4, 4), 5),
+        ):
+            with self.subTest(index_type=expected_kind):
+                source = self.directory / f"kind-{expected_kind}.h5"
+                trial = self.directory / f"kind-{expected_kind}.trial.h5"
+                expected = np.arange(np.prod(shape), dtype="<u4").reshape(shape)
+                with h5py.File(source, "w", libver="latest") as handle:
+                    selected = handle.create_dataset("science", data=expected,
+                                                     chunks=chunks, maxshape=maxshape)
+                    address = int(h5py.h5o.get_info(selected.id).addr)
+                raw = bytearray(source.read_bytes())
+                pointer = _layout_pointer(raw, address)
+                spec = read_dataset_spec(source, "/science")
+                with ModernH5File(source) as reader:
+                    family = reader.read_index(spec.object_address, spec.shape, spec.chunks,
+                                               np.dtype(spec.dtype).itemsize, maxshape=spec.maxshape,
+                                               filters=spec.filters).index_type
+                self.assertEqual(family, {4: "extensible_array", 5: "v2_btree"}[expected_kind])
+                raw[pointer] ^= 4
+                source.write_bytes(raw)
+                proposed = create_layout_pointer_trial(source, "/science", trial)
+                self.assertEqual(proposed.physical_offset, pointer)
+                with h5py.File(trial, "r") as handle:
+                    np.testing.assert_array_equal(handle["science"][:], expected)
 
     def test_checksum_only_and_two_faults_never_publish_trial(self) -> None:
         raw = bytearray(self.source.read_bytes())
