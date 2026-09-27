@@ -171,6 +171,9 @@ def capture_recovery_capsule(
                         native_mask, native_raw = selected.id.read_direct_chunk(coordinate)
                         if len(raw) != length or raw != native_raw or native_mask != mask:
                             raise RecoveryError("native chunk disagrees with its captured physical extent")
+                        if any(mask & (1 << position) and not item["flags"] & h5py.h5z.FLAG_OPTIONAL
+                               for position, item in enumerate(schema["filter_pipeline"])):
+                            raise RecoveryError("captured chunk skips a mandatory filter")
                         visible = tuple(slice(origin, min(origin + step, size))
                                         for origin, step, size in zip(coordinate, selected.chunks, selected.shape))
                         decoded = np.asarray(selected[visible])
@@ -297,6 +300,9 @@ def _validate_records(manifest: dict[str, Any], selected: h5py.Dataset) -> list[
                 or length > manifest["source_size_bytes"] - offset
                 or mask < 0 or mask >> len(schema["filter_pipeline"])):
             raise RecoveryError("capsule physical range or filter mask is invalid")
+        if any(mask & (1 << position) and not item["flags"] & h5py.h5z.FLAG_OPTIONAL
+               for position, item in enumerate(schema["filter_pipeline"])):
+            raise RecoveryError("capsule skips a mandatory filter")
         _digest(row["raw_sha256"], "captured raw chunk digest")
         _digest(row["native_logical_sha256"], "captured decoded chunk digest")
         blocks = row["block_sha256"]
