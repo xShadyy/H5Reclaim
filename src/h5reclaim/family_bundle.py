@@ -23,9 +23,11 @@ import h5py
 import numpy as np
 
 from .metadata import UnsupportedCase
+from .ownership_inventory import inventory_other_allocations
 from .readable_export import (
     MAX_BLOCK_BYTES, MAX_CHUNKS, MAX_DATA_BYTES, NATIVE_FILTERS,
-    _blocks, _create_matching_dataset, _safe_fixed_type, _selected_dataset,
+    _blocks, _create_matching_dataset, _require_no_competing_owner,
+    _safe_fixed_type, _selected_dataset,
 )
 from .recovery import RecoveryError, VERSION, _verify_source, source_snapshot
 
@@ -191,6 +193,14 @@ def export_family(
                 selections = list(_blocks(shape, selected.dtype.itemsize))
             else:
                 raise UnsupportedCase("unsupported Family dataset layout")
+            sibling_inventory = inventory_other_allocations(
+                root / "member000.h5", int(h5py.h5o.get_info(selected.id).addr),
+                opened_file=handle, address_space_size=len(sizes) * member_size,
+            )
+            ownership = _require_no_competing_owner(sibling_inventory, [
+                (item["logical_address"], item["logical_address"] + item["stored_bytes"],
+                 tuple(item.get("coordinate", ()))) for item in known
+            ])
             for source, digest, identity in captures:
                 _verify_source(source, identity, digest)
             with tempfile.TemporaryDirectory(prefix=".h5reclaim-", dir=output.parent) as outdir:
@@ -225,6 +235,7 @@ def export_family(
                               "members": [{"index": i, "path": str(source), "sha256": digest, "size_bytes": sizes[i]}
                                           for i, (source, digest, _) in enumerate(captures)],
                               "member_size": member_size, "accepted_ranges": known,
+                              "ownership_inventory": ownership,
                               "unknown_chunk_origins": [list(item) for item in unknown],
                               "accepted_elements": sum(prod(s.stop - s.start for s in selection) for selection in selections),
                               "validity_map": "/_h5reclaim/validity" if layout == h5py.h5d.CHUNKED else None,

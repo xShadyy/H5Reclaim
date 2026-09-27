@@ -28,7 +28,9 @@ import numpy as np
 
 from .hints import DatasetHints, HintsError, compare_hints, require_no_conflicts
 from .metadata import UnsupportedCase
-from .ownership_inventory import inventory_other_allocations, reject_sibling_overlap
+from .ownership_inventory import (
+    OwnershipInventory, inventory_other_allocations, reject_sibling_overlap,
+)
 from .format import FormatError
 from .recovery import (
     RecoveryError,
@@ -393,8 +395,14 @@ def _check_competing_owners(snapshot: Path, dataset: h5py.Dataset,
         selected = [(int(address), int(address) + int(dataset.id.get_storage_size()), ())]
     else:
         selected = []
+    return _require_no_competing_owner(inventory, selected)
+
+
+def _require_no_competing_owner(inventory: OwnershipInventory,
+                                ranges: list[tuple[int, int, tuple[int, ...]]]) -> dict[str, Any]:
+    """Reject observed overlaps and incomplete native owner inventories."""
     try:
-        reject_sibling_overlap(selected, inventory)
+        reject_sibling_overlap(ranges, inventory)
     except FormatError as exc:
         raise UnsupportedCase(str(exc)) from exc
     if not inventory.complete:

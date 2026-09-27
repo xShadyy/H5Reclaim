@@ -33,10 +33,11 @@ from .format import FormatError, UnsupportedFormat
 from .metadata import UnsupportedCase
 from .metadata_fallback import _messages, _unique
 from .modern_indexes import ModernH5File
+from .ownership_inventory import inventory_other_allocations
 from .readable_export import (
     MAX_BLOCK_BYTES, MAX_CHUNKS, MAX_DATA_BYTES, MAX_STORED_CHUNK_BYTES,
     NATIVE_FILTERS, _blocks, _create_matching_dataset, _range_sha256,
-    _safe_fixed_type, _selected_dataset,
+    _require_no_competing_owner, _safe_fixed_type, _selected_dataset,
 )
 from .recovery import RecoveryError, VERSION, _verify_source, sha256_file, source_snapshot
 
@@ -306,6 +307,14 @@ def export_split(
                     selections = list(_blocks(shape, selected.dtype.itemsize))
                 else:
                     raise UnsupportedCase("Split route supports chunked and contiguous raw storage only")
+                sibling_inventory = inventory_other_allocations(
+                    staged_meta, int(h5py.h5o.get_info(selected.id).addr),
+                    opened_file=handle, address_space_size=mapping.raw_eoa,
+                )
+                ownership = _require_no_competing_owner(sibling_inventory, [
+                    (item["logical_address"], item["logical_address"] + item["stored_bytes"],
+                     tuple(item.get("coordinate", ()))) for item in accepted
+                ])
                 for _, source, _, digest, identity, _ in captures:
                     _verify_source(source, identity, digest)
                 with tempfile.TemporaryDirectory(prefix=".h5reclaim-", dir=output.parent) as outdir:
@@ -347,6 +356,7 @@ def export_split(
                                             "driver_anchor_checksum_validated": mapping.checksum_validated,
                                             "member_association": "explicit_operator_manifest"},
                             "accepted_ranges": accepted, "unknown_chunk_origins": [list(item) for item in unknown],
+                            "ownership_inventory": ownership,
                             "accepted_elements": sum(prod(s.stop - s.start for s in selection) for selection in selections),
                             "validity_map": "/_h5reclaim/validity" if layout == h5py.h5d.CHUNKED else None,
                             "current_value_sha256": source_hash.hexdigest(),

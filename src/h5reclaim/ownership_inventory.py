@@ -8,6 +8,7 @@ unobserved allocation exists, especially when metadata is damaged.
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
@@ -64,6 +65,7 @@ def inventory_other_allocations(
     snapshot: Path, selected_object_address: int,
     *, max_objects: int = MAX_OBJECTS, max_links: int = MAX_LINKS,
     max_allocations: int = MAX_ALLOCATIONS, max_seconds: float = MAX_SECONDS,
+    opened_file: h5py.File | None = None, address_space_size: int | None = None,
 ) -> OwnershipInventory:
     """Observe currently allocated sibling ranges without reading payload values.
 
@@ -73,7 +75,15 @@ def inventory_other_allocations(
     """
     if min(max_objects, max_links, max_allocations) <= 0 or max_seconds <= 0:
         raise ValueError("ownership inventory limits must be positive")
-    size = Path(snapshot).stat().st_size
+    if opened_file is None:
+        size = Path(snapshot).stat().st_size
+    else:
+        if type(address_space_size) is not int or not 0 < address_space_size < 1 << 64:
+            raise ValueError("an opened VFD inventory needs a bounded logical address space")
+        size = address_space_size
+        # Family and Split use their own virtual address spaces. Walk the same
+        # already-open, read-only VFD view rather than reopening one member as
+        # a stand-alone HDF5 file. The caller retains ownership of the handle.
     deadline = monotonic() + max_seconds
     ranges: list[OtherAllocation] = []
     seen: set[int] = set()
@@ -85,7 +95,8 @@ def inventory_other_allocations(
             problems.append(reason)
 
     try:
-        with h5py.File(snapshot, "r") as handle:
+        with (h5py.File(snapshot, "r") if opened_file is None
+              else nullcontext(opened_file)) as handle:
             pending: list[tuple[str, h5py.Group | h5py.Dataset]] = [("/", handle["/"])]
             while pending:
                 if monotonic() > deadline:
