@@ -165,6 +165,25 @@ class ExternalRawExportTests(unittest.TestCase):
                 self.assertTrue(derived["records"].id.get_type().equal(source["records"].id.get_type()))
                 self.assertEqual(derived["records"][:].tobytes(), values.tobytes())
 
+    def test_tall_matrix_uses_bounded_contiguous_blocks(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            main, part = root / "main.h5", root / "matrix.bin"
+            values = np.arange(3000, dtype="<i4").reshape(3000, 1)
+            part.write_bytes(values.tobytes())
+            with h5py.File(main, "x") as handle:
+                handle.create_dataset("matrix", shape=values.shape, dtype=values.dtype,
+                                      external=[("matrix-raw", 0, values.nbytes)])
+            output, report_path = root / "out.h5", root / "report.json"
+            from h5reclaim import external_raw_export as module
+            with patch.object(module, "_block_bytes", wraps=module._block_bytes) as blocks:
+                result = export_external_raw(main, "/matrix", _manifest(("matrix-raw", part)),
+                                             output, report_path)
+            self.assertEqual(result["accepted_elements"], 3000)
+            self.assertLessEqual(blocks.call_count, 2)  # one write pass, one readback pass
+            with h5py.File(output) as handle:
+                np.testing.assert_array_equal(handle["matrix"][:], values)
+
     def test_mismatched_manifest_hash_or_overlapping_ranges_never_publish(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

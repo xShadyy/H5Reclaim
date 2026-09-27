@@ -198,17 +198,22 @@ def _block_bytes(
     return bytes(data), validity
 
 
-def _row_blocks(
+def _contiguous_blocks(
     shape: tuple[int, ...], itemsize: int,
-) -> Iterator[tuple[tuple[int | slice, ...], int, int]]:
-    """Yield bounded C-order row selections and their logical byte offset."""
-    row_length = shape[-1]
-    width = max(1, MAX_BLOCK_BYTES // itemsize)
-    for row_number, prefix in enumerate(itertools.product(*(range(length) for length in shape[:-1]))):
-        for col in range(0, row_length, width):
-            count = min(width, row_length - col)
-            selection = prefix + (slice(col, col + count),)
-            yield selection, (row_number * row_length + col) * itemsize, count
+) -> Iterator[tuple[tuple[slice, ...], int, tuple[int, ...]]]:
+    """Yield bounded rectangular selections contiguous in row-major order."""
+    steps = [1] * len(shape)
+    allowance = max(1, MAX_BLOCK_BYTES // itemsize)
+    for index in range(len(shape) - 1, -1, -1):
+        steps[index] = min(shape[index], allowance)
+        allowance = max(1, allowance // steps[index])
+    strides = [1] * len(shape)
+    for index in range(len(shape) - 2, -1, -1):
+        strides[index] = strides[index + 1] * shape[index + 1]
+    for starts in itertools.product(*(range(0, size, step) for size, step in zip(shape, steps))):
+        extents = tuple(min(step, size - start) for step, size, start in zip(steps, shape, starts))
+        selection = tuple(slice(start, start + extent) for start, extent in zip(starts, extents))
+        yield selection, sum(start * stride for start, stride in zip(starts, strides)) * itemsize, extents
 
 
 def _segment_evidence(part: _Segment) -> dict[str, Any]:
@@ -340,10 +345,10 @@ def export_external_raw(
                     with h5py.File(out_temp, "x") as target:
                         exported = _create_local_dataset(target, selected, dataset_path)
                         output_layout = "local_chunked" if exported.chunks else "local_contiguous"
-                        for selection, logical_start, count in _row_blocks(shape, dtype.itemsize):
-                            raw, valid = _block_bytes(segments, handles, logical_start, count, dtype.itemsize)
-                            exported[selection] = np.frombuffer(raw, dtype=dtype)
-                            status[selection] = valid
+                        for selection, logical_start, extents in _contiguous_blocks(shape, dtype.itemsize):
+                            raw, valid = _block_bytes(segments, handles, logical_start, prod(extents), dtype.itemsize)
+                            exported[selection] = np.frombuffer(raw, dtype=dtype).reshape(extents)
+                            status[selection] = valid.reshape(extents)
                             accepted += int(valid.sum())
                         copied_names = []
                         for name, value in copied:
@@ -367,12 +372,12 @@ def export_external_raw(
                     # raw bits, and cannot silently pass as exact export.
                     with h5py.File(out_temp, "r") as target:
                         exported = target[dataset_path]
-                        for selection, logical_start, count in _row_blocks(shape, dtype.itemsize):
-                            raw, valid = _block_bytes(segments, handles, logical_start, count, dtype.itemsize)
+                        for selection, logical_start, extents in _contiguous_blocks(shape, dtype.itemsize):
+                            raw, valid = _block_bytes(segments, handles, logical_start, prod(extents), dtype.itemsize)
                             expected = np.frombuffer(raw, dtype=dtype)
                             got = np.asarray(exported[selection])
-                            if (got.dtype != dtype or got.shape != expected.shape
-                                    or got[valid != 0].tobytes() != expected[valid != 0].tobytes()):
+                            if (got.dtype != dtype or got.shape != extents
+                                    or got.ravel()[valid != 0].tobytes() != expected[valid != 0].tobytes()):
                                 raise RecoveryError("derived output changed accepted external raw value bits")
                         if not np.array_equal(target["/_h5reclaim/validity"][:], status):
                             raise RecoveryError("derived output validity map differs from verified source presence")
