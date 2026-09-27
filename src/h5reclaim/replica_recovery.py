@@ -98,6 +98,11 @@ def _integers(value: object, label: str) -> tuple[int, ...]:
 
 
 def _schema(spec: Any) -> dict[str, Any]:
+    if not isinstance(spec.dtype, str):
+        raise UnsupportedCase(
+            "prior coordinate-hash baseline and parity routes require primitive numeric schema; "
+            "fixed-size complex types need their own exact-type sidecar"
+        )
     return {
         "path": spec.path, "dtype": spec.dtype, "shape": list(spec.shape),
         "chunks": list(spec.chunks),
