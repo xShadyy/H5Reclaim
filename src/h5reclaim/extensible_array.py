@@ -141,6 +141,16 @@ def read_extensible_array(
     offsize = reader.superblock.offset_size
     lensize = reader.superblock.length_size
     undefined = reader.superblock.undefined_address
+    selected_header = reader.absolute(object_address)
+    if not any(start == selected_header and kind == "selected object header"
+               for start, _, kind in reader.metadata_ranges):
+        raise FormatError("extensible-array layout lacks a selected object-header anchor")
+    if not any(start <= layout_pointer_offset and layout_pointer_offset + offsize <= end
+               for start, end, kind in reader.metadata_ranges
+               if kind in ("selected object header", "object header continuation")):
+        raise FormatError("extensible-array layout pointer is not inside selected object metadata")
+    if _uint(reader._read_absolute(layout_pointer_offset, offsize)) != root:
+        raise FormatError("selected layout pointer does not own extensible-array header")
     filtered = bool(filters)
     chunk_size_width = (min(lensize, 8) if layout_version == 5 else
                         min(8, 1 + ((chunk_bytes.bit_length() - 1 + 8) // 8))) if filtered else 0
@@ -163,7 +173,8 @@ def read_extensible_array(
     header_pointer_offset = reader.absolute(root) + 12 + 6 * lensize
     index_address = _uint(header[12+6*lensize:12+6*lensize+offsize])
     if index_address == undefined:
-        if not allow_sparse or max_index_set or n_dblocks or n_sblocks:
+        if (not allow_sparse or max_index_set or n_elements or n_dblocks or n_sblocks
+                or _sblock_bytes or _dblock_bytes):
             raise UnsupportedFormat("extensible-array index block is unallocated")
         return ModernIndex("extensible_array", layout_version, object_address, root,
                            layout_pointer_offset, chunks, element_size, ())
