@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -246,6 +249,8 @@ class NonchunkedRecoveryTests(unittest.TestCase):
             object_address = h5py.h5o.get_info(handle[path].id).addr
             source_offset = handle[path].id.get_offset()
             sibling_offset = handle[sibling].id.get_offset()
+            newer_group_address = h5py.h5o.get_info(
+                handle["/reference_data/delays/delay_9"].id).addr
         with _TruncatedOldReader(original) as reader:
             messages = _old_messages(reader, object_address)
             fill = next(message for message in messages if message.kind == 5)
@@ -269,6 +274,25 @@ class NonchunkedRecoveryTests(unittest.TestCase):
             self.assertTrue(np.all(recovered["/_h5reclaim/element_status"][:] == 1))
         self.assertEqual(hashlib.sha256(self.source.read_bytes()).hexdigest(), before)
 
+        public_output, public_report = self.base / "rescue.h5", self.base / "rescue.json"
+        project = Path(__file__).resolve().parents[1]
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = str(project / "src") + os.pathsep + environment.get("PYTHONPATH", "")
+        process = subprocess.run(
+            [sys.executable, "-m", "h5reclaim", "rescue", str(self.source),
+             "--dataset", path, "--output", str(public_output),
+             "--report", str(public_report)],
+            cwd=project, env=environment, capture_output=True, text=True,
+            check=False, timeout=60,
+        )
+        self.assertEqual(process.returncode, 0, process.stderr + process.stdout[-500:])
+        self.assertIn("2000 accepted elements", process.stdout)
+        public_evidence = json.loads(public_report.read_text())
+        self.assertEqual(public_evidence["operation"], "structural_nonchunked_export")
+        with h5py.File(public_output) as recovered:
+            self.assertEqual(recovered[path][:].tobytes(), expected.tobytes())
+        self.assertEqual(hashlib.sha256(self.source.read_bytes()).hexdigest(), before)
+
         conflict = self.base / "conflict.h5"
         shutil.copyfile(self.source, conflict)
         with conflict.open("r+b") as stream:
@@ -278,6 +302,18 @@ class NonchunkedRecoveryTests(unittest.TestCase):
             export_nonchunked(conflict, path, self.base / "refused.h5",
                               self.base / "refused.json")
         self.assertFalse((self.base / "refused.h5").exists())
+
+        bad_header = self.base / "bad_newer_header.h5"
+        shutil.copyfile(self.source, bad_header)
+        with bad_header.open("r+b") as stream:
+            stream.seek(newer_group_address + 20)
+            original_byte = stream.read(1)
+            stream.seek(newer_group_address + 20)
+            stream.write(bytes([original_byte[0] ^ 1]))
+        with self.assertRaisesRegex(FormatError, "object-header checksum mismatch"):
+            export_nonchunked(bad_header, path, self.base / "refused2.h5",
+                              self.base / "refused2.json")
+        self.assertFalse((self.base / "refused2.h5").exists())
 
 
 if __name__ == "__main__":
