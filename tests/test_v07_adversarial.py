@@ -170,6 +170,22 @@ class AdversarialRouteTests(unittest.TestCase):
                             self.assertEqual(actual[start:start + dtype.itemsize],
                                              expected[start:start + dtype.itemsize])
 
+    def test_external_raw_manifest_cannot_assign_main_metadata_as_measurements(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "source.h5"
+            with h5py.File(source, "x") as file:
+                file.create_dataset("science", shape=(4,), dtype="<u4",
+                                    external=[("apparatus.bin", 0, 16)])
+            manifest = {"schema_version": 1, "files": [{
+                "declared_name": "apparatus.bin", "path": str(source),
+                "sha256": _hash(source),
+            }]}
+            with self.assertRaisesRegex((UnsupportedCase, RecoveryError), "same.*HDF5|aliases.*main|source.*alias"):
+                export_external_raw(source, "/science", manifest,
+                                    root / "result.h5", root / "result.json")
+            self.assertFalse((root / "result.h5").exists())
+
     def test_vds_damaged_filtered_source_does_not_poison_other_mapping(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

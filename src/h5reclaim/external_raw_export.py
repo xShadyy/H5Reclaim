@@ -267,6 +267,12 @@ def export_external_raw(
             raise DependencyError("related-file manifest contains undeclared names")
         by_name = {item["declared_name"]: item for item in manifest["files"]}
         for item in by_name.values():
+            related_path = Path(item["path"])
+            if related_path.is_file() and related_path.samefile(source):
+                raise UnsupportedCase(
+                    "external raw source aliases the main HDF5 file; its metadata bytes "
+                    "cannot be assigned as measurements"
+                )
             if Path(item["path"]).resolve(strict=False) in (
                 output.resolve(strict=False), report_path.resolve(strict=False)
             ):
