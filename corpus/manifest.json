@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "description": "Unmodified, openly licensed scientific HDF5 files used to measure real-format coverage. No file in this corpus is a naturally damaged recovery case.",
+  "entries": [
+    {
+      "id": "gwosc_gw150914_h1_strain",
+      "path": "files/H-H1_GWOSC_4KHZ_R1-1126259447-32.hdf5",
+      "size_bytes": 1040781,
+      "sha256": "c5ea87beced5094b56b4d694f3a36e6d59f74d3a46e546b980a6a199d1f252a9",
+      "source_url": "https://gwosc.org/eventapi/json/GWTC-1-confident/GW150914/v3/H-H1_GWOSC_4KHZ_R1-1126259447-32.hdf5",
+      "record_url": "https://gwosc.org/events/GW150914/",
+      "doi": null,
+      "license": "CC BY 4.0",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/",
+      "attribution": "Gravitational Wave Open Science Center, a service of the LIGO Scientific Collaboration, the Virgo Collaboration, and KAGRA. See https://gwosc.org/acknowledgement/ for citation guidance.",
+      "scientific_context": "Hanford H1 gravitational-wave detector, 32 seconds around event GW150914 at 4096 samples per second.",
+      "representative_dataset": "/strain/Strain",
+      "expected_observation": {
+        "dataset_count": 15,
+        "candidate_count": 0,
+        "representative_support": "unsupported",
+        "representative_reason_codes": ["index_unsupported"]
+      }
+    },
+    {
+      "id": "gwosc_gw150914_h1_strain_16khz",
+      "path": "files/H-H1_GWOSC_16KHZ_R1-1126259447-32.hdf5",
+      "size_bytes": 4068797,
+      "sha256": "81040e1ecfaf40ffe15a5efc59dbc3a888653162f1613425f1e68d0828dd1b97",
+      "source_url": "https://gwosc.org/eventapi/json/GWTC-1-confident/GW150914/v3/H-H1_GWOSC_16KHZ_R1-1126259447-32.hdf5",
+      "record_url": "https://gwosc.org/events/GW150914/",
+      "doi": null,
+      "license": "CC BY 4.0",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/",
+      "attribution": "Gravitational Wave Open Science Center, a service of the LIGO Scientific Collaboration, the Virgo Collaboration, and KAGRA. See https://gwosc.org/acknowledgement/ for citation guidance.",
+      "scientific_context": "Hanford H1 gravitational-wave detector, 32 seconds around event GW150914 at 16384 samples per second. The original strain dataset is chunked and compressed.",
+      "representative_dataset": "/strain/Strain",
+      "expected_observation": {
+        "dataset_count": 15,
+        "candidate_count": 1,
+        "representative_support": "candidate",
+        "representative_reason_codes": []
+      }
+    },
+    {
+      "id": "zenodo_qubit_feedback",
+      "path": "files/fast_feedback_raw_data.h5",
+      "size_bytes": 5582749,
+      "sha256": "dd2a3d48e86ea81094b44439fb58a3d9788757e26799bd4ee7497eb94798ed08",
+      "upstream_md5": "3b2503a80f2b92916660489e2f07e880",
+      "source_url": "https://zenodo.org/api/records/13961130/files/fast_feedback_raw_data.h5/content",
+      "record_url": "https://zenodo.org/records/13961130",
+      "doi": "10.5281/zenodo.13961130",
+      "license": "CC BY 4.0",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/",
+      "attribution": "Laura Caune et al., Demonstrating real-time and low-latency quantum error correction with superconducting qubits, Zenodo, 2024, doi:10.5281/zenodo.13961130.",
+      "scientific_context": "Raw superconducting-qubit measurement and FPGA feedback data; the file contains hundreds of datasets in nested experiment groups.",
+      "representative_dataset": "/circuit_0/result/hard_measurements/36",
+      "expected_observation": {
+        "dataset_count": 214,
+        "candidate_count": 0,
+        "representative_support": "unsupported",
+        "representative_reason_codes": ["layout", "datatype"]
+      }
+    },
+    {
+      "id": "zenodo_pallas_cloud_aircraft",
+      "path": "files/PACE22_FMITALON_005.h5",
+      "size_bytes": 638688,
+      "sha256": "e7ea20c557305a667c7861c0cac8121efcdf3e53eba5d883bbcdf5d0a29d0bb0",
+      "upstream_md5": "4b923191dd01ef0f3d69e4859852bf73",
+      "source_url": "https://zenodo.org/api/records/14755046/files/PACE22_FMITALON_005.h5/content",
+      "record_url": "https://zenodo.org/records/14755046",
+      "doi": "10.5281/zenodo.14755046",
+      "license": "CC BY 4.0",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/",
+      "attribution": "Jessica Girdwood, David Brus, and Konstantinos Doulgeris, Pallas Cloud Experiment UCASS data, Zenodo, 2025, doi:10.5281/zenodo.14755046.",
+      "scientific_context": "Quality-assured measurements from a cloud and aerosol sounding system aboard an uncrewed aircraft in 2022; the main table uses a compound datatype.",
+      "representative_dataset": "/20220922_101405/columns/dataframe",
+      "expected_observation": {
+        "dataset_count": 7,
+        "candidate_count": 0,
+        "representative_support": "unsupported",
+        "representative_reason_codes": ["layout", "datatype", "filters", "dtype_limit"]
+      }
+    }
+  ]
+}
