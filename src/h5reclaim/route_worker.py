@@ -17,7 +17,7 @@ from typing import Any
 
 MAX_REQUEST = 65536
 MAX_REPORT = 32 * 1024 * 1024
-ROUTES = frozenset({"family", "split", "vds", "external_raw", "external_link", "nonchunked", "replicas", "parity", "status"})
+ROUTES = frozenset({"family", "split", "vds", "external_raw", "external_link", "nonchunked", "replicas", "parity", "status", "element_baseline"})
 
 
 def _child(request_path: Path, response_path: Path) -> int:
@@ -64,6 +64,10 @@ def _child(request_path: Path, response_path: Path) -> int:
             from .status_trial_export import export_status_trial
             export_status_trial(args["source"], args["dataset"], output, report,
                                 published_output=request["published_output"])
+        elif route == "element_baseline":
+            from .payload_integrity import export_verified_nonchunked
+            export_verified_nonchunked(args["source"], args["dataset"], args["baseline"],
+                                       args["baseline_sha256"], output, report)
         else:
             from .parity_sidecar import restore_from_parity
             restore_from_parity(args["source"], args["dataset"], args["manifest"], output, report)

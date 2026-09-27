@@ -288,6 +288,13 @@ def main(argv: list[str] | None = None) -> int:
     baseline_cmd.add_argument("source", type=Path)
     baseline_cmd.add_argument("--dataset", required=True)
     baseline_cmd.add_argument("--output", required=True, type=Path, help="new baseline JSON destination, stored separately")
+    element_cmd = commands.add_parser(
+        "capture-element-baseline",
+        help="record prospective per-element hashes for a complete rooted compact/contiguous numeric dataset",
+    )
+    element_cmd.add_argument("source", type=Path)
+    element_cmd.add_argument("--dataset", required=True)
+    element_cmd.add_argument("--output", required=True, type=Path, help="new element baseline ZIP destination")
     parity_cmd = commands.add_parser(
         "capture-parity", help="record prospective XOR parity after a complete prior chunk-hash baseline",
     )
@@ -309,6 +316,8 @@ def main(argv: list[str] | None = None) -> int:
     choices.add_argument("--split-members", type=Path, help="pinned HDF5 Split metadata and raw member manifest")
     choices.add_argument("--replicas", type=Path, help="pinned replica manifest and prospective baseline")
     choices.add_argument("--parity", type=Path, help="pinned baseline plus prospective parity sidecar manifest")
+    choices.add_argument("--element-baseline", type=Path, help="prior compact/contiguous element-hash ZIP")
+    rescue_cmd.add_argument("--element-baseline-sha256", help="independently retained SHA-256 of the element baseline ZIP")
     choices.add_argument("--status-trial", action="store_true",
                          help="trial a validated v3 write flag on a disposable copy before native-readable export")
     args = parser.parse_args(argv)
@@ -323,6 +332,20 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         except (FormatError, UnsupportedCase, RecoveryError, OSError, ValueError, RuntimeError) as exc:
             print(f"h5reclaim: baseline capture failed: {_display_path(exc, 300)}", file=sys.stderr)
+            return 2
+
+    if args.command == "capture-element-baseline":
+        try:
+            from .payload_integrity import capture_element_baseline
+            result = capture_element_baseline(args.source, args.dataset, args.output)
+            print("H5Reclaim prospective element baseline")
+            print(f"Dataset: {_display_path(args.dataset)} | {result['dataset']['elements']} element hashes")
+            print(f"Baseline: {_display_path(args.output, 240)}")
+            print(f"SHA-256 to retain separately: {result['archive_sha256']}")
+            print("Capture while the file is intact; a later mismatch will be unknown, not reconstructed from a hash.")
+            return 0
+        except (FormatError, UnsupportedCase, RecoveryError, OSError, ValueError, RuntimeError) as exc:
+            print(f"h5reclaim: element baseline capture failed: {_display_path(exc, 300)}", file=sys.stderr)
             return 2
 
     if args.command == "capture-parity":
@@ -342,12 +365,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "rescue":
         try:
             source = str(args.source.absolute())
+            if (args.element_baseline is None) != (args.element_baseline_sha256 is None):
+                raise RecoveryError("--element-baseline and --element-baseline-sha256 must be supplied together")
             if args.replicas is not None:
                 report = run_route("replicas", args.output, args.report, source=source,
                                    dataset=args.dataset, manifest=str(args.replicas.absolute()))
             elif args.parity is not None:
                 report = run_route("parity", args.output, args.report, source=source,
                                    dataset=args.dataset, manifest=str(args.parity.absolute()))
+            elif args.element_baseline is not None:
+                report = run_route("element_baseline", args.output, args.report,
+                                   source=source, dataset=args.dataset,
+                                   baseline=str(args.element_baseline.absolute()),
+                                   baseline_sha256=args.element_baseline_sha256)
             elif args.status_trial:
                 report = run_route("status", args.output, args.report, source=source,
                                    dataset=args.dataset)
