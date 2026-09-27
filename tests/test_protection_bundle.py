@@ -6,6 +6,8 @@ import tempfile
 import unittest
 import warnings
 import zipfile
+import json
+import shutil
 from pathlib import Path
 from unittest.mock import patch
 
@@ -13,7 +15,8 @@ import h5py
 import numpy as np
 
 from h5reclaim.protection_bundle import (
-    capture_protection_bundle, drill_protection_bundle, verify_protection_bundle,
+    capture_protection_bundle, drill_protection_bundle,
+    restore_from_protection_bundle, verify_protection_bundle,
 )
 from h5reclaim.recovery import RecoveryError, sha256_file
 
@@ -110,6 +113,74 @@ class ProtectionBundleTests(unittest.TestCase):
                 out.writestr("capsule.zip", b"duplicate")
         with self.assertRaisesRegex(RecoveryError, "duplicate entries"):
             verify_protection_bundle(duplicate, captured["manifest_sha256"])
+
+    def test_bundle_root_loss_restore_has_durable_provenance(self) -> None:
+        captured = capture_protection_bundle(self.source, "/science", self.bundle)
+        damaged = self.base / "broken-root.h5"
+        shutil.copyfile(self.source, damaged)
+        with damaged.open("r+b") as stream:
+            stream.write(b"\0" * 8)
+        damaged_digest = sha256_file(damaged)
+        out, report_path = self.base / "capsule-result.h5", self.base / "capsule-report.json"
+        report = restore_from_protection_bundle(
+            damaged, "/science", self.bundle, captured["manifest_sha256"], out, report_path,
+        )
+        self.assertTrue(report["complete"])
+        self.assertEqual(report["capsule"]["path"], str(self.bundle))
+        self.assertEqual(report["capsule"]["bundle_member"], "capsule.zip")
+        self.assertEqual(report["protection_bundle"]["sha256"], captured["bundle_sha256"])
+        self.assertNotIn(".h5reclaim-bundle-restore-", json.dumps(report))
+        self.assertEqual(json.loads(report_path.read_text()), report)
+        self.assertEqual(sha256_file(damaged), damaged_digest)
+        with h5py.File(out, "r") as file:
+            np.testing.assert_array_equal(file["/science"][...], np.arange(128) * 3 + 5)
+            self.assertEqual(json.loads(file["/_h5reclaim/report_json"][()]), report)
+
+    def test_bundle_two_chunk_erasure_restore_has_durable_provenance(self) -> None:
+        captured = capture_protection_bundle(self.source, "/science", self.bundle)
+        damaged = self.base / "two-lost.h5"
+        shutil.copyfile(self.source, damaged)
+        with h5py.File(self.source, "r") as file:
+            offsets = [file["/science"].id.get_chunk_info(index).byte_offset for index in (0, 2)]
+        with damaged.open("r+b") as stream:
+            for offset in offsets:
+                stream.seek(offset)
+                prior = stream.read(1)
+                stream.seek(offset)
+                stream.write(bytes([prior[0] ^ 0x7f]))
+        damaged_digest = sha256_file(damaged)
+        out, report_path = self.base / "parity-result.h5", self.base / "parity-report.json"
+        report = restore_from_protection_bundle(
+            damaged, "/science", self.bundle, captured["manifest_sha256"], out, report_path,
+            method="erasure",
+        )
+        self.assertTrue(report["complete"])
+        self.assertEqual(report["reconstructed_from_erasure"], 2)
+        self.assertEqual(report["baseline"]["bundle_member"], "baseline.json")
+        self.assertEqual(report["erasure"]["bundle_member"], "erasure.zip")
+        self.assertEqual(report["manifest"]["kind"], "derived_from_protection_bundle")
+        self.assertNotIn(".h5reclaim-bundle-restore-", json.dumps(report))
+        self.assertEqual(json.loads(report_path.read_text()), report)
+        self.assertEqual(sha256_file(damaged), damaged_digest)
+        with h5py.File(out, "r") as file:
+            np.testing.assert_array_equal(file["/science"][...], np.arange(128) * 3 + 5)
+            self.assertEqual(json.loads(file["/_h5reclaim/report_json"][()]), report)
+
+    def test_bundle_restore_wrong_pin_or_missing_method_refuses_publication(self) -> None:
+        captured = capture_protection_bundle(self.source, "/science", self.bundle,
+                                              include_erasure=False)
+        output, report_path = self.base / "absent.h5", self.base / "absent.json"
+        with self.assertRaisesRegex(RecoveryError, "manifest disagrees"):
+            restore_from_protection_bundle(
+                self.source, "/science", self.bundle, "0" * 64, output, report_path,
+            )
+        with self.assertRaisesRegex(RecoveryError, "no erasure sidecar"):
+            restore_from_protection_bundle(
+                self.source, "/science", self.bundle, captured["manifest_sha256"],
+                output, report_path, method="erasure",
+            )
+        self.assertFalse(output.exists())
+        self.assertFalse(report_path.exists())
 
 
 if __name__ == "__main__":

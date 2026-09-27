@@ -20,8 +20,12 @@ from typing import Any
 
 from .baseline import capture_baseline
 from .erasure_sidecar import MAX_ARCHIVE_BYTES, capture_erasure_sidecar, restore_from_erasure
-from .recovery import VERSION, RecoveryError, _identity, _verify_source, sha256_file
-from .recovery_capsule import MAX_CAPSULE_BYTES, capture_recovery_capsule, restore_from_capsule
+from .recovery import (
+    VERSION, RecoveryError, _identity, _validate_paths, _verify_source, sha256_file,
+)
+from .recovery_capsule import (
+    MAX_CAPSULE_BYTES, MAX_REPORT_BYTES, capture_recovery_capsule, restore_from_capsule,
+)
 
 
 MAX_BASELINE_BYTES = 32 << 20
@@ -354,3 +358,135 @@ def drill_protection_bundle(
                 "source_sha256": document["captured_source"]["sha256"],
                 "manifest_sha256": document["manifest_sha256"],
                 "operation": "disposable_root_loss_restore_drill"}
+
+
+def restore_from_protection_bundle(
+    damaged: str | Path, dataset_path: str, bundle: str | Path,
+    manifest_sha256: str, output: str | Path, report_path: str | Path, *,
+    method: str = "capsule",
+) -> dict[str, Any]:
+    """Recover using only a damaged source and a retained, pinned bundle.
+
+    Extracted components and the erasure route's generated input manifest live
+    in a private temporary directory. The durable JSON and embedded HDF5
+    report both refer to the bundle and its named, hashed members rather than
+    their short-lived extraction paths. Both final destinations are new.
+    """
+    damaged, bundle = Path(damaged).absolute(), Path(bundle).absolute()
+    output, report_path = Path(output), Path(report_path)
+    if method not in ("capsule", "erasure") or type(method) is not str:
+        raise RecoveryError("protection restore method must be capsule or erasure")
+    _validate_paths(damaged, output, report_path)
+    if not bundle.is_file() or bundle.is_symlink():
+        raise RecoveryError("protection bundle must be a regular file")
+    bundle_path = bundle.resolve(strict=True)
+    if bundle_path == damaged.resolve(strict=True) or any(
+        target.resolve(strict=False) == bundle_path for target in (output, report_path)
+    ):
+        raise RecoveryError("protection bundle, damaged source, output, and report must be separate")
+    before_source = _identity(damaged.stat())
+    damaged_sha = sha256_file(damaged)
+    _verify_source(damaged, before_source, damaged_sha)
+    protected = verify_protection_bundle(bundle, manifest_sha256)
+    if method == "erasure" and "erasure.zip" not in protected["components"]:
+        raise RecoveryError("protection bundle has no erasure sidecar")
+    before_bundle = _identity(bundle.stat())
+    bundle_sha = protected["bundle_sha256"]
+    if sha256_file(bundle) != bundle_sha or _identity(bundle.stat()) != before_bundle:
+        raise RecoveryError("protection bundle changed while it was opened")
+
+    import h5py
+
+    with tempfile.TemporaryDirectory(prefix=".h5reclaim-bundle-restore-", dir=output.parent) as tmp:
+        with tempfile.TemporaryDirectory(prefix=".h5reclaim-bundle-report-", dir=report_path.parent) as rep_tmp:
+            stage = Path(tmp)
+            components = (["capsule.zip"] if method == "capsule"
+                          else ["baseline.json", "erasure.zip"])
+            try:
+                with zipfile.ZipFile(bundle) as archive:
+                    for name in components:
+                        expected = protected["components"][name]
+                        info = archive.getinfo(name)
+                        if (info.file_size != expected["size_bytes"]
+                                or info.file_size > _PARTS[name]
+                                or info.compress_type != zipfile.ZIP_STORED):
+                            raise RecoveryError("protection component changed before extraction")
+                        with archive.open(name) as stream, (stage / name).open("xb") as target:
+                            shutil.copyfileobj(stream, target, length=1 << 20)
+                        if sha256_file(stage / name) != expected["sha256"]:
+                            raise RecoveryError("protection component changed during extraction")
+            except RecoveryError:
+                raise
+            except (OSError, KeyError, RuntimeError, ValueError, zipfile.BadZipFile) as exc:
+                raise RecoveryError(f"protection component cannot be extracted safely: {exc}") from exc
+            _verify_source(bundle, before_bundle, bundle_sha)
+
+            staged_output, staged_report = stage / "recovered.h5", stage / "report.json"
+            if method == "capsule":
+                original = restore_from_capsule(
+                    damaged, stage / "capsule.zip",
+                    protected["components"]["capsule.zip"]["sha256"],
+                    staged_output, staged_report, dataset_path=dataset_path,
+                )
+            else:
+                recovery_manifest = stage / "erasure-recovery.json"
+                recovery_manifest.write_bytes(_encode({
+                    "schema_version": 1, "damaged_sha256": damaged_sha,
+                    "baseline": {"path": str(stage / "baseline.json"),
+                                 "sha256": protected["components"]["baseline.json"]["sha256"]},
+                    "erasure": {"path": str(stage / "erasure.zip"),
+                                "sha256": protected["components"]["erasure.zip"]["sha256"]},
+                }))
+                original = restore_from_erasure(
+                    damaged, dataset_path, recovery_manifest, staged_output, staged_report,
+                )
+            durable = dict(original)
+            durable["protection_bundle"] = {
+                "path": str(bundle_path), "sha256": bundle_sha,
+                "manifest_sha256": protected["manifest_sha256"],
+                "captured_source_sha256": protected["captured_source"]["sha256"],
+                "components": protected["components"],
+                "retention_note": protected["retention_note"],
+            }
+            if method == "capsule":
+                durable["capsule"] = {**original["capsule"],
+                                      "path": str(bundle_path), "bundle_member": "capsule.zip"}
+            else:
+                durable["manifest"] = {
+                    "kind": "derived_from_protection_bundle",
+                    "bundle_path": str(bundle_path),
+                    "bundle_manifest_sha256": protected["manifest_sha256"],
+                    "derived_sha256": original["manifest"]["sha256"],
+                }
+                durable["baseline"] = {**original["baseline"],
+                                       "path": str(bundle_path), "bundle_member": "baseline.json"}
+                durable["erasure"] = {**original["erasure"],
+                                      "path": str(bundle_path), "bundle_member": "erasure.zip"}
+            serialized = _encode(durable)
+            if len(serialized) > MAX_REPORT_BYTES:
+                raise RecoveryError("protection restore report exceeds its size limit")
+            with h5py.File(staged_output, "r+") as opened:
+                evidence = opened["/_h5reclaim/report_json"]
+                evidence[()] = serialized.decode("utf-8")
+                opened.flush()
+            durable_report = Path(rep_tmp) / "report.json"
+            durable_report.write_bytes(serialized)
+            with h5py.File(staged_output, "r") as opened:
+                if json.loads(opened["/_h5reclaim/report_json"][()]) != durable:
+                    raise RecoveryError("embedded protection report differs after publication staging")
+            _verify_source(damaged, before_source, damaged_sha)
+            _verify_source(bundle, before_bundle, bundle_sha)
+            _validate_paths(damaged, output, report_path)
+            if any(target.resolve(strict=False) == bundle_path
+                   for target in (output, report_path)):
+                raise RecoveryError("protection output aliases the bundle")
+            published = False
+            try:
+                os.link(staged_output, output)
+                published = True
+                os.link(durable_report, report_path)
+            except Exception:
+                if published:
+                    output.unlink(missing_ok=True)
+                raise
+            return durable
