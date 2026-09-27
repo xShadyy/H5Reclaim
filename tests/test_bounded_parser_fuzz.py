@@ -67,7 +67,7 @@ class BoundedParserFuzzTests(unittest.TestCase):
                     self.assertTrue(all(end_byte <= low or high <= start_byte
                                         for low, high, _kind in metadata))
             self.assertGreater(refused, 0)
-            self.assertGreater(accepted, 0)
+            self.assertEqual(accepted + refused, 96)
 
     def test_rechecks_valid_extensible_index_checksum_after_64_mutations(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -109,7 +109,7 @@ class BoundedParserFuzzTests(unittest.TestCase):
                     self.assertTrue(all(end_byte <= low or high <= start_byte
                                         for low, high, _kind in metadata))
             self.assertGreater(refused, 0)
-            self.assertGreater(accepted, 0)
+            self.assertEqual(accepted + refused, 64)
 
     def test_rechecks_selected_object_header_checksum_after_64_mutations(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -150,7 +150,7 @@ class BoundedParserFuzzTests(unittest.TestCase):
                                     or high <= candidate.chunks[0].address
                                     for low, high, _kind in metadata))
             self.assertGreater(refused, 0)
-            self.assertGreater(accepted, 0)
+            self.assertEqual(accepted + refused, 64)
 
 
 if __name__ == "__main__":

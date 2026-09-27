@@ -47,11 +47,16 @@ the aggregate is not an overall success rate. These fixtures and faults were
 constructed and are not representative of naturally damaged files. They
 cannot support a near-99% claim.
 
-`tests/test_bounded_parser_fuzz.py` makes 224 seeded mutations inside a
-fixed-array data block, extensible-array index block, and selected object
-header, recomputing each affected metadata checksum. It checks that the parser
-either refuses or returns bounded, distinct coordinates and physical extents
-outside metadata. This is a small deterministic regression
+`tests/test_bounded_parser_fuzz.py` and `tests/test_v2_parser_fuzz.py` make
+288 seeded mutations inside a fixed-array data block, extensible-array index
+block, selected object header, and version-two B-tree leaf, recomputing each
+affected metadata checksum. They check that the parser either refuses or
+returns bounded, distinct coordinates and physical extents outside metadata.
+`tests/test_modern_end_to_end_matrix.py` additionally checks public recovery
+for both newer index trees with filters, partial edges, sparse allocations,
+nondefault filter order, per-chunk skipped filters, deeper paths, and corrupted
+metadata. It rereads every asserted ledger pointer from source bytes. This is
+a small deterministic regression
 sampler, not a formal fuzz campaign or proof that all corruptions are safe.
 
 ## Seeded scientific damage matrix
