@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -70,6 +72,19 @@ class ExternalLinkExportTests(unittest.TestCase):
                                       self.output, self.report)
         self.assertEqual(report["dataset"]["path"], "/direct")
         self.assertEqual(report["accepted_elements"], 8)
+
+    def test_public_rescue_command_uses_pinned_target(self) -> None:
+        manifest = self.folder / "related.json"
+        manifest.write_text(json.dumps(self.manifest), encoding="utf-8")
+        completed = subprocess.run([
+            sys.executable, "-m", "h5reclaim", "rescue", str(self.parent),
+            "--dataset", self.dataset_path, "--related-files", str(manifest),
+            "--output", str(self.output), "--report", str(self.report),
+        ], capture_output=True, text=True, timeout=30)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(json.loads(self.report.read_text())["mode"], "external_link_export")
+        with h5py.File(self.output) as handle:
+            np.testing.assert_array_equal(handle["/_h5reclaim/validity"][:], [1, 0, 1])
 
     def test_wrong_pin_refuses_without_publishing(self) -> None:
         self.manifest["files"][0]["sha256"] = "0" * 64
