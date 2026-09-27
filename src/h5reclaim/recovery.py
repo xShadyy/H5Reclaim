@@ -16,12 +16,15 @@ from typing import Any, Iterator
 import h5py
 import numpy as np
 
-from .format import FormatError, H5File
+from .format import FormatError, H5File, SIGNATURE
 from .hints import DatasetHints, compare_hints, require_no_conflicts
 from .metadata import DatasetSpec, UnsupportedCase, read_dataset_spec
+from .snapshot_io import (
+    SnapshotBudget, SnapshotBudgetError, SnapshotSourceChanged, copy_and_hash,
+)
 
 
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 _WINDOWS_STAT = os.name == "nt"
 STATUS_CODES = {
     "recovered": 1,
@@ -31,7 +34,8 @@ STATUS_CODES = {
     "unsupported": 5,
     "decode_failed": 6,
 }
-MAX_SOURCE_BYTES = 128 * 1024 * 1024
+MAX_SOURCE_BYTES = 4 * 1024 * 1024 * 1024
+MAX_SNAPSHOT_SECONDS = 1800.0
 MAX_NODES = 4096
 MAX_CHUNKS = 4096
 
@@ -51,7 +55,7 @@ class ChunkRecord:
     file_address: int
     absolute_offset: int
     length: int
-    leaf_address: int
+    leaf_address: int | None
     route: str
     evidence: dict[str, Any]
     payload: bytes
@@ -167,9 +171,21 @@ def _decode_chunk(raw: bytes, spec: DatasetSpec, filter_mask: int) -> bytes:
 @contextmanager
 def source_snapshot(
     source: Path,
+    *,
+    max_source_bytes: int = MAX_SOURCE_BYTES,
+    max_seconds: float = MAX_SNAPSHOT_SECONDS,
 ) -> Iterator[tuple[Path, str, tuple[int, int, int, int, int], int]]:
-    """Make one bounded private image for consistent HDF5 and raw-parser reads."""
+    """Make one quota-bound, streamed image for HDF5 and raw-parser reads.
+
+    By default the input can be at most 4 GiB. The copy uses at most 1 MiB
+    buffers and checks free disk space against the *logical* source length,
+    including sparse holes. The optional quotas make larger captures an
+    explicit decision by the caller. The input itself is never opened writable.
+    """
     source = Path(source)
+    budget = SnapshotBudget(
+        max_source_bytes=max_source_bytes, max_seconds=max_seconds,
+    )
     if not source.is_file():
         raise RecoveryError(f"input is not a regular file: {source}")
     path_info = source.stat()
@@ -185,26 +201,26 @@ def source_snapshot(
             or not _handle_matches_path(file_info, path_info)
         ):
             raise RecoveryError("input changed while it was being opened")
-        if file_info.st_size > MAX_SOURCE_BYTES:
-            raise UnsupportedCase(f"input exceeds the {MAX_SOURCE_BYTES}-byte limit")
+        if file_info.st_size > budget.max_source_bytes:
+            raise UnsupportedCase(f"input exceeds the {budget.max_source_bytes}-byte limit")
         with tempfile.TemporaryDirectory(prefix="h5reclaim-source-") as directory:
             snapshot = Path(directory) / "source.h5"
-            digest = hashlib.sha256()
-            total = 0
             with snapshot.open("xb") as target:
-                while block := original.read(1024 * 1024):
-                    total += len(block)
-                    if total > MAX_SOURCE_BYTES:
-                        raise UnsupportedCase(f"input exceeds the {MAX_SOURCE_BYTES}-byte limit")
-                    target.write(block)
-                    digest.update(block)
+                try:
+                    source_hash, total = copy_and_hash(
+                        original, target, expected_size=file_info.st_size,
+                        target_parent=snapshot.parent, budget=budget,
+                    )
+                except SnapshotBudgetError as exc:
+                    raise UnsupportedCase(str(exc)) from exc
+                except SnapshotSourceChanged as exc:
+                    raise RecoveryError(str(exc)) from exc
             if total != file_info.st_size:
                 raise RecoveryError("input size changed while making a read-only snapshot")
             if _identity(os.fstat(original.fileno())) != _identity(file_info):
                 raise RecoveryError("opened input changed while making a read-only snapshot")
             if _identity(source.stat()) != identity:
                 raise RecoveryError("input path changed while making a read-only snapshot")
-            source_hash = digest.hexdigest()
             yield snapshot, source_hash, identity, total
 
 
@@ -230,6 +246,22 @@ def _analyze_snapshot(
     size: int,
 ) -> Analysis:
     spec = read_dataset_spec(snapshot, dataset_path)
+    # Select exactly one parser from the superblock version at a documented
+    # signature location. A checksum or layout error in that parser is never
+    # grounds for falling back to another interpretation of the same bytes.
+    with snapshot.open("rb") as version_source:
+        signature_offset = 0
+        while signature_offset + 9 <= size:
+            version_source.seek(signature_offset)
+            head = version_source.read(9)
+            if head[:8] == SIGNATURE:
+                break
+            signature_offset = 512 if signature_offset == 0 else signature_offset * 2
+        else:
+            raise FormatError("HDF5 signature not found at a permitted offset")
+    if head[8] in (2, 3):
+        from .modern_recovery import analyze_modern_snapshot
+        return analyze_modern_snapshot(snapshot, spec, source, before_hash, identity, size)
     grid = spec.chunk_grid
     if int(np.prod(grid)) > MAX_CHUNKS:
         raise UnsupportedCase(f"dataset exceeds the {MAX_CHUNKS}-chunk limit")
@@ -244,8 +276,6 @@ def _analyze_snapshot(
         if layout.chunk_shape != spec.chunks or layout.element_size != element_size:
             raise FormatError("raw layout disagrees with selected dataset metadata")
         root = reader.read_tree(layout.root_address, rank=rank, element_size=element_size)
-        if root.level not in (0, 1):
-            raise UnsupportedCase("this release requires a level-zero or level-one v1 B-tree root")
         walk = reader.walk_tree(
             layout.root_address, rank=rank, element_size=element_size, max_nodes=MAX_NODES
         )
@@ -264,25 +294,33 @@ def _analyze_snapshot(
             )
         else:
             if len(walk.broken_links) > 1:
-                raise UnsupportedCase("this release handles at most one broken child link")
-            for broken in walk.broken_links:
-                if broken.parent_address != root.address:
-                    raise UnsupportedCase("only a broken root-to-leaf link is supported")
-
-            root_entries = {
-                entry.address: i for i, entry in enumerate(root.entries)
-                if entry.address is not None
+                raise UnsupportedCase("this release handles at most one broken leaf link")
+            nodes = {node.address: node for node in walk.nodes}
+            parent_entries = {
+                entry.address: (node.address, slot)
+                for node in walk.nodes if node.level
+                for slot, entry in enumerate(node.entries) if entry.address is not None
             }
+            for broken in walk.broken_links:
+                if nodes[broken.parent_address].level != 1:
+                    raise UnsupportedCase("a missing internal subtree cannot be uniquely located")
+
             for node in walk.nodes:
                 if node.address == root.address:
                     continue
-                if node.level != 0 or node.address not in root_entries:
-                    raise FormatError("unexpected reachable B-tree node or level")
+                if node.address not in parent_entries:
+                    raise FormatError("reachable B-tree node has no unique parent")
+                if node.level:
+                    continue
                 if node.address in leaves:
                     raise FormatError("duplicate reachable leaf")
+                parent_address, parent_slot = parent_entries[node.address]
+                if nodes[parent_address].level != 1:
+                    raise FormatError("leaf's parent has an inconsistent level")
                 leaves[node.address] = (
                     node, "intact_tree",
-                    {"parent_address": root.address, "parent_slot": root_entries[node.address]},
+                    {"root_address": root.address, "root_level": root.level,
+                     "parent_address": parent_address, "parent_slot": parent_slot},
                 )
 
             candidates = reader.find_missing_child_candidates(
@@ -302,6 +340,8 @@ def _analyze_snapshot(
                     leaves[node.address] = (
                         node, "reconstructed_link",
                         {
+                            "root_address": root.address,
+                            "root_level": root.level,
                             "parent_address": broken.parent_address,
                             "parent_slot": broken.entry_index,
                             "left_anchor": _anchor_address(candidate.left_anchor),
@@ -378,6 +418,11 @@ def _analyze_snapshot(
                         f"chunk {coordinate} overlaps parsed {kind} at byte {meta_start}"
                     )
 
+        from .evidence_adapter import build_recovery_evidence
+        ledger = build_recovery_evidence(
+            spec, reader, walk, root, leaves, records,
+            source_sha256=before_hash, decode_chunk=_decode_chunk, failed=failed,
+        )
         root_address = root.address
         reachable_leaves = sum(node.level == 0 for node in walk.nodes)
 
@@ -440,6 +485,7 @@ def _analyze_snapshot(
         "unresolved_links": unresolved,
         "failed_chunks": failed,
         "mappings": mappings,
+        "evidence_ledger": ledger.to_dict(),
         "assumptions": [
             (
                 "one selected dataset; fixed rank-one little-endian IEEE binary64; "
@@ -450,7 +496,7 @@ def _analyze_snapshot(
             (
                 "v1 B-tree with intact level-zero root; no missing payload pointers reconstructed"
                 if root.level == 0 else
-                "v1 B-tree with level-one root; at most one broken root-to-leaf pointer"
+                "v1 B-tree with an anchored root and at most one broken leaf link"
             ),
             (
                 "the selected object header owns the direct level-zero chunk index"
