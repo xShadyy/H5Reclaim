@@ -86,6 +86,7 @@ The JSON report includes source hashes, selected object and index addresses, cou
 - `benchmarks/`: independent reference, native-reader baseline, and exact-placement evaluator.
 - `tests/`: parser boundaries, fixture checks, safety cases, and end-to-end recovery.
 - `docs/`: [technical brief](docs/project-brief.md), [format experiment](docs/structure-plan.md), [current status](docs/status.md), and decision records.
+- [File-by-file guide](docs/file-guide.md): a beginner-friendly map of the repository and its data flow.
 
 The controlled experiment recovered 1,024 of 1,024 chunks at exact coordinates, including 57 whose reads failed with h5py on the damaged copy. The benchmark is reproducible; it is **not** evidence of general recovery reliability, superiority to other tools, or usefulness on an independent user's file. No external tool comparison or real-world case has been completed.
 
