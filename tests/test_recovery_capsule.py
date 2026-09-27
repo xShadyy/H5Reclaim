@@ -179,6 +179,32 @@ class RecoveryCapsuleTests(unittest.TestCase):
         with h5py.File(self.output, "r") as output:
             np.testing.assert_array_equal(output[SELECTED][...], self.expected)
 
+    def test_scientific_attributes_named_like_tool_annotations_are_preserved(self) -> None:
+        with h5py.File(self.healthy, "x", libver="latest") as file:
+            data = file.create_dataset(SELECTED, data=self.values, chunks=(1, 8192))
+            data.attrs["h5reclaim_complete"] = np.uint32(17)
+            data.attrs["h5reclaim_chunk_status"] = np.bytes_("instrument setting")
+            data.attrs["h5reclaim_element_status"] = np.array([8, 13], dtype="<u2")
+            data.attrs["h5reclaim_warning"] = np.bytes_("do not normalize")
+        captured = capture_recovery_capsule(self.healthy, SELECTED, self.capsule)
+        shutil.copyfile(self.healthy, self.damaged)
+        self.corrupt_root()
+        report = self.restore(captured["archive_sha256"])
+        names = ["h5reclaim_chunk_status", "h5reclaim_complete",
+                 "h5reclaim_element_status", "h5reclaim_warning"]
+        self.assertEqual(report["selected_annotation_collisions"], names)
+        with h5py.File(self.healthy, "r") as original, h5py.File(self.output, "r") as restored:
+            source, output = original[SELECTED], restored[SELECTED]
+            for name in names:
+                self.assertTrue(output.attrs.get_id(name).get_type().equal(
+                    source.attrs.get_id(name).get_type()))
+                self.assertEqual(output.attrs.get_id(name).get_space().get_simple_extent_type(),
+                                 source.attrs.get_id(name).get_space().get_simple_extent_type())
+                np.testing.assert_array_equal(np.asarray(output.attrs[name]),
+                                              np.asarray(source.attrs[name]))
+            self.assertTrue(np.all(restored["/_h5reclaim/element_status"][...] == 1))
+            self.assertTrue(np.all(restored["/_h5reclaim/chunk_status"][...] == 1))
+
     def test_tamper_or_wrong_pin_refuses_without_output(self) -> None:
         capture = self.capture()
         with self.capsule.open("ab") as stream:

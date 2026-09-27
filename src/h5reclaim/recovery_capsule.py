@@ -25,6 +25,7 @@ import h5py
 import numpy as np
 
 from .metadata import UnsupportedCase
+from .output_annotations import add_output_annotations
 from .ownership_inventory import inventory_other_allocations, reject_sibling_overlap
 from .readable_export import (
     MAX_BLOCK_BYTES, MAX_DATA_BYTES, MAX_STORED_CHUNK_BYTES, _check_competing_owners,
@@ -510,6 +511,16 @@ def restore_from_capsule(
                     })
                 chunk_validity[...] = status
                 complete = accepted_elements == prod(shape)
+                annotation_values = {
+                    "h5reclaim_chunk_status": "/_h5reclaim/chunk_status",
+                    "h5reclaim_complete": complete,
+                    "h5reclaim_warning": (
+                        "Unknown positions may read as zeros or captured fill values; consult validity."
+                    ),
+                }
+                if use_elements:
+                    annotation_values["h5reclaim_element_status"] = "/_h5reclaim/element_status"
+                annotation_collisions = sorted(name for name in annotation_values if name in selected.attrs)
                 report: dict[str, Any] = {
                     "schema_version": 1, "tool": "h5reclaim", "tool_version": VERSION,
                     "operation": "prospective_recovery_capsule", "execution_state": "finished",
@@ -525,6 +536,7 @@ def restore_from_capsule(
                     "full_chunks": full_chunks, "partial_chunks": partial_chunks,
                     "accepted_elements": accepted_elements,
                     "unknown_elements": prod(shape) - accepted_elements,
+                    "selected_annotation_collisions": annotation_collisions,
                     "validity": {"chunk_status": "/_h5reclaim/chunk_status",
                                  "element_status": "/_h5reclaim/element_status" if use_elements else None,
                                  "codes": {"1": "whole raw chunk matches capture", "2": "not allocated at capture",
@@ -546,13 +558,8 @@ def restore_from_capsule(
                     raise UnsupportedCase("capsule recovery report exceeds the limit")
                 validity.create_dataset("report_json", data=report_bytes.decode("utf-8"),
                                         dtype=h5py.string_dtype("utf-8"))
-                selected.attrs["h5reclaim_chunk_status"] = "/_h5reclaim/chunk_status"
-                if use_elements:
-                    selected.attrs["h5reclaim_element_status"] = "/_h5reclaim/element_status"
-                selected.attrs["h5reclaim_complete"] = complete
-                selected.attrs["h5reclaim_warning"] = (
-                    "Unknown positions may read as zeros or captured fill values; consult validity."
-                )
+                if add_output_annotations(selected, annotation_values) != annotation_collisions:
+                    raise RecoveryError("selected attributes changed during capsule publication")
                 validity.attrs["source_sha256"] = damaged_sha
                 validity.attrs["report_schema_version"] = 1
                 destination.flush()
