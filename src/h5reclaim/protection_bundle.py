@@ -157,7 +157,8 @@ def capture_protection_bundle(
                 archive.write(stage / name, name, compress_type=zipfile.ZIP_STORED)
         if staged_zip.stat().st_size > MAX_BUNDLE_BYTES:
             raise RecoveryError("protection bundle exceeds its size limit")
-        with staged_zip.open("rb") as ready:
+        # Windows FlushFileBuffers (used by fsync) requires a writable handle.
+        with staged_zip.open("r+b") as ready:
             os.fsync(ready.fileno())
         # Verify the staged archive, then check the original once more. Hard
         # linking is an exclusive atomic publication even if another process

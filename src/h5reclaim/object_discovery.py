@@ -27,6 +27,7 @@ from .large_streaming import LargeBudget, _deadline, sparse_snapshot
 from .metadata import UnsupportedCase
 from .metadata_fallback import _messages, _old_messages, _old_root_address, _unique
 from .modern_indexes import ModernH5File, lookup3
+from .native_bindings import public_function
 from .recovery import VERSION, RecoveryError, _verify_source, sha256_file
 
 
@@ -34,23 +35,7 @@ def open_by_address(handle, address):
     """Wrap the installed HDF5 library's public H5Oopen_by_addr API."""
     if type(address) is not int or address < 0:
         raise ValueError("object address must be a nonnegative integer")
-    try:
-        library = ctypes.CDLL(h5py.h5o.__file__)
-        function = library.H5Oopen_by_addr
-    except (OSError, AttributeError) as exc:
-        # Windows wheels may keep HDF5 exports in their package DLL.
-        libraries = list((Path(h5py.__file__).parent.parent / "h5py.libs").glob("*hdf5*.dll"))
-        function = None
-        for path in libraries:
-            try:
-                library = ctypes.CDLL(str(path))
-                function = library.H5Oopen_by_addr
-                break
-            except (OSError, AttributeError):
-                continue
-        if function is None:
-            raise UnsupportedCase("the installed HDF5 library does not expose H5Oopen_by_addr") from exc
-    function.argtypes, function.restype = [ctypes.c_int64, ctypes.c_uint64], ctypes.c_int64
+    function = public_function("H5Oopen_by_addr", [ctypes.c_int64, ctypes.c_uint64], ctypes.c_int64)
     identifier = function(handle.id.id, address)
     if identifier < 0:
         raise RecoveryError("native HDF5 could not open the checked dataset header")
@@ -182,10 +167,13 @@ def detached_view(image):
     try:
         with h5py.File(image, "r") as handle:
             handle["/"]
-        yield Path(image), {"kind": "unmodified_source_image"}
-        return
     except (OSError, RuntimeError, KeyError, ValueError):
         pass
+    else:
+        # Consumer errors must propagate, rather than entering the fallback
+        # and attempting to yield a second time from this context manager.
+        yield Path(image), {"kind": "unmodified_source_image"}
+        return
     with _discovery_reader(image) as reader:
         sb = reader.superblock
         legacy_root = _old_root_address(reader)[0] if sb.version < 2 else None

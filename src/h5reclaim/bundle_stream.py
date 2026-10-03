@@ -31,7 +31,7 @@ def opened_bundle(kind, manifest, budget):
         sources = [(metadata, metadata_pin), (raw, raw_pin)]
     else:
         raise ValueError('unknown bundle driver')
-    with ExitStack() as stack, tempfile.TemporaryDirectory(prefix='h5reclaim-bundle-') as directory:
+    with tempfile.TemporaryDirectory(prefix='h5reclaim-bundle-') as directory, ExitStack() as stack:
         directory = Path(directory)
         captures, sizes, paths = [], [], []
         for number, (source, pin) in enumerate(sources):
