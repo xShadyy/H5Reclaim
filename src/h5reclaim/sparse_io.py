@@ -12,6 +12,10 @@ class _AllocatedRange(ctypes.Structure):
     _fields_ = [("offset", ctypes.c_int64), ("length", ctypes.c_int64)]
 
 
+class _EndOfFileInfo(ctypes.Structure):
+    _fields_ = [("end_of_file", ctypes.c_int64)]
+
+
 _QUERY_ALLOCATED_RANGES = (9 << 16) | (1 << 14) | (51 << 2) | 3
 _SET_SPARSE = (9 << 16) | (49 << 2)
 _MORE_DATA = 234
@@ -59,6 +63,35 @@ def prepare_sparse_file(fd: int) -> None:
         ok, error, _ = _device_io(fd, _SET_SPARSE, None, None)
         if not ok:
             raise _io_error(error, "sparse-file setup")
+
+
+@lru_cache(maxsize=1)
+def _set_file_information():
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    function = kernel.SetFileInformationByHandle
+    function.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
+    function.restype = wintypes.BOOL
+    return function
+
+
+def truncate_sparse_file(fd: int, size: int) -> None:
+    """Resize a private sparse file without writing zeros into its holes.
+
+    Flush any buffered writes and call prepare_sparse_file before extending.
+    Windows CRT truncation writes zeros on extension, allocating sparse holes;
+    FileEndOfFileInfo changes the length without moving the file position.
+    """
+    if type(size) is not int or not 0 <= size < 1 << 63:
+        raise ValueError("sparse file size must be a nonnegative signed 64-bit integer")
+    if os.name != "nt":
+        os.ftruncate(fd, size)
+        return
+    import msvcrt
+    info = _EndOfFileInfo(size)
+    if not _set_file_information()(msvcrt.get_osfhandle(fd), 6,
+                                   ctypes.byref(info), ctypes.sizeof(info)):
+        raise _io_error(ctypes.get_last_error(), "sparse-file resize")
 
 
 def _windows_extents(fd: int, size: int):

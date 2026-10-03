@@ -31,7 +31,7 @@ from .metadata import UnsupportedCase
 from .native_io import read_fixed_block, write_fixed_block
 from .native_addresses import chunk_address
 from .ownership_inventory import inventory_other_allocations
-from .sparse_io import has_sparse_extents, prepare_sparse_file, sparse_extents
+from .sparse_io import has_sparse_extents, prepare_sparse_file, sparse_extents, truncate_sparse_file
 from .readable_export import (
     NATIVE_FILTERS, _create_matching_dataset, _require_no_competing_owner,
     _safe_export_attributes, _safe_fixed_type, _selected_dataset,
@@ -168,12 +168,12 @@ def _copy_sparse(source, target, *, size: int, parent: Path,
     try:
         first = next(extents, None)
         prepare_sparse_file(target.fileno())
+        truncate_sparse_file(target.fileno(), size)
     except OSError as exc:
         if exc.errno in (errno.EINVAL, errno.ENOTSUP, errno.ENOSYS):
             return _copy_dense(source, target, size=size, parent=parent,
                                budget=budget, deadline=deadline)
         raise UnsupportedCase("sparse extent lookup failed; input was not copied") from exc
-    target.truncate(size)
     from itertools import chain
     for data_start, hole_start in chain(() if first is None else (first,), extents):
         _deadline(deadline)

@@ -4,14 +4,16 @@ import ctypes
 import errno
 import hashlib
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from h5reclaim.large_streaming import LargeBudget, sparse_snapshot
 from h5reclaim import sparse_io
-from h5reclaim.sparse_io import prepare_sparse_file, sparse_extents
+from h5reclaim.sparse_io import prepare_sparse_file, sparse_extents, truncate_sparse_file
 
 
 class WindowsAllocatedRangeTests(unittest.TestCase):
@@ -57,6 +59,34 @@ class WindowsAllocatedRangeTests(unittest.TestCase):
                 list(sparse_io._windows_extents(1, 4096))
 
 
+class SparseResizeTests(unittest.TestCase):
+    def test_windows_native_resize_preserves_64_bit_length_without_crt_writes(self):
+        calls = []
+
+        def resize(handle, info_class, info, info_bytes):
+            length = ctypes.cast(info, ctypes.POINTER(sparse_io._EndOfFileInfo)).contents.end_of_file
+            calls.append((handle, info_class, length, info_bytes))
+            return True
+
+        windows = SimpleNamespace(get_osfhandle=lambda fd: 12345)
+        with patch("h5reclaim.sparse_io.os.name", "nt"), patch.dict(sys.modules, msvcrt=windows), \
+                patch("h5reclaim.sparse_io._set_file_information", return_value=resize), \
+                patch("h5reclaim.sparse_io.os.ftruncate") as crt:
+            truncate_sparse_file(7, 4 * 1024**3 + 17)
+        self.assertEqual(calls, [(12345, 6, 4 * 1024**3 + 17, 8)])
+        crt.assert_not_called()
+
+    def test_windows_resize_errors_are_propagated(self):
+        windows = SimpleNamespace(get_osfhandle=lambda fd: 12345)
+        with patch("h5reclaim.sparse_io.os.name", "nt"), patch.dict(sys.modules, msvcrt=windows), \
+                patch("h5reclaim.sparse_io._set_file_information", return_value=lambda *args: False), \
+                patch("ctypes.get_last_error", return_value=5, create=True):
+            with self.assertRaises(OSError) as raised:
+                truncate_sparse_file(7, 4096)
+        self.assertEqual(raised.exception.errno, errno.EIO)
+        self.assertEqual(raised.exception.winerror, 5)
+
+
 class SparseCaptureTests(unittest.TestCase):
     def test_sparse_capture_preserves_holes_and_hashes_all_logical_bytes(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -64,6 +94,7 @@ class SparseCaptureTests(unittest.TestCase):
             size = 16 * 1024**2 + 17
             with source.open("w+b") as file:
                 prepare_sparse_file(file.fileno())
+                truncate_sparse_file(file.fileno(), size)
                 file.write(b"header")
                 file.seek(size - 4)
                 file.write(b"tail")
@@ -72,6 +103,9 @@ class SparseCaptureTests(unittest.TestCase):
                 self.assertEqual(digest, before)
                 self.assertEqual(captured, size)
                 self.assertLess(copied, 1024**2)
+                with image.open("rb") as captured_file:
+                    allocated = sum(end - start for start, end in sparse_extents(captured_file.fileno(), size))
+                self.assertLess(allocated, 1024**2)
                 self.assertEqual(hashlib.sha256(image.read_bytes()).hexdigest(), before)
             self.assertEqual(hashlib.sha256(source.read_bytes()).hexdigest(), before)
 
