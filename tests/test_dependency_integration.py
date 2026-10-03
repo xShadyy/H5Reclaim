@@ -6,7 +6,6 @@ import contextlib
 import hashlib
 import io
 import json
-import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,6 +16,7 @@ import numpy as np
 
 from h5reclaim.__main__ import main
 from h5reclaim.diagnose import diagnose
+from tools.make_status_fixture import copy_with_write_flag
 
 
 class DependencyIntegrationTests(unittest.TestCase):
@@ -61,8 +61,7 @@ class DependencyIntegrationTests(unittest.TestCase):
             flagged = folder / "interrupted.h5"
             with h5py.File(written, "x", libver="latest") as handle:
                 handle.create_dataset("readings", data=np.arange(4))
-                handle.flush()
-                shutil.copyfile(written, flagged)
+            copy_with_write_flag(written, flagged)
             before = flagged.read_bytes()
             report = diagnose(flagged, "/readings")
             self.assertEqual(report["condition"], "metadata_unreadable")
@@ -79,8 +78,7 @@ class DependencyIntegrationTests(unittest.TestCase):
             flagged = folder / "interrupted.h5"
             with h5py.File(written, "x", libver="latest") as handle:
                 handle.create_dataset("readings", data=np.arange(4))
-                handle.flush()
-                shutil.copyfile(written, flagged)
+            copy_with_write_flag(written, flagged)
             before = flagged.read_bytes()
             stdout = io.StringIO()
             with patch("h5reclaim.dependency_routes.shutil.which", return_value=None), \

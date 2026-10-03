@@ -13,6 +13,8 @@ The recovery suite includes structural parsers, codecs, sparse allocation, tail 
 
 `tests/test_universality.py` covers automatic decoder fallback, partial native chunks, empty/null dataspaces, compound variable fields, cross-object and region references, reference attributes, packaged lossless codecs, detached-header discovery, shared snapshots, configured budgets, pinned whole-file dependencies and completed-dataset checkpoint reuse. CI checks Linux, Windows and macOS on Python 3.10, 3.12 and 3.14, plus the declared minimum h5py and NumPy versions.
 
+Platform regressions in `tests/test_platform_io.py`, `test_sparse_io.py` and `test_posix_worker_limits.py` check packaged HDF5 exports, native handle cleanup, allocated-range pagination, sparse captures and worker memory/timeout cleanup. Status-flag fixtures modify a closed writer's superblock and checksum so they run with Windows file locking enabled.
+
 `tests/test_completion.py` and `tests/test_completion_streaming.py` check healthy namespace collisions, 300 attributes, large/null attributes, committed type identity, legacy root damage, additional codecs, interrupted selection caches, 70,000-value virtual mappings, growing numbered sources, overlapping mappings, long paths, 128-bit file integers, whole Family/Split exports and file-scoped references. The application CI job installs independent application writers and readers.
 
 ## Scientific-file evaluations

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 import tempfile
 import unittest
@@ -24,6 +23,7 @@ from h5reclaim.dependency_routes import (
     probe_status_copy,
     validate_dependency_manifest,
 )
+from tools.make_status_fixture import copy_with_write_flag
 
 
 class StatusAndDependencyTests(unittest.TestCase):
@@ -132,8 +132,7 @@ class StatusAndDependencyTests(unittest.TestCase):
             damaged = folder / "flagged-copy.h5"
             with h5py.File(writer_file, "x", libver="latest") as handle:
                 handle.create_dataset("readings", data=np.arange(4))
-                handle.flush()
-                shutil.copyfile(writer_file, damaged)
+            copy_with_write_flag(writer_file, damaged)
             before = damaged.read_bytes()
             self.assertEqual(before[8], 3)
             self.assertEqual(before[11] & 1, 1)
@@ -165,8 +164,7 @@ class StatusAndDependencyTests(unittest.TestCase):
             flagged = folder / "flagged.h5"
             with h5py.File(healthy, "x", libver="latest") as handle:
                 handle.create_dataset("readings", data=np.arange(4))
-                handle.flush()
-                shutil.copyfile(healthy, flagged)
+            copy_with_write_flag(healthy, flagged)
             original = flagged.read_bytes()
             closed = healthy.read_bytes()
             self.assertEqual(len(original), len(closed))
