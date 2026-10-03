@@ -32,11 +32,11 @@ from .recovery import _verify_source, sha256_file, source_snapshot
 
 
 SIGNATURE = b"\x89HDF\r\n\x1a\n"
-MAX_DEPENDENCIES = 64
-MAX_NAME_CHARS = 512
+MAX_DEPENDENCIES = 100_000
+MAX_NAME_CHARS = 4096
 MAX_ERROR_CHARS = 240
 PROBE_TIMEOUT_SECONDS = 30
-MAX_MANIFEST_BYTES = 64 * 1024
+MAX_MANIFEST_BYTES = 64 * 1024**2
 MAX_BUNDLE_BYTES = 4 * 1024 * 1024 * 1024
 
 
@@ -237,7 +237,7 @@ def load_dependency_manifest(path: str | Path) -> dict[str, Any]:
         with path.open("rb") as handle:
             raw = handle.read(MAX_MANIFEST_BYTES + 1)
         if len(raw) > MAX_MANIFEST_BYTES:
-            raise DependencyError("related-file manifest exceeds 64 KiB")
+            raise DependencyError("related-file manifest exceeds 64 MiB")
         document = json.loads(raw.decode("utf-8"), object_pairs_hook=_manifest_pairs)
     except (UnicodeError, json.JSONDecodeError) as exc:
         raise DependencyError(f"invalid related-file manifest: {_short(exc)}") from exc
@@ -246,8 +246,8 @@ def load_dependency_manifest(path: str | Path) -> dict[str, Any]:
     if type(document["schema_version"]) is not int or document["schema_version"] != 1:
         raise DependencyError("unsupported related-file manifest version")
     files = document["files"]
-    if not isinstance(files, list) or not 1 <= len(files) <= MAX_DEPENDENCIES:
-        raise DependencyError(f"manifest must list between 1 and {MAX_DEPENDENCIES} files")
+    if not isinstance(files, list) or len(files) > MAX_DEPENDENCIES:
+        raise DependencyError(f"manifest must list at most {MAX_DEPENDENCIES} files")
     seen = set()
     for item in files:
         if not isinstance(item, dict) or set(item) != {"declared_name", "path", "sha256"}:

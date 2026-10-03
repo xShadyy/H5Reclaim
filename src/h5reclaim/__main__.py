@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import tempfile
 import textwrap
 from collections import Counter
 from dataclasses import asdict
@@ -127,7 +128,7 @@ def _render_survey(report: dict) -> str:
 def _render_inspect(summary: dict) -> str:
     dataset, index, counts = summary["dataset"], summary["index"], summary["counts"]
     total = sum(counts.values())
-    filter_names = {3: "Fletcher32", 2: "shuffle", 1: "DEFLATE"}
+    filter_names = {3: "Fletcher32", 2: "shuffle", 1: "DEFLATE", 32000: "LZF"}
     filters = ", ".join(filter_names.get(item, f"filter {item}")
                         for item in dataset["filters"]) or "none"
     if index.get("root_level") is None:
@@ -239,6 +240,15 @@ def _render_diagnose(report: dict) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="h5reclaim")
     commands = parser.add_subparsers(dest="command", required=True)
+    manifest_cmd = commands.add_parser("related-manifest", help="find and hash declared companion files in a supplied directory")
+    manifest_cmd.add_argument("source", type=Path)
+    manifest_cmd.add_argument("--directory", required=True, type=Path)
+    manifest_cmd.add_argument("--output", required=True, type=Path)
+    manifest_cmd.add_argument("--streaming-budget", type=Path)
+    discover_cmd = commands.add_parser("discover", help="find surviving legacy and modern dataset headers despite damaged group links")
+    discover_cmd.add_argument("source", type=Path)
+    discover_cmd.add_argument("--json", action="store_true", help="print complete object-address discovery metadata")
+    discover_cmd.add_argument("--streaming-budget", type=Path, help="JSON source, scan and time budgets")
     diagnose_cmd = commands.add_parser("diagnose", help="classify a file without reading measurements or attempting recovery")
     diagnose_cmd.add_argument("source", type=Path)
     diagnose_cmd.add_argument("--dataset", help="local dataset path to assess")
@@ -337,18 +347,29 @@ def main(argv: list[str] | None = None) -> int:
     drill_cmd.add_argument("source", type=Path)
     drill_cmd.add_argument("--manifest-sha256", required=True)
     rescue_cmd = commands.add_parser(
-        "rescue", help="select a bounded recovery route and publish an output with validity evidence",
+        "rescue", help="recover one dataset or discover and recover the whole file",
     )
     rescue_cmd.add_argument("source", type=Path, help="damaged HDF5 file, or member zero for a Family bundle")
-    rescue_cmd.add_argument("--dataset", required=True, help="absolute selected HDF5 dataset path")
+    selection = rescue_cmd.add_mutually_exclusive_group()
+    selection.add_argument("--dataset", help="absolute selected HDF5 dataset path")
+    selection.add_argument("--all", action="store_true", help="recover all discovered local datasets (the default without --dataset)")
     rescue_cmd.add_argument("--output", required=True, type=Path)
     rescue_cmd.add_argument("--report", required=True, type=Path)
     rescue_cmd.add_argument("--strict-history", action="store_true",
                             help="publish only when a separately pinned prior capture verifies every accepted unit")
     rescue_cmd.add_argument("--no-context-audit", action="store_true",
                             help="skip the bounded audit of omitted attributes, units, scales, groups, and links")
+    rescue_cmd.add_argument("--streaming-budget", type=Path,
+                            help="JSON object configuring source, copy, output, chunk and time budgets for streaming")
+    rescue_cmd.add_argument("--resume-dir", type=Path,
+                            help="reuse completed datasets and native chunks or contiguous blocks after interruption")
+    rescue_cmd.add_argument("--hints", type=Path,
+                            help="expected dataset shape/type JSON, checked against observed metadata")
     choices = rescue_cmd.add_mutually_exclusive_group()
+    choices.add_argument("--object-address", type=lambda value: int(value, 0),
+                         help="recover a checked detached legacy or modern dataset header at this address")
     choices.add_argument("--related-files", type=Path, help="pinned manifest for external raw or virtual datasets")
+    choices.add_argument("--related-dir", type=Path, help="find and hash declared companion files inside this directory")
     choices.add_argument("--family-members", type=Path, help="pinned HDF5 Family member manifest")
     choices.add_argument("--split-members", type=Path, help="pinned HDF5 Split metadata and raw member manifest")
     choices.add_argument("--replicas", type=Path, help="pinned replica manifest and prospective baseline")
@@ -373,10 +394,24 @@ def main(argv: list[str] | None = None) -> int:
     choices.add_argument("--truncated-chunks", action="store_true",
                          help="retain complete rooted chunks before a physical tail truncation")
     choices.add_argument("--large-readable", action="store_true",
-                         help="bounded streaming export of a large currently native-readable numeric dataset")
+                         help="stream currently native-readable multidimensional fixed records")
     choices.add_argument("--large-structural", action="store_true",
                          help="stream one checked damaged fixed-array pointer in a large sparse numeric dataset")
     args = parser.parse_args(argv)
+
+    if args.command == "related-manifest":
+        try:
+            from .large_streaming import LargeBudget
+            from .related_manifest import build_related_manifest
+            options = json.loads(args.streaming_budget.read_text(encoding="utf-8")) if args.streaming_budget else {}
+            result = build_related_manifest(args.source, args.directory, args.output, budget=LargeBudget(**options))
+            print(f"Pinned {len(result['manifest']['files'])} companion files: {_display_path(args.output, 240)}")
+            for item in result['unresolved']:
+                print(f"Unresolved: {_display_path(item['declared_name'])}: {item['reason']}")
+            return 0
+        except (FormatError, UnsupportedCase, RecoveryError, OSError, ValueError, RuntimeError, TypeError) as exc:
+            print(f"h5reclaim: manifest creation failed: {_display_path(exc, 300)}", file=sys.stderr)
+            return 2
 
     if args.command == "capture-baseline":
         try:
@@ -489,10 +524,95 @@ def main(argv: list[str] | None = None) -> int:
             print(f"h5reclaim: protection verification failed: {_display_path(exc, 300)}", file=sys.stderr)
             return 2
 
+    if args.command == "discover":
+        try:
+            from .object_discovery import discover
+            from .large_streaming import LargeBudget
+            options = {}
+            if args.streaming_budget:
+                if args.streaming_budget.stat().st_size > 65536:
+                    raise RecoveryError("discovery budget JSON exceeds 64 KiB")
+                options = json.loads(args.streaming_budget.read_text(encoding="utf-8"))
+            report = discover(args.source, budget=LargeBudget(**options))
+            if args.json:
+                print(json.dumps(report, indent=2, sort_keys=True))
+            else:
+                print(f"H5Reclaim object discovery | {len(report['datasets'])} checked dataset headers")
+                for entry in report["datasets"]:
+                    print(f"Object {entry['address']:#x} | shape {_dimensions(entry['shape'])} | dtype {entry['dtype']}")
+                print("Original paths remain unknown. Use rescue --object-address ADDRESS --dataset OUTPUT_PATH to export a checked object.")
+            return 0
+        except (FormatError, UnsupportedCase, RecoveryError, OSError, ValueError, RuntimeError, TypeError) as exc:
+            print(f"h5reclaim: discovery failed: {_display_path(exc, 300)}", file=sys.stderr)
+            return 2
+
     if args.command == "rescue":
         try:
             source = str(args.source.absolute())
+            streaming_budget = None
+            if args.streaming_budget is not None:
+                from .large_streaming import LargeBudget
+                if args.streaming_budget.stat().st_size > 65536:
+                    raise RecoveryError("streaming budget JSON exceeds 64 KiB")
+                streaming_budget = json.loads(args.streaming_budget.read_text(encoding="utf-8"))
+                if not isinstance(streaming_budget, dict):
+                    raise RecoveryError("streaming budget must be a JSON object")
+                LargeBudget(**streaming_budget)
+            if args.related_dir is not None:
+                from .related_manifest import build_related_manifest
+                from .large_streaming import LargeBudget
+                with tempfile.TemporaryDirectory(prefix=".h5reclaim-related-", dir=args.report.parent) as directory:
+                    manifest_path = Path(directory) / "related-files.json"
+                    result = build_related_manifest(args.source, args.related_dir, manifest_path,
+                                                    budget=LargeBudget(**(streaming_budget or {})))
+                    for item in result["unresolved"]:
+                        print(f"Unresolved companion: {_display_path(item['declared_name'])}: {item['reason']}")
+                    forwarded, skip = [], False
+                    for argument in (argv if argv is not None else sys.argv[1:]):
+                        if skip:
+                            skip = False
+                        elif argument == "--related-dir":
+                            skip = True
+                        elif not argument.startswith("--related-dir="):
+                            forwarded.append(argument)
+                    if result["manifest"]["files"]:
+                        forwarded.extend(["--related-files", str(manifest_path)])
+                    return main(forwarded)
+            if args.dataset is None:
+                explicit = (args.object_address is not None, args.replicas,
+                            args.parity, args.erasure, args.capsule, args.protection_bundle,
+                            args.element_baseline, args.chunk_baseline, args.metadata_trial,
+                            args.status_trial, args.truncated_chunks, args.large_readable, args.large_structural,
+                            args.element_baseline_sha256, args.chunk_baseline_sha256, args.capsule_sha256,
+                            args.protection_manifest_sha256)
+                if any(explicit):
+                    raise RecoveryError("an explicit recovery route or prior capture requires --dataset")
+                if args.hints is not None:
+                    raise RecoveryError("--hints requires --dataset")
+                if args.strict_history:
+                    raise UnsupportedCase("strict historical integrity requires a separately retained prior capture and --dataset")
+                from .whole_file import rescue_all
+                report = rescue_all(args.source, args.output, args.report, streaming_budget=streaming_budget,
+                                    related_files=args.related_files, resume_dir=args.resume_dir,
+                                    _bundle_kind="family" if args.family_members else "split" if args.split_members else None,
+                                    _bundle_manifest=args.family_members or args.split_members)
+                print(f"H5Reclaim whole-file rescue | {report['outcome']} | "
+                      f"{report['datasets_exported']}/{report['datasets_discovered']} datasets exported")
+                for failure in report["failures"]:
+                    print(f"Unresolved: {_display_path(failure['path'])}: {_display_path(failure['reason'], 240)}")
+                print(f"Output: {_display_path(args.output, 240)}")
+                print(f"Evidence report: {_display_path(args.report, 240)}")
+                print(f"Check each dataset's status map under {report['metadata_group']}/datasets before using its values.")
+                return 0
             def run_rescue(route: str, output: Path, report_path: Path, **kwargs: str) -> dict:
+                if streaming_budget is not None:
+                    kwargs["streaming_budget"] = json.dumps(streaming_budget)
+                if args.hints is not None:
+                    kwargs["hints"] = str(args.hints.absolute())
+                if args.resume_dir is not None:
+                    if route not in ("native_family", "native_split"):
+                        raise RecoveryError("selection checkpoints require automatic dataset recovery or Family/Split export")
+                    kwargs["resume_dir"] = str(args.resume_dir.absolute())
                 return run_route(
                     route, output, report_path, strict_history=args.strict_history,
                     annotate_history=True, audit_science_context=not args.no_context_audit,
@@ -572,15 +692,19 @@ def main(argv: list[str] | None = None) -> int:
                 _, members = _manifest(args.family_members)
                 if args.source.resolve(strict=True) != Path(members[0]["path"]).resolve(strict=True):
                     raise RecoveryError("Family source argument must be manifest member zero")
-                report = run_rescue("family", args.output, args.report,
+                report = run_rescue("native_family", args.output, args.report,
                                    dataset=args.dataset, manifest=str(args.family_members.absolute()))
             elif args.split_members is not None:
                 from .split_bundle import _load_manifest
                 metadata, _, _, _ = _load_manifest(args.split_members)
                 if args.source.resolve(strict=True) != metadata.resolve(strict=True):
                     raise RecoveryError("Split source argument must be the metadata member")
-                report = run_rescue("split", args.output, args.report,
+                report = run_rescue("native_split", args.output, args.report,
                                    dataset=args.dataset, manifest=str(args.split_members.absolute()))
+            elif args.object_address is not None:
+                report = run_rescue("object", args.output, args.report, source=source,
+                    dataset=args.dataset, object_address=hex(args.object_address),
+                    **({"hints": str(args.hints.absolute())} if args.hints else {}))
             elif args.related_files is not None:
                 inventory = inspect_dependencies(args.source, args.dataset)
                 kinds = {item["kind"] for item in inventory["dependencies"]}
@@ -597,22 +721,11 @@ def main(argv: list[str] | None = None) -> int:
                 report = run_rescue(route, args.output, args.report, source=source,
                                    dataset=args.dataset, manifest=str(args.related_files.absolute()))
             else:
-                try:
-                    report = run_rescue("structural", args.output, args.report,
-                                       source=source, dataset=args.dataset)
-                except UnsupportedCase as chunked_error:
-                    try:
-                        report = run_rescue("nonchunked", args.output, args.report,
-                                           source=source, dataset=args.dataset)
-                    except RecoveryError as nonchunked_error:
-                        try:
-                            report = run_rescue("readable", args.output, args.report,
-                                                source=source, dataset=args.dataset)
-                        except (RecoveryError, UnsupportedCase) as readable_error:
-                            raise UnsupportedCase(
-                                f"chunked route: {chunked_error}; compact/contiguous route: "
-                                f"{nonchunked_error}; native-readable route: {readable_error}"
-                            ) from readable_error
+                from .rescue import auto_rescue
+                report = auto_rescue(args.source, args.dataset, args.output, args.report,
+                                     strict_history=args.strict_history,
+                                     audit_science_context=not args.no_context_audit,
+                                     streaming_budget=streaming_budget, hints=args.hints, resume_dir=args.resume_dir)
             accepted = report.get("accepted_elements")
             if accepted is None and report.get("validity", {}).get("dataset") == "/_h5reclaim/element_status":
                 accepted = report.get("counts", {}).get("recovered", 0)
@@ -631,6 +744,8 @@ def main(argv: list[str] | None = None) -> int:
                 print("Route: single metadata pointer correction on a disposable copy, then readable export; historical values are unverified.")
             elif report.get("mode") == "large_native_readable_export":
                 print("Route: streamed copy of currently native-readable values; no damaged index was reconstructed.")
+            elif report.get("mode") == "variable_native_readable_export":
+                print("Route: native-readable variable elements, individually checked against the derived output.")
             print(f"Output: {_display_path(args.output, 240)}")
             print(f"Evidence report: {_display_path(args.report, 240)}")
             integrity = report.get("historical_integrity")

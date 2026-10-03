@@ -8,8 +8,11 @@ import json
 import tempfile
 import unittest
 import zipfile
+import os
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from h5reclaim.evidence import (
     ChecksumEvidence, ChunkProposal, DatasetAnchor, EvidenceCheck, IndexLink,
@@ -151,6 +154,44 @@ class EvidenceTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "only unresolved"):
                 export_unassigned_fragments(self.ledger(), {"damaged": source_path}, Path(directory) / "accepted.zip",
                                             proposal_ids=["candidate-a"])
+
+    def test_fragment_export_accepts_distinct_windows_stat_identifiers(self) -> None:
+        report = self.ledger(proposals=[replace(self.proposal, index_link_ids=())])
+        real_fstat = os.fstat
+
+        def descriptor_stat(fd):
+            info = real_fstat(fd)
+            return SimpleNamespace(st_mode=info.st_mode, st_size=info.st_size,
+                st_dev=info.st_dev + 100, st_ino=info.st_ino + 100,
+                st_mtime_ns=info.st_mtime_ns + 100, st_ctime_ns=info.st_ctime_ns + 100)
+
+        with tempfile.TemporaryDirectory() as directory:
+            source, output = Path(directory) / "source.h5", Path(directory) / "fragments.zip"
+            source.write_bytes(self.raw)
+            with patch("h5reclaim.evidence.os.fstat", side_effect=descriptor_stat), \
+                    patch("h5reclaim.recovery._WINDOWS_STAT", True):
+                export_unassigned_fragments(report, {"damaged": source}, output)
+            with zipfile.ZipFile(output) as archive:
+                self.assertEqual(archive.read("fragments/0000.bin"), self.raw[64:68])
+
+    def test_fragment_publication_rehashes_path_even_when_metadata_is_unchanged(self) -> None:
+        report = self.ledger(proposals=[replace(self.proposal, index_link_ids=())])
+        real_zip = zipfile.ZipFile
+        with tempfile.TemporaryDirectory() as directory:
+            source, output = Path(directory) / "source.h5", Path(directory) / "fragments.zip"
+            source.write_bytes(self.raw)
+
+            def create_zip(*args, **kwargs):
+                source.write_bytes(b"x" + self.raw[1:])
+                return real_zip(*args, **kwargs)
+
+            # Simulate a filesystem whose metadata precision misses this edit.
+            with patch("h5reclaim.recovery._identity", return_value=(1, 2, len(self.raw), 4, 5)), \
+                    patch("h5reclaim.evidence.zipfile.ZipFile", side_effect=create_zip):
+                with self.assertRaisesRegex(ValueError, "before fragment publication"):
+                    export_unassigned_fragments(report, {"damaged": source}, output)
+            self.assertFalse(output.exists())
+            self.assertEqual(list(Path(directory).glob(".h5reclaim-fragments-*")), [])
 
     def test_invalid_fragment_digest_or_outside_extent_cannot_publish(self) -> None:
         wrong_digest = replace(self.proposal, index_link_ids=(), raw_sha256="0" * 64)

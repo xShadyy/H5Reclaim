@@ -1,0 +1,101 @@
+{
+  "application_readers": {
+    "cases": 6,
+    "formats": [
+      "MATLAB 7.3",
+      "netCDF4",
+      "NWB"
+    ],
+    "report": "v014-application-readers.json",
+    "sources_unchanged": true,
+    "wrong_accepted_elements": 0
+  },
+  "ci_configured": {
+    "executed_remote_matrix_during_this_run": false,
+    "python": [
+      "3.10",
+      "3.12",
+      "3.14"
+    ],
+    "systems": [
+      "Linux",
+      "Windows",
+      "macOS"
+    ]
+  },
+  "current_environment": {
+    "h5py": "3.16.0",
+    "hdf5": "2.0.0",
+    "hdf5plugin": "7.1.0",
+    "machine": "x86_64",
+    "numpy": "2.3.5",
+    "platform": "Linux",
+    "python": "3.12.14"
+  },
+  "date": "2026-10-02",
+  "final_checkpoint_lock_checks": {
+    "current": 2,
+    "minimum": 2,
+    "status": "passed"
+  },
+  "gwosc_controlled_damage": {
+    "reconstructed_link_chunks": 57,
+    "recovered_chunks": 128,
+    "report": "v014-gwosc-controlled.json",
+    "source_unchanged": true,
+    "wrong_bit_chunks": 0
+  },
+  "installed_wheel": {
+    "file": "h5reclaim-0.14.0-py3-none-any.whl",
+    "passed": true,
+    "report": "v014-installed-wheel.json",
+    "sha256": "bc616719f203dcdea1f9ba06c477213055d987b92ef4c5d8364e857a7fa7d0ad"
+  },
+  "minimum_environment": {
+    "h5py": "3.10.0",
+    "hdf5": "1.14.2",
+    "numpy": "1.26.0",
+    "python": "3.12.14"
+  },
+  "regression_suites": {
+    "current": {
+      "collected": 642,
+      "passed": 639,
+      "seconds": 258.495,
+      "skipped": 3,
+      "status": "passed"
+    },
+    "evaluators": {
+      "collected": 9,
+      "passed": 9,
+      "seconds": 16.457,
+      "skipped": 0,
+      "status": "passed"
+    },
+    "minimum": {
+      "collected": 642,
+      "passed": 636,
+      "seconds": 182.603,
+      "skipped": 6,
+      "status": "passed"
+    }
+  },
+  "scientific_intact": {
+    "attributes": 253,
+    "datasets": 251,
+    "exact": true,
+    "files": 4,
+    "report": "v014-scientific-whole.json",
+    "sources_unchanged": true
+  },
+  "skip_reasons": {
+    "current": [
+      "3 native Windows Job Object tests on Linux"
+    ],
+    "minimum": [
+      "3 native Windows Job Object tests on Linux",
+      "3 optional application-reader tests without those packages"
+    ]
+  },
+  "version": "0.14.0"
+}

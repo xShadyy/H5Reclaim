@@ -1,0 +1,35 @@
+{
+  "checks": [
+    "CLI outside source checkout",
+    "300 attributes",
+    "128 KiB attribute",
+    "null attribute and dataset",
+    "shared committed type",
+    "object reference",
+    "hard-link alias",
+    "source-owned metadata name",
+    "Unicode variable strings",
+    "user block",
+    "unchanged source",
+    "embedded report",
+    "whole-file resume"
+  ],
+  "h5py": "3.10.0",
+  "hdf5": "1.14.2",
+  "imported_from_installed_wheel": true,
+  "numpy": "1.26.0",
+  "passed": true,
+  "runs": [
+    {
+      "datasets_exported": 5,
+      "datasets_reused": 0,
+      "outcome": "complete"
+    },
+    {
+      "datasets_exported": 5,
+      "datasets_reused": 5,
+      "outcome": "complete"
+    }
+  ],
+  "version": "0.14.0"
+}

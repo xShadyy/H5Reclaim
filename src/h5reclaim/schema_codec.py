@@ -28,8 +28,9 @@ MAX_DATATYPE_ENCODING_BYTES = 16 * 1024
 MAX_DATATYPE_MEMBERS = 64
 MAX_DATATYPE_DEPTH = 4
 KNOWN_FILTERS = frozenset((h5py.h5z.FILTER_SHUFFLE,
-                            h5py.h5z.FILTER_DEFLATE,
-                            h5py.h5z.FILTER_FLETCHER32))
+                             h5py.h5z.FILTER_DEFLATE,
+                             h5py.h5z.FILTER_FLETCHER32,
+                             h5py.h5z.FILTER_LZF))
 
 
 class SchemaError(ValueError):
@@ -238,7 +239,8 @@ def _pipeline(spec: object) -> tuple[FilterDescriptor, ...]:
         result.append(FilterDescriptor(
             identifier,
             h5py.h5z.FLAG_OPTIONAL if identifier in
-            (h5py.h5z.FILTER_DEFLATE, h5py.h5z.FILTER_SHUFFLE) else 0,
+             (h5py.h5z.FILTER_DEFLATE, h5py.h5z.FILTER_SHUFFLE,
+              h5py.h5z.FILTER_LZF) else 0,
             (np.dtype(spec.dtype).itemsize,) if identifier == h5py.h5z.FILTER_SHUFFLE
             else (6,) if identifier == h5py.h5z.FILTER_DEFLATE else (),
         ))
@@ -266,8 +268,9 @@ def validate_stored_size(spec: object, stored_size: int, mask: int) -> None:
         raise ChunkDecodeError("stored chunk exceeds the bounded 2 MiB limit")
     active = tuple(filter_ for index, filter_ in enumerate(pipeline)
                    if not mask & (1 << index))
-    if not any(filter_.id not in KNOWN_FILTERS or filter_.id == h5py.h5z.FILTER_DEFLATE
-               for filter_ in active):
+    if not any(filter_.id not in KNOWN_FILTERS or filter_.id in
+               (h5py.h5z.FILTER_DEFLATE, h5py.h5z.FILTER_LZF)
+                for filter_ in active):
         expected = chunk_bytes + 4 * sum(
             filter_.id == h5py.h5z.FILTER_FLETCHER32 for filter_ in active
         )
@@ -330,10 +333,60 @@ def _unshuffle(data: bytes, element_size: int) -> bytes:
     return bytes(result)
 
 
+def _unlzf(data: bytes, max_output: int) -> bytes:
+    """Decode LZF literals and overlapping back references within a byte budget.
+
+    This decoder reads the LZF stream directly. It does not execute an HDF5
+    plugin, trust the filter's declared output length, or allocate from a
+    length embedded in damaged bytes.
+    """
+    result = bytearray()
+    position = 0
+    while position < len(data):
+        control = data[position]
+        position += 1
+        if control < 32:
+            length = control + 1
+            if position + length > len(data):
+                raise ChunkDecodeError("truncated LZF literal run")
+            if length > max_output - len(result):
+                raise ChunkDecodeError("LZF output exceeds the decoded byte budget")
+            result.extend(data[position:position + length])
+            position += length
+            continue
+        length = control >> 5
+        if length == 7:
+            if position >= len(data):
+                raise ChunkDecodeError("truncated LZF match length")
+            length += data[position]
+            position += 1
+        if position >= len(data):
+            raise ChunkDecodeError("truncated LZF match offset")
+        offset = ((control & 31) << 8) + data[position] + 1
+        position += 1
+        length += 2
+        if offset > len(result):
+            raise ChunkDecodeError("LZF back reference precedes the decoded stream")
+        if length > max_output - len(result):
+            raise ChunkDecodeError("LZF output exceeds the decoded byte budget")
+        # References can overlap, for example one literal followed by a run
+        # of that same byte. Copying a slice once would decode those wrongly.
+        for _ in range(length):
+            result.append(result[-offset])
+    return bytes(result)
+
+
 def decode_chunk(raw: bytes, spec: object, filter_mask: int) -> bytes:
     """Decode one raw chunk with exact final length and bounded intermediates."""
     validate_stored_size(spec, len(raw), filter_mask)
     pipeline, chunk_bytes = _validate_common(spec, filter_mask)
+    extra = {filter_.id for position, filter_ in enumerate(pipeline)
+             if not filter_mask & (1 << position) and filter_.id not in KNOWN_FILTERS}
+    if extra:
+        from .filter_registry import register_optional
+        registered = register_optional()
+        if extra <= registered.keys():
+            return _decode_packaged_chunk(raw, spec, filter_mask, pipeline, chunk_bytes)
     # Decoder availability is a property of the declared pipeline, not an
     # inference from what a later checksum or decompressor does to these
     # bytes. Report it first so lack of a plugin cannot be mislabeled damage.
@@ -351,6 +404,8 @@ def decode_chunk(raw: bytes, spec: object, filter_mask: int) -> bytes:
             data = data[:-4]
         elif filter_.id == h5py.h5z.FILTER_DEFLATE:
             data = _inflate(data, chunk_bytes + 4)
+        elif filter_.id == h5py.h5z.FILTER_LZF:
+            data = _unlzf(data, MAX_STORED_CHUNK_BYTES)
         elif filter_.id == h5py.h5z.FILTER_SHUFFLE:
             data = _unshuffle(data, np.dtype(spec.dtype).itemsize)
         else:
@@ -363,3 +418,45 @@ def decode_chunk(raw: bytes, spec: object, filter_mask: int) -> bytes:
     if len(data) != chunk_bytes:
         raise ChunkDecodeError("decoded chunk has an unexpected nominal length")
     return data
+
+
+def _decode_packaged_chunk(raw, spec, mask, pipeline, chunk_bytes):
+    """Decode an independently attributed raw chunk through packaged codecs.
+
+    A single-chunk, in-memory HDF5 dataset supplies the validated type and
+    pipeline. It never opens the damaged file or tries to repair its index.
+    The isolated route worker caps native memory and elapsed time.
+    """
+    from .native_io import read_fixed_block
+    import uuid
+    try:
+        with h5py.File("h5reclaim-codec-" + uuid.uuid4().hex, "w", driver="core", backing_store=False) as handle:
+            datatype = (h5py.h5t.decode(spec.file_type_encoding) if getattr(spec, "file_type_encoding", None)
+                        else h5py.h5t.py_create(np.dtype(spec.dtype), logical=True))
+            creation = h5py.h5p.create(h5py.h5p.DATASET_CREATE)
+            creation.set_chunk(spec.chunks)
+            for filter_ in pipeline:
+                from .filter_registry import creation_filter_options
+                try:
+                    values = creation_filter_options(filter_.id, filter_.values, datatype.get_size())
+                except (ValueError, NotImplementedError, TypeError) as exc:
+                    raise MissingFilterDecoder("packaged decoder options cannot be reconstructed") from exc
+                creation.set_filter(filter_.id, filter_.flags, values)
+            try:
+                dataset = h5py.Dataset(h5py.h5d.create(handle.id, b"chunk", datatype,
+                                    h5py.h5s.create_simple(spec.chunks), dcpl=creation))
+            except (OSError, RuntimeError, ValueError) as exc:
+                raise MissingFilterDecoder("packaged decoder cannot construct this filter pipeline") from exc
+            checked = dataset.id.get_create_plist()
+            if any(tuple(checked.get_filter(i)[2]) != tuple(filter_.values)
+                   for i, filter_ in enumerate(pipeline)):
+                raise MissingFilterDecoder("packaged decoder changes the declared persisted filter options")
+            dataset.id.write_direct_chunk((0,) * len(spec.chunks), raw, filter_mask=mask)
+            result = read_fixed_block(dataset, tuple(slice(0, n) for n in spec.chunks)).tobytes()
+            if len(result) != chunk_bytes:
+                raise ChunkDecodeError("packaged decoder returned an unexpected nominal chunk length")
+            return result
+    except (ChunkDecodeError, MissingFilterDecoder):
+        raise
+    except (OSError, RuntimeError, ValueError, TypeError) as exc:
+        raise ChunkDecodeError("packaged filter decoder rejected the attributed raw chunk") from exc

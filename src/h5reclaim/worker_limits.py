@@ -1,6 +1,7 @@
 """Launch native HDF5 workers with an OS resource boundary.
 
-POSIX workers apply RLIMIT_AS in their own process. On Windows, the parent
+Linux workers apply RLIMIT_AS in their own process. macOS workers have their
+process group's resident memory monitored by the parent. On Windows, the parent
 creates the worker suspended, attaches it to a Job Object, and only then
 resumes it. The Job limits committed memory and owns the process tree. This
 does not make the HDF5 parser a security sandbox.
@@ -9,18 +10,106 @@ does not make the HDF5 parser a security sandbox.
 from __future__ import annotations
 
 import os
+import errno
+import math
 import subprocess
+import sys
+import time
 from collections.abc import Mapping, Sequence
 
 
 def run_worker(command: Sequence[str], *, env: Mapping[str, str],
                timeout_seconds: float, memory_bytes: int) -> subprocess.CompletedProcess[bytes]:
     """Run a worker without inherited input/output and bound its lifetime."""
+    if (not command or not math.isfinite(timeout_seconds) or timeout_seconds <= 0
+            or type(memory_bytes) is not int or memory_bytes <= 0):
+        raise ValueError("invalid worker limits")
+    if sys.platform == "darwin":
+        return _run_monitored_posix(command, env, timeout_seconds, memory_bytes)
     if os.name != "nt":
         return subprocess.run(command, env=dict(env), stdin=subprocess.DEVNULL,
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                               check=False, timeout=timeout_seconds)
     return _run_windows_job(command, env, timeout_seconds, memory_bytes)
+
+
+_MEMORY_SAMPLE_SECONDS = 0.1
+
+
+def memory_budget_record(memory_bytes: int, address_space_bytes: int | None) -> dict:
+    """Describe the limit actually applied, including macOS sampling semantics."""
+    record = {"address_space_cap_bytes": address_space_bytes}
+    if sys.platform == "darwin":
+        record.update(resident_memory_limit_bytes=memory_bytes,
+                      memory_enforcement="process_group_resident_monitor",
+                      memory_sample_interval_seconds=_MEMORY_SAMPLE_SECONDS)
+    elif os.name == "nt":
+        record.update(committed_memory_cap_bytes=memory_bytes,
+                      memory_enforcement="windows_job_object")
+    else:
+        record["memory_enforcement"] = "rlimit_as" if address_space_bytes is not None else "unavailable"
+    return record
+
+
+def _process_group_rss(group: int, timeout_seconds: float) -> int:
+    # macOS RLIMIT_AS rejects ordinary limits on current arm64 runners and
+    # RLIMIT_RSS is advisory. ps reports resident KiB without an extra package.
+    try:
+        result = subprocess.run(["/bin/ps", "-axo", "pgid=,rss="],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, text=True,
+                                check=True, timeout=timeout_seconds)
+        total = 0
+        for line in result.stdout.splitlines():
+            process_group, rss = map(int, line.split())
+            if process_group == group:
+                if rss < 0:
+                    raise ValueError("negative resident memory")
+                total += rss * 1024
+        return total
+    except (subprocess.CalledProcessError, ValueError) as exc:
+        raise OSError("could not monitor worker resident memory") from exc
+
+
+def _run_monitored_posix(command: Sequence[str], env: Mapping[str, str],
+                         timeout_seconds: float, memory_bytes: int) -> subprocess.CompletedProcess[bytes]:
+    """Terminate the process group on a sampled RSS excess or wall timeout.
+
+    RSS sampling allows allocations between samples; it is not a hard virtual
+    address-space cap. Descendants share the budget and are cleaned up even
+    when the worker exits normally.
+    """
+    import signal
+
+    deadline = time.monotonic() + timeout_seconds
+    process = subprocess.Popen(command, env=dict(env), stdin=subprocess.DEVNULL,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               start_new_session=True)
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(command, timeout_seconds)
+            try:
+                resident = _process_group_rss(process.pid, min(2.0, remaining))
+            except subprocess.TimeoutExpired as exc:
+                raise subprocess.TimeoutExpired(command, timeout_seconds) from exc
+            if resident > memory_bytes:
+                raise OSError(errno.ENOMEM, "worker process group exceeded its resident-memory budget")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(command, timeout_seconds)
+            try:
+                result = process.wait(timeout=min(_MEMORY_SAMPLE_SECONDS, remaining))
+                return subprocess.CompletedProcess(command, result)
+            except subprocess.TimeoutExpired:
+                continue
+    finally:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait(timeout=5)
 
 
 def _run_windows_job(command: Sequence[str], env: Mapping[str, str],
@@ -122,8 +211,8 @@ def _run_windows_job(command: Sequence[str], env: Mapping[str, str],
         if not ok:
             raise OSError(ctypes.get_last_error(), f"Windows {action} failed: {ctypes.WinError()}")
 
-    if (not command or not 0 < timeout_seconds <= 24 * 3600
-            or not 0 < memory_bytes <= min(16 * 1024**3, ctypes.c_size_t(-1).value)):
+    if (not command or not 0 < timeout_seconds <= (2**32 - 2) / 1000
+            or not 0 < memory_bytes <= ctypes.c_size_t(-1).value):
         raise ValueError("invalid Windows worker limits")
     if not all(isinstance(arg, str) and "\0" not in arg for arg in command):
         raise ValueError("invalid Windows worker command")

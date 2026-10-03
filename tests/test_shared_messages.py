@@ -135,8 +135,8 @@ class SharedMessageTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(source).hexdigest(),
                          "59bc1829a4ab4958a65e0175d016f4d6a8665dc67a95661a378dd96d139f7f21")
         self.path.write_bytes(source)
-        with ModernH5File(self.path) as reader, h5py.File(self.path, "r") as file:
-            address = h5py.h5o.get_info(file["d1"].id).addr
+        with ModernH5File(self.path) as reader:
+            address = read_dataset_spec_fallback(self.path, "/d1").spec.object_address
             datatype = next(m for m in _messages(reader, address) if m.kind == 3)
             self.assertTrue(datatype.flags & 2)
             self.assertEqual(datatype.data[:2], b"\x03\x01")
@@ -154,8 +154,8 @@ class SharedMessageTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(source).hexdigest(),
                          "327e3f17fc47337df48da06611d5f8923e3597d03bdbe4148ac3ee9d5fa9a87c")
         self.path.write_bytes(source)
-        with ModernH5File(self.path) as reader, h5py.File(self.path, "r") as file:
-            address = h5py.h5o.get_info(file["d1"].id).addr
+        with ModernH5File(self.path) as reader:
+            address = read_dataset_spec_fallback(self.path, "/d1").spec.object_address
             pipeline = next(m for m in _messages(reader, address) if m.kind == 11)
             self.assertTrue(pipeline.flags & 2)
         result = read_dataset_spec_fallback(self.path, "/d1")

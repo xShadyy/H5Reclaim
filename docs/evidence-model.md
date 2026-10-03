@@ -1,19 +1,35 @@
-# Candidate evidence ledger
+# Recovery evidence
 
-`src/h5reclaim/evidence.py` supplies typed records and a conservative reconciliation step. The version-1 B-tree route calls `src/h5reclaim/evidence_adapter.py`, and the modern single/implicit/narrow fixed-array route calls `src/h5reclaim/modern_evidence_adapter.py`, before publishing output. Each derives source pointer evidence, rereads and decodes accepted payloads, and refuses an accepted mapping if reconciliation leaves it unassigned or contradicted. A successful structural report includes the ledger under `evidence_ledger`. The model itself does not parse an on-disk HDF5 variant.
+Reports connect exported values to the source bytes, coordinates, decoding, and comparisons used to accept them. Source size and SHA-256 identify the bytes inspected. The input is verified again before publication.
 
-Each source record carries a stable size and SHA-256. A dataset anchor names its source, object-header byte range, physical index-root location, shape, chunk shape, and element size. An index link records a parent, child, pointer byte range, and whether a parser observed it, reconstructed it using two sibling observations, or only hypothesized it. A chunk proposal records its physical extent, optional dataset path and chunk coordinate, source-byte SHA-256, decoded-byte SHA-256, filter mask, stored-checksum result, parser checks, and an ordered index-link path. Reserved metadata extents are also recorded. The complete report contains decisions and contradictions in JSON-safe form.
+## Placement and current values
 
-`reconcile(...)` accepts a candidate only when:
+Structural routes derive a dataset anchor from rooted metadata, interpret its schema and index, and validate payload extents and coordinates. Implemented link repairs record the sibling or checksum observations used to reconstruct an index link. The evidence ledger under `evidence_ledger` records anchors, links, payload hashes, checks, accepted assignments, unresolved proposals, and contradictions.
 
-1. Its extent lies inside a declared source and does not intersect recorded metadata, including index-pointer bytes.
-2. Its coordinate is aligned, inside the selected dataset's dimensions, and has a consistent decoded length. A physical block without a coordinate stays unassigned.
-3. Its ordered link chain starts at the selected dataset's index root and ends at the proposed payload. A signature scan or scientist hint cannot supply this chain. A bridged link requires distinct observed left and right sibling pointers to the same target and passing parser checks for parent key bounds, reciprocity, level, and uniqueness.
-4. The parser has positively checked allocation, coordinate interpretation, datatype, filters, and payload decoding. An explicit failed check or stored checksum prevents acceptance. The ledger requires a decoded-byte hash. An unfiltered chunk without an independent checksum is labeled `not_independently_verified`, even if its mapping is accepted.
-5. No other proposal claims the same coordinate or overlapping physical bytes. Contradictions invalidate all affected assignments, including those involving different datasets. The number of generated overlap contradictions is bounded; overwhelming conflicts cause refusal.
+`evidence.py` reconciles the recorded observations. Its format-specific adapters reread accepted payloads and provide the relevant metadata ranges. Coordinate alignment, decoded size, link continuity, physical bounds, checksum results, and competing owners determine acceptance. Signature matches and operator hints can guide inspection but do not establish coordinates by themselves.
 
-These conditions reconcile **recorded observations**. The ledger does not read the HDF5 format itself and cannot turn a parser's mistaken assertion into a proven fact. Format-specific code must verify every pointer and check against the same stable source snapshot and pass all relevant metadata ranges. Both active adapters perform this step for the selected dataset and reread each accepted payload. A fragment's raw SHA-256 proves which current bytes were inspected, not their historical correctness. Any new format parser must supply its own verified adapter before publishing recovered values.
+Native-readable routes enumerate allocation and check competing owners before reading values. Fixed-record streaming uses the declared HDF5 datatype to preserve raw records, including padding. Heap-backed strings, ragged arrays and compound fields are compared as logical records because source heap descriptors cannot be copied between files. References use source object identities and encoded region selections, then are remapped and checked after the recovered targets exist. Every accepted output is read back and compared with its source interpretation.
 
-`export_unassigned_fragments(...)` can produce a separately named ZIP of raw unresolved extents for expert investigation. It requires an explicitly supplied source path, checks the source's whole-file hash and file identity before and after bounded reads, compares each extracted fragment to its recorded raw digest, and never includes an accepted chunk. Its manifest calls proposed dataset paths and coordinates *unverified*. The archive stores raw `.bin` files, not an HDF5 dataset, and never replaces an existing destination. It caps each fragment at 16 MiB, total raw output at 64 MiB, and fragment count at 4,096. `load_evidence_report(report_path)` accepts a standalone ledger or a recovery report containing `evidence_ledger`; it checks JSON bounds, schema, internal decisions, and the outer source size/hash. The report's path is never used as the source. Run `python -m h5reclaim export-fragments REPORT.json DAMAGED.h5 --output fragments.zip` for this separate, coordinate-free export.
+Detached discovery checks modern object headers independently of unreadable group links. Each candidate supplies its own type, extent and storage metadata, and observed candidate allocations must not overlap. The report explicitly leaves the complete namespace and unreadable owners unresolved. Original paths are never inferred from signatures or hints. A disposable empty-root view only makes native object-address access possible; it supplies no recovered values.
 
-Focused tests exercise valid direct and bridged chains, hints and scans without anchors, failed filters and checksums, competing coordinates, cross-dataset overlap, metadata collision, corrupted source hashes, and fragment publication refusal. These are synthetic model tests, not measured recovery coverage for scientific files.
+## Validity maps
+
+Each route names its map and defines the status codes in its report. A chunk map describes a complete chunk; an element map can retain individual complete elements. Unallocated, missing, unreadable, or unresolved positions remain unknown even when HDF5 displays fill values.
+
+Whole-file recovery retains each dataset's map and evidence under its own metadata group and embeds a consolidated report. Dataset failures and omitted groups, attributes, links, or scales are listed separately from accepted values.
+
+## Historical equality
+
+`current_value_evidence` describes what the present bytes support. `historical_integrity` and `historical_status` describe equality to a separately supplied prior capture. A current checksum or a successful readback does not establish what the acquisition contained before damage.
+
+A prior baseline can verify a matching value. Replicas or parity can also supply missing information. A capsule supplies earlier schema, physical locations, and hashes. `--strict-history` requires the selected route to compare every accepted unit with a pinned prior capture before publishing.
+
+Historical equality establishes equality to that capture. Capture provenance and scientific interpretation remain separate questions.
+
+## Unresolved fragments
+
+```sh
+python -m h5reclaim export-fragments REPORT.json DAMAGED.h5 --output fragments.zip
+```
+
+Fragment export validates the supplied source identity and recorded fragment hashes, then creates a ZIP of unresolved raw `.bin` extents and a manifest. Proposed coordinates are marked unverified. Accepted chunks are excluded. The archive supports further investigation without assigning unsupported measurements to an HDF5 dataset.

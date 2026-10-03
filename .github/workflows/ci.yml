@@ -12,8 +12,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
-        python-version: ['3.12']
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ['3.10', '3.12', '3.14']
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -21,7 +21,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install local project
-        run: python -m pip install -e .
+        run: python -m pip install -e ".[filters]"
       - name: Unit and integration tests
         run: python -m unittest discover -s tests -q
       - name: Windows worker Job Object checks
@@ -31,3 +31,28 @@ jobs:
         run: python benchmarks/run_real_corpus.py
       - name: Recover controlled GWOSC copy
         run: python benchmarks/run_gwosc_recovery.py
+      - name: Independently compare whole-file scientific exports
+        if: runner.os == 'Linux' && matrix.python-version == '3.12'
+        run: python benchmarks/run_whole_file_corpus.py
+  minimum-dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.10'
+      - name: Install declared minimum dependencies
+        run: python -m pip install numpy==1.26.0 h5py==3.10.0 hdf5plugin && python -m pip install -e . --no-deps
+      - name: Check recovery compatibility
+        run: python -m unittest discover -s tests -q
+  application-compatibility:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install application writers and readers
+        run: python -m pip install -e ".[filters,applications]"
+      - name: Check intact and damaged application files
+        run: python benchmarks/run_application_corpus.py

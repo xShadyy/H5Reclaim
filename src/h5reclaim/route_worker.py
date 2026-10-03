@@ -17,16 +17,19 @@ from typing import Any
 
 from .worker_limits import run_worker
 
-MAX_REQUEST = 65536
+MAX_REQUEST = 64 * 1024**2
 MAX_REPORT = 32 * 1024 * 1024
 ROUTES = frozenset({
     "family", "split", "vds", "external_raw", "external_link", "nonchunked",
     "replicas", "parity", "erasure", "status", "metadata_trial", "capsule",
     "truncated_chunks", "large_readable", "large_structural", "structural", "element_baseline", "chunk_baseline", "readable", "protection",
+    "variable_readable",
+    "native_stream",
+    "object", "native_family", "native_split",
 })
 
 
-def _attach_scientific_context(output: str, report_path: str, args: dict[str, Any]) -> None:
+def _attach_scientific_context(output: str, report_path: str, args: dict[str, Any], *, max_report_bytes=MAX_REPORT) -> None:
     """Describe source context in both staged reports before publication."""
     from .scientific_context import audit_context
     from .recovery import RecoveryError
@@ -50,11 +53,12 @@ def _attach_scientific_context(output: str, report_path: str, args: dict[str, An
         omitted_attributes=omitted,
     )
     serialized = json.dumps(parsed, indent=2, sort_keys=True) + "\n"
-    if len(serialized.encode("utf-8")) > MAX_REPORT:
+    if len(serialized.encode("utf-8")) > max_report_bytes:
         raise RecoveryError("context audit exceeds the report publication limit")
     import h5py
     with h5py.File(output, "r+") as handle:
-        metadata = handle.require_group("/_h5reclaim")
+        from .output_annotations import report_metadata_group
+        metadata = handle.require_group(report_metadata_group(parsed))
         if "report_json" in metadata:
             metadata["report_json"][()] = serialized
         else:
@@ -77,27 +81,51 @@ def _child(request_path: Path, response_path: Path) -> int:
         os.environ.pop("HDF5_PLUGIN_PATH", None)
         os.environ.pop("HDF5_EXTFILE_PREFIX", None)
         from .native_worker import _apply_memory_limit
-        _apply_memory_limit(int(request["memory_bytes"]))
+        applied_memory_limit = _apply_memory_limit(int(request["memory_bytes"]))
+        from .source_session import activate_worker_session
+        activate_worker_session()
         args: dict[str, Any] = request["args"]
+        from .large_streaming import LargeBudget
+        budget = LargeBudget(**json.loads(args.get('streaming_budget', '{}')))
         output, report = request["output"], request["report"]
-        if route == "family":
+        if route in ("native_stream", "large_readable", "variable_readable"):
+            from .filter_registry import register_optional
+            register_optional()
+        if route in ("native_family", "native_split"):
+            from .bundle_stream import export_bundle_selected
+            from .large_streaming import LargeBudget
+            export_bundle_selected(route.removeprefix("native_"), args["manifest"], args["dataset"], output, report,
+                budget=LargeBudget(**json.loads(args.get("streaming_budget", "{}"))), resume_dir=args.get("resume_dir"))
+        elif route == "family":
             from .family_bundle import export_family
             export_family(args["manifest"], args["dataset"], output, report)
         elif route == "split":
             from .split_bundle import export_split
             export_split(args["manifest"], args["dataset"], output, report)
-        elif route == "vds":
-            from .vds_export import export_vds
-            export_vds(args["source"], args["dataset"], output, report, args["manifest"],
-                       published_output=request["published_output"])
-        elif route == "external_raw":
-            from .external_raw_export import export_external_raw
-            export_external_raw(args["source"], args["dataset"], args["manifest"], output, report,
-                                published_output=request["published_output"])
-        elif route == "external_link":
-            from .external_link_export import export_external_link
-            export_external_link(args["source"], args["dataset"], args["manifest"], output, report,
-                                 published_output=request["published_output"])
+        elif route in ("vds", "external_raw", "external_link"):
+            from .metadata import UnsupportedCase
+            from .recovery import RecoveryError
+            try:
+                if route == "vds":
+                    from .vds_export import export_vds
+                    export_vds(args["source"], args["dataset"], output, report, args["manifest"],
+                               published_output=request["published_output"])
+                elif route == "external_raw":
+                    from .external_raw_export import export_external_raw
+                    export_external_raw(args["source"], args["dataset"], args["manifest"], output, report,
+                                        published_output=request["published_output"])
+                else:
+                    from .external_link_export import export_external_link
+                    export_external_link(args["source"], args["dataset"], args["manifest"], output, report,
+                                         published_output=request["published_output"])
+            except (UnsupportedCase, RecoveryError):
+                if Path(output).exists() or Path(report).exists():
+                    raise
+                from .dependency_stream import export_dependency_stream
+                from .large_streaming import LargeBudget
+                export_dependency_stream(args["source"], args["dataset"], args["manifest"], output, report,
+                    published_output=request["published_output"],
+                    budget=LargeBudget(**json.loads(args.get("streaming_budget", "{}"))))
         elif route == "nonchunked":
             from .nonchunked_recovery import export_nonchunked
             export_nonchunked(args["source"], args["dataset"], output, report)
@@ -137,13 +165,38 @@ def _child(request_path: Path, response_path: Path) -> int:
             from .chunk_truncation import recover_truncated
             recover_truncated(args["source"], args["dataset"], output, report)
         elif route == "large_readable":
-            from .large_streaming import export_large_readable
+            from .large_streaming import LargeBudget, export_large_readable
             export_large_readable(args["source"], args["dataset"], output, report,
-                                  published_output=request["published_output"])
+                                  published_output=request["published_output"],
+                                  budget=LargeBudget(**json.loads(args.get("streaming_budget", "{}"))))
+        elif route == "native_stream":
+            from .large_streaming import LargeBudget
+            from .native_stream import export_native_stream
+            from .hints import load_hints
+            export_native_stream(args["source"], args["dataset"], output, report,
+                published_output=request["published_output"],
+                resume_dir=args.get("resume_dir"),
+                source_dataset_path=args.get("source_dataset"),
+                budget=LargeBudget(**json.loads(args.get("streaming_budget", "{}"))),
+                hints=load_hints(Path(args["hints"])) if args.get("hints") else None)
+        elif route == "object":
+            from .large_streaming import LargeBudget
+            from .object_discovery import export_object
+            from .hints import load_hints
+            export_object(args["source"], int(args["object_address"], 0), args["dataset"], output, report,
+                published_output=request["published_output"],
+                budget=LargeBudget(**json.loads(args.get("streaming_budget", "{}"))),
+                hints=load_hints(Path(args["hints"])) if args.get("hints") else None)
+        elif route == "variable_readable":
+            from .variable_readable import export_variable
+            export_variable(args["source"], args["dataset"], output, report,
+                            published_output=request["published_output"])
         elif route == "large_structural":
+            from .large_streaming import LargeBudget
             from .large_structural import recover_large_fixed_array
             recover_large_fixed_array(args["source"], args["dataset"], output, report,
-                                      published_output=Path(request["published_output"]))
+                                      published_output=Path(request["published_output"]),
+                                      budget=LargeBudget(**json.loads(args.get("streaming_budget", "{}"))))
         elif route == "structural":
             from .recovery import recover
             if args.get("hints"):
@@ -157,21 +210,44 @@ def _child(request_path: Path, response_path: Path) -> int:
             # The outer worker is already isolated and has a resource limit;
             # avoid another process and preserve the final published path.
             from .readable_export import _export_readable_local
+            from .worker_limits import memory_budget_record
             _export_readable_local(
                 args["source"], args["dataset"], output, report,
                 published_output=Path(request["published_output"]),
                 worker_budget={"wall_time_seconds": 900,
-                               "address_space_cap_bytes": int(request["memory_bytes"]),
+                               **memory_budget_record(int(request["memory_bytes"]), applied_memory_limit),
                                "dynamic_plugins_disabled": True},
             )
         else:
             from .parity_sidecar import restore_from_parity
             restore_from_parity(args["source"], args["dataset"], args["manifest"], output, report)
+        if args.get("hints"):
+            from .hints import load_hints, compare_hints, require_no_conflicts
+            from dataclasses import asdict
+            import h5py
+            report_file = Path(report)
+            parsed = json.loads(report_file.read_text(encoding="utf-8"))
+            with h5py.File(output, "r+") as handle:
+                selected = handle[parsed["dataset"]["path"]]
+                record = parsed["dataset"]
+                comparisons = compare_hints(load_hints(Path(args["hints"])), observed_fields={
+                    "path": args["dataset"], "shape": selected.shape, "chunks": selected.chunks,
+                    "dtype": selected.dtype.str,
+                    "filters": record.get("filters", record.get("filters_in_order"))},
+                    input_sha256=parsed["source"]["sha256_before"])
+                require_no_conflicts(comparisons)
+                parsed["operator_hints"] = {"trust_level": "unverified_operator_assertion",
+                    "comparisons": [asdict(item) for item in comparisons]}
+                serialized = json.dumps(parsed, indent=2, sort_keys=True) + "\n"
+                from .output_annotations import report_metadata_group
+                handle[report_metadata_group(parsed) + "/report_json"][()] = serialized
+            report_file.write_text(serialized, encoding="utf-8")
         if request.get("annotate_history") or request.get("strict_history"):
             from .historical_integrity import finalize_staged_history
-            finalize_staged_history(output, report, strict=request.get("strict_history", False))
+            finalize_staged_history(output, report, strict=request.get("strict_history", False),
+                                    max_report_bytes=budget.max_metadata_bytes * 4)
         if request.get("audit_science_context"):
-            _attach_scientific_context(output, report, args)
+            _attach_scientific_context(output, report, args, max_report_bytes=budget.max_metadata_bytes * 4)
         response = {"status": "ok"}
         code = 0
     except Exception as exc:
@@ -195,7 +271,9 @@ def run_route(route: str, output: str | Path, report: str | Path, *,
     if (output.exists() or output.is_symlink() or report.exists() or report.is_symlink()
             or output.resolve(strict=False) == report.resolve(strict=False)):
         raise RecoveryError("output and report must be distinct new paths")
-    if any(not isinstance(value, str) or len(value) > 4096 for value in args.values()):
+    from .large_streaming import LargeBudget
+    budget = LargeBudget(**json.loads(args.get('streaming_budget', '{}')))
+    if any(not isinstance(value, str) or '\x00' in value or len(value.encode('utf-8')) > budget.max_metadata_bytes for value in args.values()):
         raise RecoveryError("invalid route argument")
     if any(type(flag) is not bool for flag in (strict_history, annotate_history, audit_science_context)):
         raise RecoveryError("route annotations must be Boolean flags")
@@ -211,21 +289,23 @@ def run_route(route: str, output: str | Path, report: str | Path, *,
                                "audit_science_context": audit_science_context,
                                "output": str(staged_output),
                                "published_output": str(output),
-                               "report": str(staged_report), "memory_bytes": 3 * 1024**3}).encode()
+                               "report": str(staged_report), "memory_bytes": budget.worker_memory_bytes}).encode()
             if len(data) > MAX_REQUEST:
-                raise RecoveryError("route request exceeds 64 KiB")
+                raise RecoveryError("route request exceeds 64 MiB")
             request.write_bytes(data)
-            environment = os.environ.copy()
+            from .source_session import worker_environment
+            environment = worker_environment()
             environment["HDF5_PLUGIN_PRELOAD"] = "::"
             environment.pop("HDF5_PLUGIN_PATH", None)
             environment.pop("HDF5_EXTFILE_PREFIX", None)
+            timeout = budget.max_seconds + 30
             try:
                 result = run_worker(
                     [sys.executable, "-m", "h5reclaim.route_worker", str(request), str(response)],
-                    env=environment, timeout_seconds=900, memory_bytes=3 * 1024**3,
+                    env=environment, timeout_seconds=timeout, memory_bytes=budget.worker_memory_bytes,
                 )
             except subprocess.TimeoutExpired as exc:
-                raise RecoveryError("route worker exceeded the 900-second deadline") from exc
+                raise RecoveryError(f"route worker exceeded the {timeout:g}-second deadline") from exc
             try:
                 if response.stat().st_size > 4096:
                     raise ValueError("oversized response")
@@ -240,7 +320,7 @@ def run_route(route: str, output: str | Path, report: str | Path, *,
                     from .format import FormatError
                     raise FormatError(str(message.get("detail", "contradictory format evidence"))[:300])
                 raise RecoveryError(f"route worker failed: {str(message.get('detail', 'unknown error'))[:300]}")
-            if not staged_output.is_file() or not staged_report.is_file() or staged_report.stat().st_size > MAX_REPORT:
+            if not staged_output.is_file() or not staged_report.is_file() or staged_report.stat().st_size > budget.max_metadata_bytes * 4:
                 raise RecoveryError("route worker did not produce bounded output and report")
             parsed = json.loads(staged_report.read_text(encoding="utf-8"))
             if output.exists() or output.is_symlink() or report.exists() or report.is_symlink():

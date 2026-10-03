@@ -136,8 +136,11 @@ class ExternalRawExportTests(unittest.TestCase):
             values = np.arange(12, dtype="<u2").reshape((3, 4))
             part.write_bytes(values.tobytes())
             with h5py.File(main, "x") as handle:
-                handle.create_dataset("measurement", shape=(3, 4), maxshape=(None, 4), dtype="<u2",
-                                      external=[("source", 0, h5py.h5f.UNLIMITED)])
+                creation = h5py.h5p.create(h5py.h5p.DATASET_CREATE)
+                creation.set_external(b"source", 0, h5py.h5f.UNLIMITED)
+                space = h5py.h5s.create_simple((3, 4), (h5py.h5s.UNLIMITED, 4))
+                dataset = h5py.h5d.create(handle.id, b"measurement", h5py.h5t.STD_U16LE, space, dcpl=creation)
+                dataset.close()
             output, report_path = root / "out.h5", root / "report.json"
             report = export_external_raw(main, "/measurement", _manifest(("source", part)),
                                          output, report_path)

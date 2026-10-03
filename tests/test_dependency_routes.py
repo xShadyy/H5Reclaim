@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 import tempfile
 import unittest
@@ -16,6 +15,7 @@ import numpy as np
 
 from h5reclaim.dependency_routes import (
     DependencyError,
+    MAX_MANIFEST_BYTES,
     discover_h5clear,
     inspect_dependencies,
     inspect_superblock_status,
@@ -23,6 +23,7 @@ from h5reclaim.dependency_routes import (
     probe_status_copy,
     validate_dependency_manifest,
 )
+from tools.make_status_fixture import copy_with_write_flag
 
 
 class StatusAndDependencyTests(unittest.TestCase):
@@ -131,8 +132,7 @@ class StatusAndDependencyTests(unittest.TestCase):
             damaged = folder / "flagged-copy.h5"
             with h5py.File(writer_file, "x", libver="latest") as handle:
                 handle.create_dataset("readings", data=np.arange(4))
-                handle.flush()
-                shutil.copyfile(writer_file, damaged)
+            copy_with_write_flag(writer_file, damaged)
             before = damaged.read_bytes()
             self.assertEqual(before[8], 3)
             self.assertEqual(before[11] & 1, 1)
@@ -164,8 +164,7 @@ class StatusAndDependencyTests(unittest.TestCase):
             flagged = folder / "flagged.h5"
             with h5py.File(healthy, "x", libver="latest") as handle:
                 handle.create_dataset("readings", data=np.arange(4))
-                handle.flush()
-                shutil.copyfile(healthy, flagged)
+            copy_with_write_flag(healthy, flagged)
             original = flagged.read_bytes()
             closed = healthy.read_bytes()
             self.assertEqual(len(original), len(closed))
@@ -309,8 +308,9 @@ class StatusAndDependencyTests(unittest.TestCase):
             path.write_text(json.dumps({"schema_version": 1, "files": [entry, entry]}))
             with self.assertRaisesRegex(DependencyError, "duplicate"):
                 load_dependency_manifest(path)
-            path.write_bytes(b" " * (64 * 1024 + 1))
-            with self.assertRaisesRegex(DependencyError, "64 KiB"):
+            with path.open('wb') as stream:
+                stream.truncate(MAX_MANIFEST_BYTES + 1)
+            with self.assertRaisesRegex(DependencyError, "64 MiB"):
                 load_dependency_manifest(path)
 
 

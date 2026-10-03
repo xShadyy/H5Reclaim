@@ -19,6 +19,8 @@ import tempfile
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
+from itertools import product
+from math import isfinite, prod
 from pathlib import Path
 from typing import Iterator
 
@@ -26,10 +28,13 @@ import h5py
 import numpy as np
 
 from .metadata import UnsupportedCase
+from .native_io import read_fixed_block, write_fixed_block
+from .native_addresses import chunk_address
 from .ownership_inventory import inventory_other_allocations
+from .sparse_io import has_sparse_extents, prepare_sparse_file, sparse_extents, truncate_sparse_file
 from .readable_export import (
     NATIVE_FILTERS, _create_matching_dataset, _require_no_competing_owner,
-    _safe_fixed_type, _selected_dataset,
+    _safe_export_attributes, _safe_fixed_type, _selected_dataset,
 )
 from .recovery import (
     RecoveryError, VERSION, _handle_matches_path, _identity, _validate_paths,
@@ -44,7 +49,7 @@ MAX_COPIED_BYTES = 8 * GIB
 MAX_LOGICAL_BYTES = 16 * GIB
 MAX_OUTPUT_BYTES = 18 * GIB
 MAX_CHUNKS = 65536
-MAX_GRID = 1_048_576
+MAX_GRID = 64 * 1024**2
 MAX_CHUNK_BYTES = 8 * MIB
 MAX_SECONDS = 850
 BLOCK_BYTES = MIB
@@ -62,17 +67,41 @@ class LargeBudget:
     max_seconds: float = MAX_SECONDS
     block_bytes: int = BLOCK_BYTES
     disk_reserve_bytes: int = DISK_RESERVE_BYTES
+    max_metadata_bytes: int = 64 * MIB
+    max_objects: int = 100_000
+    max_links: int = 500_000
+    max_chunk_bytes: int = 64 * MIB
+    logical_batch_records: int = 256
+    max_type_depth: int = 64
+    max_type_members: int = 65536
+    worker_memory_bytes: int = 3 * GIB
 
     def __post_init__(self) -> None:
-        if (not 0 < self.max_source_bytes <= 256 * GIB
+        integer_fields = (self.max_source_bytes, self.max_copied_bytes, self.max_logical_bytes,
+                          self.max_output_bytes, self.max_chunks, self.max_grid,
+                          self.block_bytes, self.disk_reserve_bytes, self.max_metadata_bytes,
+                          self.max_objects, self.max_links, self.max_chunk_bytes,
+                          self.logical_batch_records, self.max_type_depth, self.max_type_members, self.worker_memory_bytes)
+        if (any(type(value) is not int for value in integer_fields)
+                or type(self.max_seconds) not in (int, float) or not isfinite(self.max_seconds)):
+            raise ValueError("large export budget requires integer counts and a finite duration")
+        if (not 0 < self.max_source_bytes < 1 << 63
                 or not 0 < self.max_copied_bytes <= self.max_source_bytes
-                or not 0 < self.max_logical_bytes <= 64 * GIB
-                or not 0 < self.max_output_bytes <= 128 * GIB
-                or not 0 < self.max_chunks <= 262144
-                or not 0 < self.max_grid <= 8_388_608
-                or not 0 < self.max_seconds <= 24 * 3600
-                or not 0 < self.block_bytes <= 4 * MIB
-                or not 0 <= self.disk_reserve_bytes <= GIB):
+                or not 0 < self.max_logical_bytes < 1 << 63
+                or not 0 < self.max_output_bytes < 1 << 63
+                or not 0 < self.max_chunks < 1 << 63
+                or not 0 < self.max_grid < 1 << 63
+                or not 0 < self.max_seconds
+                or not 0 < self.block_bytes <= 64 * MIB
+                or not 0 <= self.disk_reserve_bytes < 1 << 63
+                or not 0 < self.max_metadata_bytes < 1 << 63
+                or not 0 < self.max_objects < 1 << 63
+                or not 0 < self.max_links < 1 << 63
+                or not self.block_bytes <= self.max_chunk_bytes < 1 << 63
+                or not 0 < self.logical_batch_records < 1 << 63
+                or not 0 < self.max_type_depth <= 256
+                or not 0 < self.max_type_members < 1 << 63
+                or not 0 < self.worker_memory_bytes < 1 << 63):
             raise ValueError("invalid large export resource budget")
 
 
@@ -95,8 +124,8 @@ def _copy_dense(source, target, *, size: int, parent: Path,
                 budget: LargeBudget, deadline: float) -> tuple[str, int]:
     """Bounded fallback on systems without sparse extent enumeration.
 
-    Windows users can process inputs above the regular 4 GiB limit when they
-    explicitly have enough disk for the entire source. The copy quota and
+    Users of filesystems without allocation enumeration can process large
+    inputs when they have enough disk for the entire source. The copy quota and
     real free space are enforced; this never silently expands a huge hole.
     """
     if size > budget.max_copied_bytes or shutil.disk_usage(parent).free < size + budget.disk_reserve_bytes:
@@ -118,15 +147,15 @@ def _copy_dense(source, target, *, size: int, parent: Path,
 
 
 def _has_sparse_extents() -> bool:
-    return hasattr(os, "SEEK_DATA") and hasattr(os, "SEEK_HOLE")
+    return has_sparse_extents()
 
 
 def _copy_sparse(source, target, *, size: int, parent: Path,
                  budget: LargeBudget, deadline: float) -> tuple[str, int]:
-    """Preserve SEEK_HOLE ranges; hash their logical zero bytes as well.
+    """Preserve filesystem-reported holes and hash their logical zero bytes.
 
-    SEEK_DATA and SEEK_HOLE are filesystem contracts, not content inference.
-    If either is unavailable, a full copy is allowed only under a separate
+    POSIX SEEK_DATA/HOLE and Windows allocated ranges are OS contracts.
+    If unavailable, a full copy is allowed only under a separate
     explicit byte and free-space quota.
     """
     if not _has_sparse_extents():
@@ -135,31 +164,22 @@ def _copy_sparse(source, target, *, size: int, parent: Path,
     digest = hashlib.sha256()
     total_written = 0
     cursor = 0
-    target.truncate(size)
-    while cursor < size:
+    extents = iter(sparse_extents(source.fileno(), size))
+    try:
+        first = next(extents, None)
+        prepare_sparse_file(target.fileno())
+        truncate_sparse_file(target.fileno(), size)
+    except OSError as exc:
+        if exc.errno in (errno.EINVAL, errno.ENOTSUP, errno.ENOSYS):
+            return _copy_dense(source, target, size=size, parent=parent,
+                               budget=budget, deadline=deadline)
+        raise UnsupportedCase("sparse extent lookup failed; input was not copied") from exc
+    from itertools import chain
+    for data_start, hole_start in chain(() if first is None else (first,), extents):
         _deadline(deadline)
-        try:
-            data_start = os.lseek(source.fileno(), cursor, os.SEEK_DATA)
-        except OSError as exc:
-            if exc.errno == errno.ENXIO:
-                _hash_zeros(digest, size - cursor, budget.block_bytes, deadline)
-                break
-            if cursor == 0 and exc.errno in (errno.EINVAL, errno.ENOTSUP, errno.ENOSYS):
-                return _copy_dense(source, target, size=size, parent=parent,
-                                   budget=budget, deadline=deadline)
-            raise UnsupportedCase("sparse extent lookup failed; input was not copied") from exc
-        if not cursor <= data_start <= size:
+        if not cursor <= data_start < hole_start <= size:
             raise RecoveryError("filesystem returned an invalid sparse data extent")
         _hash_zeros(digest, data_start - cursor, budget.block_bytes, deadline)
-        try:
-            hole_start = os.lseek(source.fileno(), data_start, os.SEEK_HOLE)
-        except OSError as exc:
-            if cursor == 0 and exc.errno in (errno.EINVAL, errno.ENOTSUP, errno.ENOSYS):
-                return _copy_dense(source, target, size=size, parent=parent,
-                                   budget=budget, deadline=deadline)
-            raise UnsupportedCase("sparse hole lookup failed; input was not copied") from exc
-        if not data_start < hole_start <= size:
-            raise RecoveryError("filesystem returned an invalid sparse hole extent")
         source.seek(data_start)
         target.seek(data_start)
         remaining = hole_start - data_start
@@ -177,6 +197,7 @@ def _copy_sparse(source, target, *, size: int, parent: Path,
             total_written += length
             remaining -= length
         cursor = hole_start
+    _hash_zeros(digest, size - cursor, budget.block_bytes, deadline)
     target.flush()
     return digest.hexdigest(), total_written
 
@@ -191,6 +212,13 @@ def sparse_snapshot(source: str | Path, *, budget: LargeBudget | None = None
     """
     budget = budget or LargeBudget()
     source = Path(source)
+    from .source_session import reused_image
+    shared = reused_image(source)
+    if shared is not None:
+        if shared["size"] > budget.max_source_bytes or shared["copied"] > budget.max_copied_bytes:
+            raise UnsupportedCase("shared source image exceeds the requested snapshot budget")
+        yield source, shared["sha256"], _identity(source.stat()), shared["size"], shared["copied"]
+        return
     if not source.is_file():
         raise RecoveryError(f"input is not a regular file: {source}")
     path_info = source.stat()
@@ -222,12 +250,13 @@ def sparse_snapshot(source: str | Path, *, budget: LargeBudget | None = None
             yield image, digest, identity, file_info.st_size, copied
 
 
-def _hash_range(handle, offset: int, size: int, *, deadline: float) -> str:
+def _hash_range(handle, offset: int, size: int, *, deadline: float,
+                block_bytes: int = BLOCK_BYTES) -> str:
     handle.seek(offset)
     digest = hashlib.sha256()
     while size:
         _deadline(deadline)
-        block = handle.read(min(size, BLOCK_BYTES))
+        block = handle.read(min(size, block_bytes))
         if not block:
             raise RecoveryError("physical chunk range ended before its declared length")
         digest.update(block)
@@ -235,11 +264,23 @@ def _hash_range(handle, offset: int, size: int, *, deadline: float) -> str:
     return digest.hexdigest()
 
 
+def _stream_blocks(shape: tuple[int, ...], itemsize: int, block_bytes: int
+                   ) -> Iterator[tuple[slice, ...]]:
+    dimensions = [1] * len(shape)
+    allowance = max(1, block_bytes // itemsize)
+    for index in range(len(shape) - 1, -1, -1):
+        dimensions[index] = min(shape[index], allowance)
+        allowance = max(1, allowance // dimensions[index])
+    for starts in product(*(range(0, size, step) for size, step in zip(shape, dimensions))):
+        yield tuple(slice(start, min(start + step, size))
+                    for start, step, size in zip(starts, dimensions, shape))
+
+
 def export_large_readable(source: str | Path, dataset_path: str, output: str | Path,
                           report_path: str | Path, *,
                           published_output: Path | None = None,
                           budget: LargeBudget | None = None) -> dict:
-    """Export bounded 1D numeric data with sparse validity and range evidence.
+    """Stream fixed records of any HDF5 rank with validity and range evidence.
 
     This is a native-readable export, not a repair route. A corrupt or missing
     selected index refuses, even if orphaned raw payload bytes remain present.
@@ -253,11 +294,12 @@ def export_large_readable(source: str | Path, dataset_path: str, output: str | P
             selected = _selected_dataset(opened, dataset_path)
             dtype = selected.dtype
             _safe_fixed_type(selected.id.get_type(), dtype)
-            if (dtype.kind not in "iuf" or dtype.itemsize not in (1, 2, 4, 8)
-                    or dtype.subdtype is not None or len(selected.shape) != 1
-                    or selected.shape[0] < 1):
-                raise UnsupportedCase("large export requires a nonempty 1D primitive numeric dataset")
-            logical_bytes = int(selected.shape[0]) * dtype.itemsize
+            shape = tuple(int(value) for value in selected.shape)
+            if not 1 <= len(shape) <= 32 or any(length < 1 for length in shape):
+                raise UnsupportedCase("streaming export needs nonempty fixed records of rank 1 through 32")
+            rank = len(shape)
+            elements = prod(shape)
+            logical_bytes = elements * dtype.itemsize
             if logical_bytes > budget.max_logical_bytes:
                 raise UnsupportedCase("logical dataset exceeds the large export byte quota")
             creation = selected.id.get_create_plist()
@@ -267,39 +309,43 @@ def export_large_readable(source: str | Path, dataset_path: str, output: str | P
             if filter_count > 8:
                 raise UnsupportedCase("filter pipeline exceeds the eight-filter bound")
             filters = tuple(int(creation.get_filter(i)[0]) for i in range(filter_count))
+            from .filter_registry import supported_filters
+            available_filters = supported_filters()
             for value in filters:
-                if (value not in NATIVE_FILTERS or not h5py.h5z.filter_avail(value)
+                if (value not in available_filters or not h5py.h5z.filter_avail(value)
                         or (h5py.h5z.get_filter_info(value) & 3) != 3):
-                    raise UnsupportedCase("large export requires built-in encoders and decoders")
+                    raise UnsupportedCase("large export requires available encoders and decoders; install h5reclaim[filters] for packaged codecs")
             layout = creation.get_layout()
-            records: list[tuple[int, int, int, int]] = []
+            records: list[tuple[tuple[int, ...], int, int, int]] = []
             if layout == h5py.h5d.CHUNKED:
                 chunks = selected.chunks
                 assert chunks is not None
-                width = int(chunks[0])
-                if width * dtype.itemsize > budget.max_logical_bytes or width * dtype.itemsize > MAX_CHUNK_BYTES:
+                chunks = tuple(int(value) for value in chunks)
+                nominal_bytes = prod(chunks) * dtype.itemsize
+                if nominal_bytes > budget.max_logical_bytes or nominal_bytes > budget.max_chunk_bytes:
                     raise UnsupportedCase("decoded chunk exceeds the 8 MiB bound")
-                grid = (selected.shape[0] + width - 1) // width
-                if grid > budget.max_grid:
+                grid = tuple((length + width - 1) // width for length, width in zip(shape, chunks))
+                if prod(grid) > budget.max_grid:
                     raise UnsupportedCase("chunk grid exceeds the sparse validity map bound")
                 count = int(selected.id.get_num_chunks())
                 if count > budget.max_chunks:
                     raise UnsupportedCase("allocated chunks exceed the large export record quota")
-                seen: set[int] = set()
+                seen: set[tuple[int, ...]] = set()
                 for index in range(count):
                     _deadline(deadline)
                     info = selected.id.get_chunk_info(index)
-                    origin = int(info.chunk_offset[0])
-                    address, length, mask = int(info.byte_offset), int(info.size), int(info.filter_mask)
-                    if (origin < 0 or origin >= selected.shape[0] or origin % width
+                    origin = tuple(int(value) for value in info.chunk_offset)
+                    address, length, mask = chunk_address(selected, info.byte_offset), int(info.size), int(info.filter_mask)
+                    if (len(origin) != rank or any(value < 0 or value >= axis or value % width
+                                                  for value, axis, width in zip(origin, shape, chunks))
                             or origin in seen or address < 0 or length <= 0
-                            or length > MAX_CHUNK_BYTES or address > size or length > size - address
+                            or length > 2 * budget.max_chunk_bytes or address > size or length > size - address
                             or mask & ~((1 << filter_count) - 1)):
                         raise UnsupportedCase("chunk index has an invalid coordinate, range, size or filter mask")
-                    by_coord = selected.id.get_chunk_info_by_coord((origin,))
+                    by_coord = selected.id.get_chunk_info_by_coord(origin)
                     if (by_coord.byte_offset is None
-                            or tuple(by_coord.chunk_offset) != (origin,)
-                            or int(by_coord.byte_offset) != address
+                            or tuple(by_coord.chunk_offset) != origin
+                            or chunk_address(selected, by_coord.byte_offset) != address
                             or int(by_coord.size) != length
                             or int(by_coord.filter_mask) != mask):
                         raise UnsupportedCase("chunk index enumeration and coordinate lookup disagree")
@@ -311,7 +357,7 @@ def export_large_readable(source: str | Path, dataset_path: str, output: str | P
                 records.sort()
                 if selected.id.get_num_chunks() != len(records):
                     raise UnsupportedCase("chunk allocation count changed while enumerating")
-                ownership_ranges = [(address, address + length, (origin,))
+                ownership_ranges = [(address, address + length, origin)
                                     for origin, address, length, _ in records]
             elif layout == h5py.h5d.CONTIGUOUS:
                 if filters or int(selected.id.get_storage_size()) != logical_bytes:
@@ -319,7 +365,8 @@ def export_large_readable(source: str | Path, dataset_path: str, output: str | P
                 address = selected.id.get_offset()
                 if address is None or address < 0 or address > size or logical_bytes > size - address:
                     raise UnsupportedCase("contiguous source bytes are missing")
-                grid = 0
+                contiguous_address = int(address)
+                grid = ()
                 ownership_ranges = [(int(address), int(address) + logical_bytes, ())]
             else:
                 raise UnsupportedCase("large export accepts only chunked or contiguous storage")
@@ -330,7 +377,8 @@ def export_large_readable(source: str | Path, dataset_path: str, output: str | P
             owners = _require_no_competing_owner(inventory, ownership_ranges)
             source_values = hashlib.sha256()
             evidence_dtype = np.dtype([
-                ("origin", "<u8"), ("source_offset", "<u8"), ("stored_bytes", "<u8"),
+                (("origin", "<u8") if rank == 1 else ("origin", "<u8", (rank,))),
+                ("source_offset", "<u8"), ("stored_bytes", "<u8"),
                 ("filter_mask", "<u4"), ("raw_sha256", "S64"),
                 ("decoded_sha256", "S64"),
             ])
@@ -346,57 +394,82 @@ def export_large_readable(source: str | Path, dataset_path: str, output: str | P
                                                        chunks=(min(len(records), 1024),)
                                                        if records else None)
                         if layout == h5py.h5d.CHUNKED:
-                            validity = meta.create_dataset("validity", shape=(grid,), dtype="u1",
-                                                           fillvalue=0, chunks=(min(grid, 4096),))
-                            iterator = ((origin, min(origin + width, selected.shape[0]), address,
-                                         length, mask) for origin, address, length, mask in records)
+                            validity = meta.create_dataset("validity", shape=grid, dtype="u1",
+                                                           fillvalue=0,
+                                                           chunks=(1,) * (rank - 1) + (min(grid[-1], 4096),))
+                            iterator = ((tuple(slice(start, min(start + width, axis))
+                                               for start, width, axis in zip(origin, chunks, shape)),
+                                         origin, address, length, mask)
+                                        for origin, address, length, mask in records)
                         else:
-                            iterator = ((start, min(start + max(1, BLOCK_BYTES // dtype.itemsize),
-                                                     selected.shape[0]), -1, 0, 0)
-                                        for start in range(0, selected.shape[0],
-                                                           max(1, BLOCK_BYTES // dtype.itemsize)))
+                            iterator = ((selection, (), -1, 0, 0)
+                                        for selection in _stream_blocks(shape, dtype.itemsize,
+                                                                         budget.block_bytes))
                         count = 0
-                        for start, end, address, length, mask in iterator:
+                        successful = []
+                        failed_chunks = []
+                        accepted = 0
+                        for selection, origin, address, length, mask in iterator:
                             _deadline(deadline)
-                            values = np.asarray(selected[start:end])
-                            if values.dtype != dtype or values.nbytes > MAX_CHUNK_BYTES:
-                                raise RecoveryError("native read exceeded bounded numeric block")
-                            target[start:end] = values
+                            try:
+                                values = read_fixed_block(selected, selection)
+                            except (OSError, RuntimeError, ValueError) as exc:
+                                if layout != h5py.h5d.CHUNKED:
+                                    raise RecoveryError("contiguous native read failed") from exc
+                                validity[tuple(start // width for start, width in zip(origin, chunks))] = 6
+                                evidence[count] = (origin[0] if rank == 1 else origin, address, length, mask,
+                                                   _hash_range(raw, address, length, deadline=deadline,
+                                                               block_bytes=budget.block_bytes), b"")
+                                failed_chunks.append({"origin": list(origin), "reason": str(exc)[:300]})
+                                count += 1
+                                continue
+                            if values.nbytes > budget.max_chunk_bytes:
+                                raise RecoveryError("native read exceeded the fixed-record block budget")
+                            write_fixed_block(target, selection, values)
                             encoded = values.tobytes(order="C")
                             source_values.update(encoded)
                             if layout == h5py.h5d.CHUNKED:
-                                validity[start // width] = 1
-                                evidence[count] = (start, address, length, mask,
-                                                   _hash_range(raw, address, length, deadline=deadline),
+                                successful.append(selection)
+                            accepted += values.size
+                            if layout == h5py.h5d.CHUNKED:
+                                validity[tuple(start // width for start, width in zip(origin, chunks))] = 1
+                                evidence[count] = (origin[0] if rank == 1 else origin, address, length, mask,
+                                                   _hash_range(raw, address, length, deadline=deadline,
+                                                               block_bytes=budget.block_bytes),
                                                    hashlib.sha256(encoded).hexdigest())
                             count += 1
                             result.flush()
                             if (out_temp.stat().st_size > budget.max_output_bytes
                                     or shutil.disk_usage(out_temp.parent).free < budget.disk_reserve_bytes):
                                 raise UnsupportedCase("output exceeded its size or free-disk quota")
+                        attributes, omitted_attributes = _safe_export_attributes(selected)
+                        copied_attributes = []
+                        for name, value in attributes:
+                            target.attrs[name] = value
+                            old = selected.attrs.get_id(name).get_type()
+                            new = target.attrs.get_id(name).get_type()
+                            if (not old.equal(new) or np.asarray(value).tobytes() !=
+                                    np.asarray(target.attrs[name]).tobytes()):
+                                del target.attrs[name]
+                                omitted_attributes += (name,)
+                            else:
+                                copied_attributes.append(name)
+                        result.flush()
                     output_values = hashlib.sha256()
                     with h5py.File(out_temp, "r") as result:
                         target = result[dataset_path]
-                        if layout == h5py.h5d.CHUNKED:
-                            selections = ((start, min(start + width, selected.shape[0]))
-                                          for start, _, _, _ in records)
-                        else:
-                            step = max(1, BLOCK_BYTES // dtype.itemsize)
-                            selections = ((start, min(start + step, selected.shape[0]))
-                                          for start in range(0, selected.shape[0], step))
-                        for start, end in selections:
+                        checked_selections = (successful if layout == h5py.h5d.CHUNKED else
+                                              _stream_blocks(shape, dtype.itemsize, budget.block_bytes))
+                        for selection in checked_selections:
                             _deadline(deadline)
-                            output_values.update(np.asarray(target[start:end]).tobytes(order="C"))
+                            output_values.update(read_fixed_block(target, selection).tobytes(order="C"))
                     if output_values.digest() != source_values.digest():
-                        raise RecoveryError("output numeric values differ from the source snapshot")
-                    accepted = (sum(min(width, selected.shape[0] - start)
-                                    for start, _, _, _ in records)
-                                if layout == h5py.h5d.CHUNKED else selected.shape[0])
+                        raise RecoveryError("output fixed records differ from the source snapshot")
                     report = {
                         "schema_version": 1, "tool": "h5reclaim", "tool_version": VERSION,
                         "mode": "large_native_readable_export",
                         "operation": "large_native_readable_export",
-                        "outcome": "partial" if accepted < selected.shape[0] else "complete",
+                        "outcome": "partial" if accepted < elements else "complete",
                         "source": {"path": str(source), "size_bytes": size,
                                    "sha256_before": digest, "sha256_after": digest,
                                    "snapshot_physical_data_bytes_copied": copied},
@@ -405,27 +478,27 @@ def export_large_readable(source: str | Path, dataset_path: str, output: str | P
                                     "chunks": list(selected.chunks) if selected.chunks else None,
                                     "layout": "chunked" if records or layout == h5py.h5d.CHUNKED else "contiguous",
                                     "filters_in_order": list(filters),
+                                    "file_type_encoding_hex": selected.id.get_type().encode().hex(),
+                                    "attributes_copied": copied_attributes,
+                                    "attributes_omitted": list(omitted_attributes),
                                     "source_object_header_address": int(h5py.h5o.get_info(selected.id).addr),
                                     "source_contiguous_byte_range": (
-                                        {"start": int(address), "end_exclusive": int(address) + logical_bytes}
+                                        {"start": contiguous_address, "end_exclusive": contiguous_address + logical_bytes}
                                         if layout == h5py.h5d.CONTIGUOUS else None)},
                         "allocated_chunks_checked": len(records), "accepted_elements": int(accepted),
-                        "unknown_elements": int(selected.shape[0] - accepted),
+                        "unknown_elements": int(elements - accepted),
+                        "failed_chunks": failed_chunks,
                         "validity_map": "/_h5reclaim/validity" if layout == h5py.h5d.CHUNKED else None,
                         "physical_evidence": "/_h5reclaim/physical_evidence",
                         "physical_evidence_scope": "native-enumerated physical chunk ranges and current raw/decoded SHA-256",
                         "validity_codes": {"0": "unallocated or unknown; ignore fill values",
-                                           "1": "native-allocated, decoded and read back bitwise equal"}
+                                           "1": "native-allocated, decoded and read back bitwise equal",
+                                           "6": "allocated chunk could not be decoded; ignore fill values"}
                                           if layout == h5py.h5d.CHUNKED else None,
                         "ownership_inventory": owners,
                         "native_value_sha256": source_values.hexdigest(),
                         "output_path": str(published_output or output),
-                        "limits": (
-                            "Current native-readable values only. This route cannot reconstruct damaged "
-                            "indexes, attest historical measurement bytes, or infer unallocated chunks. "
-                            "Only one-dimensional canonical primitive numeric local storage is supported. "
-                            "Other objects, attributes, links and dimension scales are not copied."
-                        ),
+                        "value_evidence": "Native-allocated current fixed records, independently read back byte for byte.",
                     }
                     report_text = json.dumps(report, sort_keys=True, indent=2) + "\n"
                     with h5py.File(out_temp, "r+") as result:

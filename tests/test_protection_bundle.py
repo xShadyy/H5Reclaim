@@ -8,6 +8,7 @@ import warnings
 import zipfile
 import json
 import shutil
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -46,6 +47,20 @@ class ProtectionBundleTests(unittest.TestCase):
         self.assertEqual(drilled["erasure_restored_chunks"], 2)
         self.assertEqual(sha256_file(self.source), before)
         self.assertEqual(list(self.base.glob(".h5reclaim-drill-*")), [])
+
+    def test_capture_syncs_only_writable_descriptors(self) -> None:
+        real_fsync = os.fsync
+
+        def sync(fd):
+            # A zero-byte write checks access without changing the archive.
+            # POSIX also rejects it on the read-only descriptor used before.
+            os.write(fd, b"")
+            real_fsync(fd)
+
+        with patch("h5reclaim.protection_bundle.os.fsync", side_effect=sync) as synced:
+            result = capture_protection_bundle(self.source, "/science", self.bundle)
+        self.assertGreater(synced.call_count, 0)
+        verify_protection_bundle(self.bundle, result["manifest_sha256"])
 
     def test_capsule_only_accepts_sparse_fixed_records(self) -> None:
         compound = self.base / "records.h5"
@@ -126,7 +141,7 @@ class ProtectionBundleTests(unittest.TestCase):
             damaged, "/science", self.bundle, captured["manifest_sha256"], out, report_path,
         )
         self.assertTrue(report["complete"])
-        self.assertEqual(report["capsule"]["path"], str(self.bundle))
+        self.assertEqual(Path(report["capsule"]["path"]), self.bundle.resolve())
         self.assertEqual(report["capsule"]["bundle_member"], "capsule.zip")
         self.assertEqual(report["protection_bundle"]["sha256"], captured["bundle_sha256"])
         self.assertNotIn(".h5reclaim-bundle-restore-", json.dumps(report))

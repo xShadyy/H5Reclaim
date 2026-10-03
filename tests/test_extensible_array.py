@@ -84,7 +84,8 @@ class ExtensibleArrayTests(unittest.TestCase):
             with self.subTest(version=version):
                 _created(self.path, (2000,), (10,), (None,), filtered=True, version=version)
                 index, _ = _parse(self.path)
-                self.assertEqual(index.layout_version, 4 if version == "v4" else 5)
+                expected = 4 if version == "v4" or h5py.version.hdf5_version_tuple < (2, 0, 0) else 5
+                self.assertEqual(index.layout_version, expected)
                 with h5py.File(self.path, "r") as file, ModernH5File(self.path) as reader:
                     dataset = file["data"]
                     for chunk in index.chunks:

@@ -33,8 +33,8 @@ from .readable_export import (
 from .recovery import RecoveryError, VERSION, _verify_source, source_snapshot
 
 
-MAX_MEMBERS = 64
-MAX_BUNDLE_BYTES = 4 * 1024 * 1024 * 1024
+MAX_MEMBERS = 100_000
+MAX_BUNDLE_BYTES = (1 << 63) - 1
 
 
 def _manifest_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -49,9 +49,9 @@ def _manifest_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 def _manifest(value: str | Path | dict[str, Any]) -> tuple[int, list[dict[str, Any]]]:
     if isinstance(value, (str, Path)):
         with Path(value).open("rb") as handle:
-            raw = handle.read(64 * 1024 + 1)
-        if len(raw) > 64 * 1024:
-            raise RecoveryError("family manifest exceeds 64 KiB")
+            raw = handle.read(64 * 1024**2 + 1)
+        if len(raw) > 64 * 1024**2:
+            raise RecoveryError("family manifest exceeds 64 MiB")
         value = json.loads(raw.decode("utf-8"), object_pairs_hook=_manifest_pairs)
     if not isinstance(value, dict) or set(value) != {"schema_version", "member_size", "members"}:
         raise RecoveryError("family manifest needs schema_version, member_size, and members")
@@ -59,7 +59,7 @@ def _manifest(value: str | Path | dict[str, Any]) -> tuple[int, list[dict[str, A
     if type(value["schema_version"]) is not int or value["schema_version"] != 1 or type(size) is not int or not 512 <= size <= MAX_BUNDLE_BYTES:
         raise RecoveryError("invalid family manifest version or member_size")
     if not isinstance(members, list) or not 1 <= len(members) <= MAX_MEMBERS:
-        raise RecoveryError("family manifest needs 1 through 64 members")
+        raise RecoveryError(f"family manifest needs 1 through {MAX_MEMBERS} members")
     paths: list[Path] = []
     for index, member in enumerate(members):
         if not isinstance(member, dict) or set(member) != {"index", "path", "sha256"} or member["index"] != index or type(member["index"]) is not int:
@@ -173,8 +173,10 @@ def export_family(
                     if (tuple(info.chunk_offset) != origin
                             or info.filter_mask & ~((1 << len(filters)) - 1)):
                         raise RecoveryError("Family chunk index contradicts requested coordinate or filter pipeline")
-                    parts = _extent(int(info.byte_offset), int(info.size), member_size, sizes)
-                    known.append({"coordinate": list(origin), "logical_address": int(info.byte_offset),
+                    from .native_addresses import chunk_address
+                    address = chunk_address(selected, info.byte_offset)
+                    parts = _extent(address, int(info.size), member_size, sizes)
+                    known.append({"coordinate": list(origin), "logical_address": address,
                                   "stored_bytes": int(info.size), "filter_mask": int(info.filter_mask),
                                   "physical_parts": parts})
                     selections.append(tuple(slice(start, min(start + step, extent))

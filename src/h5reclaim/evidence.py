@@ -577,10 +577,15 @@ def export_unassigned_fragments(
         raise FileExistsError(destination)
     fds: dict[str, int] = {}
     initial: dict[str, tuple[int, int, int, int, int]] = {}
+    initial_paths: dict[str, tuple[int, int, int, int, int]] = {}
     temp_name: str | None = None
+    from .recovery import _handle_matches_path, _identity as identity, sha256_file
 
-    def identity(st: os.stat_result) -> tuple[int, int, int, int, int]:
-        return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns
+    def unchanged(source_id: str) -> bool:
+        path = Path(source_paths[source_id])
+        return (not path.is_symlink()
+                and identity(os.fstat(fds[source_id])) == initial[source_id]
+                and identity(path.stat()) == initial_paths[source_id])
 
     try:
         for source_id in sorted(requested_sources):
@@ -588,19 +593,23 @@ def export_unassigned_fragments(
             path = Path(source_paths[source_id])
             if path.is_symlink():
                 raise ValueError("source symlinks are not accepted")
+            path_info = path.stat()
             fd = os.open(path, flags)
             fds[source_id] = fd
             before = os.fstat(fd)
-            if not stat.S_ISREG(before.st_mode) or before.st_size != sources[source_id].size_bytes:
+            if (not stat.S_ISREG(before.st_mode)
+                    or before.st_size != sources[source_id].size_bytes
+                    or not _handle_matches_path(before, path_info)):
                 raise ValueError("source is not the recorded regular file")
             initial[source_id] = identity(before)
+            initial_paths[source_id] = identity(path_info)
             digest = hashlib.sha256()
             os.lseek(fd, 0, os.SEEK_SET)
             while block := os.read(fd, 1024 * 1024):
                 digest.update(block)
             if digest.hexdigest() != sources[source_id].sha256:
                 raise ValueError("source hash differs from the evidence report")
-            if identity(os.fstat(fd)) != initial[source_id] or identity(path.stat()) != initial[source_id]:
+            if not unchanged(source_id):
                 raise ValueError("source changed during verification")
         raw_blobs: list[tuple[str, bytes, ChunkProposal]] = []
         for index, proposal in enumerate(selected):
@@ -618,8 +627,7 @@ def export_unassigned_fragments(
                 raise ValueError("raw fragment hash differs from the evidence report")
             raw_blobs.append((f"fragments/{index:04d}.bin", bytes(payload), proposal))
         for source_id in requested_sources:
-            path = Path(source_paths[source_id])
-            if identity(os.fstat(fds[source_id])) != initial[source_id] or identity(path.stat()) != initial[source_id]:
+            if not unchanged(source_id):
                 raise ValueError("source changed while exporting fragments")
         manifest = {
             "schema_version": 1,
@@ -648,7 +656,11 @@ def export_unassigned_fragments(
                 archive.writestr(filename, payload)
         for source_id in requested_sources:
             path = Path(source_paths[source_id])
-            if identity(os.fstat(fds[source_id])) != initial[source_id] or identity(path.stat()) != initial[source_id]:
+            # Compare each stat API with itself on Windows, and authenticate
+            # the pathname bytes again before publishing any source evidence.
+            if (not unchanged(source_id)
+                    or sha256_file(path) != sources[source_id].sha256
+                    or not unchanged(source_id)):
                 raise ValueError("source changed before fragment publication")
         os.link(temp_name, destination)
         return destination

@@ -115,7 +115,7 @@ class WindowsJobCallOrderTests(unittest.TestCase):
         with patch.object(ctypes, "WinDLL", return_value=kernel, create=True):
             with self.assertRaises(ValueError):
                 _run_windows_job(["python"], {"PATH": "C:\\Python"},
-                                 timeout_seconds=3, memory_bytes=16 * 1024**3 + 1)
+                                 timeout_seconds=3, memory_bytes=ctypes.c_size_t(-1).value + 1)
         self.assertNotIn("CreateProcessW", kernel.calls)
 
 

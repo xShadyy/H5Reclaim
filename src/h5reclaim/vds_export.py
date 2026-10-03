@@ -142,14 +142,14 @@ def _manifest_entries(manifest: Mapping[str, Any] | str | Path) -> dict[str, dic
     if not isinstance(manifest, Mapping) or type(manifest.get("schema_version")) is not int or manifest["schema_version"] != 1:
         raise UnsupportedCase("related-file manifest version must be 1")
     files = manifest.get("files")
-    if not isinstance(files, list) or len(files) > MAX_MAPPINGS:
+    if not isinstance(files, list) or len(files) > 100_000:
         raise UnsupportedCase("related-file manifest has too many entries")
     entries: dict[str, dict[str, str]] = {}
     for entry in files:
         if not isinstance(entry, dict) or set(entry) != {"declared_name", "path", "sha256"}:
             raise UnsupportedCase("invalid related-file manifest entry")
         name, path, digest = entry["declared_name"], entry["path"], entry["sha256"]
-        if (not isinstance(name, str) or not name or len(name) > 512 or "\x00" in name
+        if (not isinstance(name, str) or not name or len(name) > 4096 or "\x00" in name
                 or name in entries or not isinstance(path, str) or not Path(path).is_absolute()
                 or len(path) > 4096 or "\x00" in path or not isinstance(digest, str)
                 or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest)):

@@ -17,6 +17,7 @@ from h5reclaim.large_streaming import (
     GIB, LargeBudget, UnsupportedCase, _copy_dense, export_large_readable, sparse_snapshot,
 )
 from h5reclaim.recovery import RecoveryError
+from h5reclaim.sparse_io import prepare_sparse_file, truncate_sparse_file
 
 
 class LargeStreamingTests(unittest.TestCase):
@@ -36,7 +37,8 @@ class LargeStreamingTests(unittest.TestCase):
             dataset[40:50] = np.arange(40, 50, dtype="f8")
         if sparse:
             with self.source.open("r+b") as opened:
-                opened.truncate(4 * GIB + 16384)
+                prepare_sparse_file(opened.fileno())
+                truncate_sparse_file(opened.fileno(), 4 * GIB + 16384)
 
     def test_more_than_four_gib_sparse_file_and_partial_chunked_values(self) -> None:
         self._small_source(sparse=True)

@@ -1,0 +1,40 @@
+{
+  "authentic_source_controlled_damage_recovery": true,
+  "controlled_damage": true,
+  "damaged_copy_preserved": true,
+  "damaged_file_sha256_after_recovery": "58bc87d5d68db770a84a3c615662d51c829a2c400c0e1419bae12ae2aa5b9d35",
+  "dataset": "/strain/Strain",
+  "derived_layout": false,
+  "every_original_coordinate_exact": true,
+  "experiment": "real GWOSC H1 strain, controlled broken root child pointer",
+  "limits": "A controlled pointer mutation in one authentic file; no inference about unrelated damage or HDF5 layouts.",
+  "missing_region_chunks": 0,
+  "native_failed_or_incorrect_chunks": 57,
+  "original_file_preserved": true,
+  "original_file_sha256_after": "81040e1ecfaf40ffe15a5efc59dbc3a888653162f1613425f1e68d0828dd1b97",
+  "original_file_sha256_before": "81040e1ecfaf40ffe15a5efc59dbc3a888653162f1613425f1e68d0828dd1b97",
+  "reconstructed_link_chunks": 57,
+  "recovered_chunks": 128,
+  "schema_version": 1,
+  "scientific_dataset_attributes_omitted": [
+    "Xlabel",
+    "Xunits",
+    "Ylabel",
+    "Yunits"
+  ],
+  "scientific_dataset_attributes_preserved": [
+    "Npoints",
+    "Xspacing",
+    "Xstart"
+  ],
+  "status_counts": {
+    "allocation_unknown": 0,
+    "ambiguous": 0,
+    "decode_failed": 0,
+    "recovered": 128,
+    "unavailable": 0,
+    "unsupported": 0
+  },
+  "total_chunks": 128,
+  "wrong_bit_chunks": 0
+}

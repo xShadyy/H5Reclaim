@@ -145,8 +145,6 @@ def _selected_local_dataset(handle: h5py.File, path: str) -> h5py.Dataset:
     parts = path[1:].split("/")
     if len(parts) > 64 or any(part in ("", ".", "..") for part in parts):
         raise UnsupportedCase("selected dataset path must be canonical")
-    if parts[0] == "_h5reclaim":
-        raise UnsupportedCase("the /_h5reclaim output namespace is reserved")
     current: h5py.Group | h5py.Dataset = handle["/"]
     for position, part in enumerate(parts):
         if not isinstance(current, h5py.Group):

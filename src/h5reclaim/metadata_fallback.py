@@ -880,7 +880,7 @@ def _old_filters(raw: bytes | None, element_size: int) -> tuple[FilterDescriptor
         identifier, name_length = _uint(raw[pos:pos+2]), _uint(raw[pos+2:pos+4])
         flags, count = _uint(raw[pos+4:pos+6]), _uint(raw[pos+6:pos+8])
         pos += 8
-        if identifier not in (1, 2, 3) or name_length > 128 or name_length % 8 or count > 16:
+        if identifier not in (1, 2, 3, 32000) or name_length > 128 or name_length % 8 or count > 16:
             raise UnsupportedFormat("unsupported older filter metadata")
         if flags & ~1 or len(raw) - pos < name_length + 4*count:
             raise FormatError("invalid older filter flags, name, or values")
@@ -1009,8 +1009,7 @@ def read_dataset_spec_fallback(
     payload separately before publishing any measurement.
     """
     if (not isinstance(dataset_path, str) or not dataset_path.startswith("/")
-        or dataset_path in ("/", "/_h5reclaim")
-        or dataset_path.startswith("/_h5reclaim/")):
+        or dataset_path == "/"):
         raise UnsupportedFormat("fallback requires an absolute selected dataset path")
     path_bytes = dataset_path.encode("utf-8")
     parts = dataset_path.split("/")[1:]
