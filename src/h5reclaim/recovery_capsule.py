@@ -367,7 +367,8 @@ def _check_current_metadata(
             if info.byte_offset is None or int(info.size) == 0:
                 continue
             observed += 1
-            if (int(info.byte_offset), int(info.size), int(info.filter_mask)) != (
+            from .native_addresses import chunk_address
+            if (chunk_address(selected, info.byte_offset), int(info.size), int(info.filter_mask)) != (
                 row["offset"], row["length"], row["filter_mask"]
             ):
                 raise RecoveryError("current rooted chunk link contradicts the captured physical extent")

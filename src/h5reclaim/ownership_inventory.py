@@ -68,7 +68,7 @@ def inventory_other_allocations(
     *, max_objects: int = MAX_OBJECTS, max_links: int = MAX_LINKS,
     max_allocations: int = MAX_ALLOCATIONS, max_seconds: float = MAX_SECONDS,
     opened_file: h5py.File | None = None, address_space_size: int | None = None,
-    skip_selected_object_info: bool = False,
+    skip_selected_object_info: bool = False, max_path_bytes: int = MAX_PATH_BYTES,
 ) -> OwnershipInventory:
     """Observe currently allocated sibling ranges without reading payload values.
 
@@ -76,7 +76,7 @@ def inventory_other_allocations(
     inventory. A partial inventory still detects conflicts with ranges it did
     observe. Source bytes are a private snapshot, opened read-only.
     """
-    if min(max_objects, max_links, max_allocations) <= 0 or max_seconds <= 0:
+    if min(max_objects, max_links, max_allocations, max_path_bytes) <= 0 or max_seconds <= 0:
         raise ValueError("ownership inventory limits must be positive")
     if opened_file is None:
         size = Path(snapshot).stat().st_size
@@ -145,7 +145,8 @@ def inventory_other_allocations(
                                     incomplete("native sibling chunk inventory exceeded its time limit")
                                     break
                                 info = item.id.get_chunk_info(index)
-                                offset, length = info.byte_offset, info.size
+                                from .native_addresses import chunk_address
+                                offset, length = chunk_address(item, info.byte_offset), info.size
                                 if (not isinstance(offset, int) or not isinstance(length, int)
                                         or offset < 0 or length <= 0 or offset > size
                                         or length > size - offset):
@@ -182,7 +183,7 @@ def inventory_other_allocations(
                         if not isinstance(link, h5py.HardLink):
                             continue
                         child_path = path.rstrip("/") + "/" + name
-                        if len(child_path.encode("utf-8", "surrogateescape")) > MAX_PATH_BYTES:
+                        if len(child_path.encode("utf-8", "surrogateescape")) > max_path_bytes:
                             incomplete("rooted local path exceeds inventory length limit")
                             continue
                         child = item[name]

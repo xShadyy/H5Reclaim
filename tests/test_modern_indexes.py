@@ -86,8 +86,9 @@ class ModernIndexTests(unittest.TestCase):
             index = reader.read_index(obj, dataset.shape, dataset.chunks,
                                       dataset.dtype.itemsize, maxshape=dataset.maxshape)
             self.assertEqual(reader.superblock.signature_offset, 512)
+            from h5reclaim.native_addresses import chunk_address
             self.assertEqual(reader.absolute(index.chunks[0].address),
-                             dataset.id.get_chunk_info(0).byte_offset)
+                             chunk_address(dataset, dataset.id.get_chunk_info(0).byte_offset))
 
     def test_checksum_detects_corrupt_superblock(self):
         self._check_native()

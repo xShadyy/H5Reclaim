@@ -72,8 +72,9 @@ def _source_map(report: dict[str, Any], handle: h5py.File,
                 candidates.append(value)
     if isinstance(report.get("validity_map"), str):
         candidates.append(report["validity_map"])
-    candidates.extend(("/_h5reclaim/element_status", "/_h5reclaim/chunk_status",
-                       "/_h5reclaim/validity"))
+    from .output_annotations import report_metadata_group
+    root = report_metadata_group(report)
+    candidates.extend((root + "/element_status", root + "/chunk_status", root + "/validity"))
     for path in candidates:
         if path in handle and isinstance(handle[path], h5py.Dataset):
             if path.endswith("element_status"):
@@ -86,7 +87,7 @@ def _source_map(report: dict[str, Any], handle: h5py.File,
 
 def _validate_map(source: h5py.Dataset, selected: h5py.Dataset,
                   granularity: str) -> None:
-    if source.dtype != np.dtype("u1") or source.ndim > 4:
+    if source.dtype != np.dtype("u1") or source.ndim > 32:
         raise RecoveryError("status map has an unsupported dtype or rank")
     if prod(source.shape) > MAX_STATUS_UNITS:
         raise UnsupportedCase("historical status map exceeds the unit limit")
@@ -123,7 +124,7 @@ def _copy_verified(source: h5py.Dataset, destination: h5py.Dataset) -> int:
 
 
 def finalize_staged_history(output: str | Path, report_path: str | Path, *,
-                            strict: bool = False) -> dict[str, Any]:
+                            strict: bool = False, max_report_bytes: int = MAX_REPORT_BYTES) -> dict[str, Any]:
     """Annotate staged output, refusing unsupported evidence under strict mode.
 
     Strict mode does not publish an output when no prior-capture comparison
@@ -134,7 +135,7 @@ def finalize_staged_history(output: str | Path, report_path: str | Path, *,
     output, report_path = Path(output), Path(report_path)
     if output.is_symlink() or report_path.is_symlink() or not output.is_file() or not report_path.is_file():
         raise RecoveryError("historical status requires regular staged output and report files")
-    if report_path.stat().st_size > MAX_REPORT_BYTES:
+    if report_path.stat().st_size > max_report_bytes:
         raise UnsupportedCase("staged report exceeds historical status report limit")
     try:
         report = json.loads(report_path.read_text(encoding="utf-8"))
@@ -151,12 +152,15 @@ def finalize_staged_history(output: str | Path, report_path: str | Path, *,
     dataset_path = report.get("dataset", {}).get("path")
     if not isinstance(dataset_path, str) or not dataset_path.startswith("/"):
         raise RecoveryError("staged report omits the selected output dataset path")
+    from .output_annotations import report_metadata_group
+    metadata_group = report_metadata_group(report)
+    historical_path = metadata_group + "/historical_status"
     with h5py.File(output, "r+") as handle:
         if dataset_path not in handle or not isinstance(handle[dataset_path], h5py.Dataset):
             raise RecoveryError("staged output does not contain the reported dataset")
-        if STATUS_PATH in handle:
+        if historical_path in handle:
             raise RecoveryError("staged output already has a historical status map")
-        handle.require_group("/_h5reclaim")
+        handle.require_group(metadata_group)
         selected = handle[dataset_path]
         status_path, granularity = _source_map(report, handle, selected)
         current_status_path = status_path
@@ -174,7 +178,7 @@ def finalize_staged_history(output: str | Path, report_path: str | Path, *,
                 map_omission = "unprotected current-value map exceeds 64 million units; historical equality is unknown"
             else:
                 _validate_map(source, selected, granularity)
-                target = handle.create_dataset(STATUS_PATH, shape=source.shape, dtype="u1",
+                target = handle.create_dataset(historical_path, shape=source.shape, dtype="u1",
                                                chunks=source.chunks if source.chunks else None,
                                                fillvalue=0)
                 if digest is not None:
@@ -184,7 +188,7 @@ def finalize_staged_history(output: str | Path, report_path: str | Path, *,
         elif strict:
             raise RecoveryError("prior-capture route has no selected-unit status map")
         else:
-            total = int(prod(selected.shape))
+            total = int(prod(selected.shape)) if selected.shape is not None else 0
             granularity = "element"
             map_omission = "this output has no per-unit current-value map; every element lacks prior-capture verification"
         if digest is not None:
@@ -204,7 +208,7 @@ def finalize_staged_history(output: str | Path, report_path: str | Path, *,
         }
         report["historical_integrity"] = {
             "policy": "require_prior_capture_match" if strict else "report_only",
-            "prior_capture_match_status_dataset": STATUS_PATH if status_path is not None else None,
+            "prior_capture_match_status_dataset": historical_path if status_path is not None else None,
             "status_map_omission": map_omission,
             "codes": STATUS_CODES,
             "granularity": granularity,
@@ -221,12 +225,12 @@ def finalize_staged_history(output: str | Path, report_path: str | Path, *,
             ),
         }
         serialized = json.dumps(report, indent=2, sort_keys=True) + "\n"
-        if len(serialized.encode("utf-8")) > MAX_REPORT_BYTES:
+        if len(serialized.encode("utf-8")) > max_report_bytes:
             raise UnsupportedCase("historical status report exceeds publication limit")
-        if "/_h5reclaim/report_json" in handle:
-            handle["/_h5reclaim/report_json"][()] = serialized
+        if metadata_group + "/report_json" in handle:
+            handle[metadata_group + "/report_json"][()] = serialized
         else:
-            handle["/_h5reclaim"].create_dataset(
+            handle[metadata_group].create_dataset(
                 "report_json", data=serialized, dtype=h5py.string_dtype("utf-8"))
         handle.flush()
     report_path.write_text(serialized, encoding="utf-8")

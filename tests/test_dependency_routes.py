@@ -16,6 +16,7 @@ import numpy as np
 
 from h5reclaim.dependency_routes import (
     DependencyError,
+    MAX_MANIFEST_BYTES,
     discover_h5clear,
     inspect_dependencies,
     inspect_superblock_status,
@@ -309,8 +310,9 @@ class StatusAndDependencyTests(unittest.TestCase):
             path.write_text(json.dumps({"schema_version": 1, "files": [entry, entry]}))
             with self.assertRaisesRegex(DependencyError, "duplicate"):
                 load_dependency_manifest(path)
-            path.write_bytes(b" " * (64 * 1024 + 1))
-            with self.assertRaisesRegex(DependencyError, "64 KiB"):
+            with path.open('wb') as stream:
+                stream.truncate(MAX_MANIFEST_BYTES + 1)
+            with self.assertRaisesRegex(DependencyError, "64 MiB"):
                 load_dependency_manifest(path)
 
 

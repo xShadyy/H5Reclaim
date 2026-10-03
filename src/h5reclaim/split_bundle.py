@@ -166,10 +166,10 @@ def _driver_data(metadata: Path) -> tuple[int, int, bytes, bool]:
         raise UnsupportedFormat("unsupported Split superblock version")
 
 
-def inspect_split_map(metadata: str | Path, raw_size: int) -> SplitMap:
+def inspect_split_map(metadata: str | Path, raw_size: int, *, max_bundle_bytes: int = MAX_BUNDLE_BYTES) -> SplitMap:
     """Validate the two-member physical-address map without opening HDF5 data."""
     metadata = Path(metadata)
-    if not 0 <= raw_size <= MAX_BUNDLE_BYTES:
+    if not 0 <= raw_size <= max_bundle_bytes:
         raise UnsupportedCase("raw member size exceeds bounded Split route")
     version, offset_size, body, checksum = _driver_data(metadata)
     if len(body) < 8 + 4 * offset_size or body[:8] != SPLIT_MAPPING:
@@ -284,7 +284,8 @@ def export_split(
                         if (tuple(info.chunk_offset) != origin or info.size > MAX_STORED_CHUNK_BYTES
                                 or info.filter_mask & ~((1 << len(filters)) - 1)):
                             raise RecoveryError("Split chunk coordinate, stored size or filter mask is inconsistent")
-                        address = int(info.byte_offset)
+                        from .native_addresses import chunk_address
+                        address = chunk_address(selected, info.byte_offset)
                         start, end = _raw_range(address, int(info.size), mapping, captures[1][-1])
                         accepted.append({"coordinate": list(origin), "logical_address": address,
                                          "member_role": "raw", "physical_byte_range": [start, end],

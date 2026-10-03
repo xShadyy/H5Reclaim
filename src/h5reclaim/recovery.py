@@ -1,4 +1,4 @@
-"""Conservative recovery for a single anchored v1 raw-data B-tree case."""
+"""Structural HDF5 recovery with source evidence and validity maps."""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ from .snapshot_io import (
 )
 
 
-VERSION = "0.11.0"
+VERSION = "0.14.0"
 _WINDOWS_STAT = os.name == "nt"
 STATUS_CODES = {
     "recovered": 1,
@@ -85,6 +85,10 @@ class Analysis:
 
 
 def sha256_file(path: Path) -> str:
+    from .source_session import reused_image
+    shared = reused_image(Path(path))
+    if shared is not None:
+        return shared["sha256"]
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         while block := handle.read(1024 * 1024):
@@ -175,6 +179,11 @@ def source_snapshot(
     explicit decision by the caller. The input itself is never opened writable.
     """
     source = Path(source)
+    from .source_session import reused_image
+    shared = reused_image(source)
+    if shared is not None:
+        yield source, shared["sha256"], _identity(source.stat()), shared["size"]
+        return
     budget = SnapshotBudget(
         max_source_bytes=max_source_bytes, max_seconds=max_seconds,
     )
@@ -649,6 +658,7 @@ def _create_recovered_dataset(handle: h5py.File, spec: DatasetSpec) -> h5py.Data
                    for length in (spec.maxshape or spec.shape))
     space = h5py.h5s.create_simple(spec.shape, maxima)
     creation = h5py.h5p.create(h5py.h5p.DATASET_CREATE)
+    creation.set_attr_creation_order(h5py.h5p.CRT_ORDER_TRACKED | h5py.h5p.CRT_ORDER_INDEXED)
     creation.set_chunk(spec.chunks)
     parent_name, local_name = spec.path.rsplit("/", 1)
     parent = handle.require_group(parent_name or "/")
@@ -693,8 +703,11 @@ def recover(
             "note": hints.note,
             "warning": "Matching hints do not prove the origin or historical value of measurements.",
         }
+    from .output_annotations import metadata_group_for_path
+    metadata_group = metadata_group_for_path(analysis.spec.path)
+    analysis.report["metadata_group"] = metadata_group
     annotation_values = {
-        "h5reclaim_chunk_status": "/_h5reclaim/chunk_status",
+        "h5reclaim_chunk_status": metadata_group + "/chunk_status",
         "h5reclaim_complete": analysis.report["complete"],
         "h5reclaim_execution_state": "finished",
         "h5reclaim_integrity": "per_chunk_in_report; some chunks may lack a payload checksum",
@@ -728,7 +741,7 @@ def recover(
                         data.id.write_direct_chunk(record.coordinate, record.payload, filter_mask=0)
                     for name, value in spec.attributes:
                         data.attrs[name] = value
-                    meta = handle.create_group("/_h5reclaim")
+                    meta = handle.require_group(metadata_group)
                     validity = meta.create_dataset("chunk_status", data=analysis.status, dtype="u1")
                     validity.attrs["codes_json"] = json.dumps(STATUS_CODES, sort_keys=True)
                     validity.attrs["axis_meaning"] = ", ".join(

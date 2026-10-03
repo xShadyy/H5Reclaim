@@ -122,8 +122,8 @@ def _run_windows_job(command: Sequence[str], env: Mapping[str, str],
         if not ok:
             raise OSError(ctypes.get_last_error(), f"Windows {action} failed: {ctypes.WinError()}")
 
-    if (not command or not 0 < timeout_seconds <= 24 * 3600
-            or not 0 < memory_bytes <= min(16 * 1024**3, ctypes.c_size_t(-1).value)):
+    if (not command or not 0 < timeout_seconds <= (2**32 - 2) / 1000
+            or not 0 < memory_bytes <= ctypes.c_size_t(-1).value):
         raise ValueError("invalid Windows worker limits")
     if not all(isinstance(arg, str) and "\0" not in arg for arg in command):
         raise ValueError("invalid Windows worker command")

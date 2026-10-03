@@ -1,0 +1,110 @@
+{
+  "application_versions": {
+    "matlab": "0.2.2",
+    "netcdf": "1.7.4",
+    "nwb": "4.2.0"
+  },
+  "applications": [
+    {
+      "application": "matlab",
+      "cases": [
+        {
+          "accepted_elements": 12,
+          "case": "intact",
+          "datasets_exported": 5,
+          "exact_accepted_elements": 12,
+          "fault": null,
+          "intact_values_equal": true,
+          "outcome": "complete",
+          "reader_opened": true,
+          "source_unchanged": true,
+          "unknown_elements": 0,
+          "wrong_accepted_elements": 0
+        },
+        {
+          "accepted_elements": 0,
+          "case": "damaged",
+          "datasets_exported": 5,
+          "exact_accepted_elements": 0,
+          "fault": "one stored checksummed payload byte",
+          "intact_values_equal": null,
+          "outcome": "partial",
+          "reader_opened": true,
+          "source_unchanged": true,
+          "unknown_elements": 12,
+          "wrong_accepted_elements": 0
+        }
+      ],
+      "dataset_path": "/matrix",
+      "original_unchanged": true
+    },
+    {
+      "application": "netcdf",
+      "cases": [
+        {
+          "accepted_elements": 12,
+          "case": "intact",
+          "datasets_exported": 2,
+          "exact_accepted_elements": 12,
+          "fault": null,
+          "intact_values_equal": true,
+          "outcome": "complete",
+          "reader_opened": true,
+          "source_unchanged": true,
+          "unknown_elements": 0,
+          "wrong_accepted_elements": 0
+        },
+        {
+          "accepted_elements": 8,
+          "case": "damaged",
+          "datasets_exported": 2,
+          "exact_accepted_elements": 8,
+          "fault": "one stored checksummed payload byte",
+          "intact_values_equal": null,
+          "outcome": "partial",
+          "reader_opened": true,
+          "source_unchanged": true,
+          "unknown_elements": 4,
+          "wrong_accepted_elements": 0
+        }
+      ],
+      "dataset_path": "/observations",
+      "original_unchanged": true
+    },
+    {
+      "application": "nwb",
+      "cases": [
+        {
+          "accepted_elements": 12,
+          "case": "intact",
+          "datasets_exported": 28,
+          "exact_accepted_elements": 12,
+          "fault": null,
+          "intact_values_equal": true,
+          "outcome": "complete",
+          "reader_opened": true,
+          "source_unchanged": true,
+          "unknown_elements": 0,
+          "wrong_accepted_elements": 0
+        },
+        {
+          "accepted_elements": 8,
+          "case": "damaged",
+          "datasets_exported": 28,
+          "exact_accepted_elements": 8,
+          "fault": "one stored checksummed payload byte",
+          "intact_values_equal": null,
+          "outcome": "partial",
+          "reader_opened": true,
+          "source_unchanged": true,
+          "unknown_elements": 4,
+          "wrong_accepted_elements": 0
+        }
+      ],
+      "dataset_path": "/acquisition/observations/data",
+      "original_unchanged": true
+    }
+  ],
+  "category": "independent application writers and readers, intact and controlled checksum damage",
+  "passed": true
+}

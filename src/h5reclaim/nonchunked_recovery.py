@@ -20,6 +20,7 @@ import tempfile
 from dataclasses import dataclass
 from math import prod
 from pathlib import Path
+from .output_annotations import metadata_group_for_path
 from typing import Any
 
 import h5py
@@ -265,8 +266,7 @@ def _layout(raw: bytes, *, older: bool, osize: int, lsize: int,
 
 def _check_path(dataset_path: str) -> list[str]:
     if (not isinstance(dataset_path, str) or not dataset_path.startswith("/")
-        or dataset_path in ("/", "/_h5reclaim")
-        or dataset_path.startswith("/_h5reclaim/")):
+        or dataset_path == "/"):
         raise UnsupportedFormat("select an absolute local dataset path")
     try:
         encoded = dataset_path.encode("utf-8", "strict")
@@ -636,7 +636,8 @@ def analyze_nonchunked_snapshot(
             "rooted_objects_beyond_physical_eof": spec.uninspected_rooted_objects,
         },
         "counts": {"recovered": recovered, "unknown": spec.elements - recovered},
-        "validity": {"dataset": "/_h5reclaim/element_status", "codes": STATUS_CODES,
+        "metadata_group": metadata_group_for_path(spec.path),
+        "validity": {"dataset": metadata_group_for_path(spec.path) + "/element_status", "codes": STATUS_CODES,
                      "granularity": "one code per selected dataset element"},
         "mappings": mapping, "unassigned_fragments": fragments,
         "evidence_ledger": {
@@ -714,6 +715,7 @@ def export_nonchunked(
                             space = (h5py.h5s.create(h5py.h5s.SCALAR) if not spec.shape else
                                      h5py.h5s.create_simple(spec.shape))
                             creation = h5py.h5p.create(h5py.h5p.DATASET_CREATE)
+                            creation.set_attr_creation_order(h5py.h5p.CRT_ORDER_TRACKED | h5py.h5p.CRT_ORDER_INDEXED)
                             creation.set_layout(h5py.h5d.COMPACT)
                             dataset = h5py.Dataset(h5py.h5d.create(
                                 parent.id, name.encode("utf-8"),
@@ -722,16 +724,17 @@ def export_nonchunked(
                             ))
                         else:
                             dataset = handle.create_dataset(spec.path, shape=spec.shape,
-                                                            dtype=spec.dtype)
+                                                            dtype=spec.dtype, track_order=True)
                         dataset[...] = values.reshape(spec.shape)
-                        meta = handle.create_group("/_h5reclaim")
+                        from .output_annotations import metadata_group_for_path
+                        meta = handle.require_group(metadata_group_for_path(dataset_path))
                         validity = meta.create_dataset("element_status", data=analysis.status,
                                                        dtype="u1")
                         validity.attrs["codes_json"] = json.dumps(STATUS_CODES, sort_keys=True)
                         validity.attrs["axis_meaning"] = "one entry per selected dataset element"
                         meta.create_dataset("report_json", data=report_text,
                                             dtype=h5py.string_dtype(encoding="utf-8"))
-                        dataset.attrs["h5reclaim_element_status"] = "/_h5reclaim/element_status"
+                        dataset.attrs["h5reclaim_element_status"] = meta.name + "/element_status"
                         dataset.attrs["h5reclaim_complete"] = analysis.report["complete"]
                         dataset.attrs["h5reclaim_warning"] = (
                             "Check element_status before using values. Unknown output elements "

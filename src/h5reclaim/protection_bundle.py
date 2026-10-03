@@ -317,11 +317,13 @@ def drill_protection_bundle(
                     info = selected.id.get_chunk_info_by_coord(origin)
                     if info.byte_offset is None or info.size < 1:
                         raise RecoveryError("parity drill cannot locate selected chunk")
-                    stream.seek(info.byte_offset)
+                    from .native_addresses import chunk_address
+                    address = chunk_address(selected, info.byte_offset)
+                    stream.seek(address)
                     prior = stream.read(1)
                     if len(prior) != 1:
                         raise RecoveryError("parity drill cannot read selected chunk")
-                    stream.seek(info.byte_offset)
+                    stream.seek(address)
                     stream.write(bytes([prior[0] ^ 0x5a]))
             parity_manifest = stage / "parity-recovery.json"
             parity_manifest.write_bytes(_encode({

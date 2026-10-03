@@ -1,0 +1,40 @@
+{
+  "attributes_checked": 253,
+  "category": "intact-file export, with independent original comparison",
+  "datasets_checked": 251,
+  "files": [
+    {
+      "attributes_checked": 23,
+      "datasets_checked": 15,
+      "exact_datatypes_and_logical_values": true,
+      "id": "gwosc_gw150914_h1_strain",
+      "issues": [],
+      "source_unchanged": true
+    },
+    {
+      "attributes_checked": 23,
+      "datasets_checked": 15,
+      "exact_datatypes_and_logical_values": true,
+      "id": "gwosc_gw150914_h1_strain_16khz",
+      "issues": [],
+      "source_unchanged": true
+    },
+    {
+      "attributes_checked": 163,
+      "datasets_checked": 214,
+      "exact_datatypes_and_logical_values": true,
+      "id": "zenodo_qubit_feedback",
+      "issues": [],
+      "source_unchanged": true
+    },
+    {
+      "attributes_checked": 44,
+      "datasets_checked": 7,
+      "exact_datatypes_and_logical_values": true,
+      "id": "zenodo_pallas_cloud_aircraft",
+      "issues": [],
+      "source_unchanged": true
+    }
+  ],
+  "passed": true
+}

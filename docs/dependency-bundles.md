@@ -1,13 +1,17 @@
-# Related files and interrupted-write triage
+# Related files and HDF5 driver bundles
 
-HDF5 can refer to bytes outside the selected `.h5` file through external raw
-storage, an external link, or a virtual dataset (VDS). A VDS read can return
-its declared fill value when a source is missing. That value is not evidence
-that the instrument measured it. H5Reclaim therefore inventories the selected
-dataset's declared file names without following the links or reading values.
+Use companion-file manifests when an HDF5 dataset stores values outside its container. Entries map declared names or driver members to actual local files and their lowercase SHA-256 hashes. H5Reclaim can build the related-file manifest from a supplied directory. It snapshots and verifies supplied files before materializing local output datasets.
 
-An optional related-file manifest maps each **exact declared filename** to an
-explicit local path and expected SHA-256. Its JSON form is:
+```sh
+python -m h5reclaim related-manifest container.h5 --directory companion-files --output related.json
+python -m h5reclaim rescue container.h5 --related-dir companion-files --output local.h5 --report evidence.json
+```
+
+Directory discovery reads declared names from local metadata, follows nested declarations, expands numbered `%b` filename patterns, and hashes matching regular files inside the selected directory. Missing files are listed as unresolved. Ambiguous names require an explicit mapping. Absolute declared paths outside the selected directory can be supplied in a hand-written manifest.
+
+## External raw storage, virtual datasets, and external links
+
+Save this shape as `related.json`, using the actual filename declared in HDF5 metadata and the supplied file's real digest:
 
 ```json
 {
@@ -15,86 +19,73 @@ explicit local path and expected SHA-256. Its JSON form is:
   "files": [
     {
       "declared_name": "run-01.h5",
-      "path": "/absolute/path/to/run-01.h5",
-      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      "path": "/data/run-01.h5",
+      "sha256": "REPLACE_WITH_64_LOWERCASE_HEX_CHARACTERS"
     }
   ]
 }
 ```
 
-On Windows, use an absolute path such as `C:\\Lab\\run-01.h5` in JSON. Supply
-the real SHA-256 of each file. The example digest above is only a shape
-example; it is not a known hash of a scientific file. The manifest has a 64
-KiB limit and at most 64 entries. Declared names never become filesystem
-paths, and H5Reclaim does not scan sibling directories or expand wildcards.
-It hashes explicitly supplied files in bounded blocks, up to 4 GiB for a
-selected bundle. The `diagnose --related-files` validator checks whether a
-fixed-size external raw range fits its supplied file and whether a VDS or
-external-link target has local metadata. This diagnosis does not read values.
-The distinct `rescue --related-files` export may accept **complete elements**
-from the present prefix of a shorter external raw segment and marks the rest
-unknown. It can materialize bounded VDS mappings after separately opening
-pinned private source snapshots. One explicitly pinned nested VDS can map to
-a pinned local numeric leaf. Both finite mapping levels, exact type, leaf
-allocation and physical ownership are checked. A third VDS layer, dynamic
-filenames, overlapping mappings, and a nested external raw source refuse.
-The nested route limits selected rank to four, 65,536 elements or 8 MiB,
-64 combined mappings, 262,144 mapped points, and 4 GiB aggregate related
-snapshots. All declared nested filenames need exact manifest entries; a
-missing or mismatched leaf yields unknown coordinates rather than virtual
-fill accepted as science.
-For one selected external link, the same command requires exactly its declared
-filename in the manifest. It snapshots and hashes the distinct HDF5 target,
-then follows only local hard links to its selected native-readable dataset.
-The output materializes that dataset locally, and physical evidence offsets
-refer to the target file. A target-side soft or external link, a recursive
-dependency, or a missing pinned target is refused.
-Related-file manifests reject duplicate JSON keys. An external raw member
-that aliases the selected HDF5 container is refused so container metadata
-cannot be assigned as external measurements.
+```sh
+python -m h5reclaim diagnose container.h5 --dataset /readings --related-files related.json
+python -m h5reclaim rescue container.h5 --dataset /readings --related-files related.json --output local.h5 --report evidence.json
+python -m h5reclaim rescue container.h5 --all --related-files related.json --output whole-local.h5 --report whole-evidence.json
+```
 
-A matching hash identifies the supplied bytes at inspection time. It does not
-prove that the file is the original instrument output or that its scientific
-values are correct. The new value-export routes map current bytes to selected
-coordinates with per-element validity; they do not reconstruct damaged VDS
-metadata, follow external links beyond the single explicit pinned target, or prove that
-unchecksummed historical measurements were unchanged. A virtual fill value
-from a missing source is never accepted as a measurement.
+The external raw route maps complete records through ordered segments, including a physically present prefix when a segment is shortened. Virtual recovery streams large mappings and nested virtual/external-link graphs under configured budgets. Unlimited mappings derive their current extent from pinned sources; numbered `%b` patterns support source files and dataset names. Overlapping virtual mappings follow the tested native mapping order. Missing source values remain unknown instead of accepting virtual fill. Fixed and heap-backed values retain their file datatype. Physical evidence names the file that owns the bytes.
 
-The Family driver has a separate `--family-members` manifest with a member
-size and numbered physical files. Family addresses can span member boundaries;
-joining the files by ordinary concatenation is not a general repair. The
-two-member Split driver uses `--split-members`, with pinned metadata and raw
-files and a validated stored address map. Other Multi and Subfiling driver
-configurations remain unsupported. See [guided rescue](usage.md#open-a-family-driver-bundle).
+Whole-file recovery uses a shared manifest for dependent datasets and their transitive sources. Local datasets continue independently when a dependency is unavailable. External group trees and datasets are materialized locally, including their attributes, aliases and references to recovered targets. Reference identities are scoped to their source file, so equal object addresses in two files cannot be confused.
 
-## Superblock status
+Use escaped Windows JSON paths such as `C:\\Lab\\run-01.h5`. Each declared nested filename needs an entry. Manifests reject duplicate names and keys. With `--related-files`, declared names are matched exactly. `--related-dir` performs the explicit directory discovery described above.
 
-For a version-3 superblock only, a raw write-access bit can indicate an
-interrupted writer. Earlier versions do not assign that meaning to their
-consistency field. `diagnose` records the raw end-of-address (EOA) and physical
-end-of-file (EOF) relationship, while marking its raw superblock checksum
-unvalidated. A discrepancy alone does not establish what bytes were lost.
+## Family driver
 
-`h5reclaim rescue FILE --dataset PATH --status-trial --output OUT.h5 --report
-EVIDENCE.json` independently checks the original version-3 superblock
-checksum, write flag without reserved bits, and EOA inside physical EOF.
-It changes only status and checksum in a disposable copy, then applies the
-bounded native-readable export and publishes a selected derived dataset.
-The original remains unchanged. A readable trial does not establish whether
-the acquisition finished or authenticate its measurements.
+A Family file spans numbered members. Supply the producer's actual member size and every member in order:
 
-If metadata will not open and the observed version-3 write bit is set,
-`h5reclaim probe-status FILE --json` can optionally run `h5clear --status`
-**only on a disposable private copy**. The executable must be installed
-separately. It does not attempt `--increment`, remove metadata cache images,
-or change the original. The probe checks whether the tool changed only the
-status byte and superblock checksum and whether native HDF5 can open the
-trial's metadata. The temporary file is then deleted. A successful probe
-means only that the status-cleared copy's metadata opened; it does not verify
-or recover measurements. EOA past the physical EOF is not eligible for this
-status-only trial.
+```json
+{
+  "schema_version": 1,
+  "member_size": 1048576,
+  "members": [
+    {"index": 0, "path": "/data/run000.h5", "sha256": "REPLACE_WITH_ACTUAL_SHA256"},
+    {"index": 1, "path": "/data/run001.h5", "sha256": "REPLACE_WITH_ACTUAL_SHA256"}
+  ]
+}
+```
 
-These distinctions follow the [HDF5 file format specification](https://support.hdfgroup.org/documentation/hdf5/latest/_f_m_t4.html)
-and the HDF Group's [h5clear guide](https://support.hdfgroup.org/documentation/hdf5/latest/_h5_t_o_o_l__c_r__u_g.html),
-which explicitly says h5clear is not a general file-corruption repair tool.
+```sh
+python -m h5reclaim rescue /data/run000.h5 --dataset /readings --family-members family.json --output local.h5 --report evidence.json
+python -m h5reclaim rescue /data/run000.h5 --family-members family.json --resume-dir progress --output whole-local.h5 --report whole-evidence.json
+```
+
+The source argument is member zero. The route reads the pinned Family address space, verifies physically present member ranges, and records member provenance. Whole-file and selected exports use the common native streamer for fixed records, heap-backed values, scalar, empty and null datasets. Restart checkpoints pin every member. Use distinct physical files for distinct indices.
+
+## Split driver
+
+A Split manifest lists metadata followed by raw storage:
+
+```json
+{
+  "schema_version": 1,
+  "driver": "split",
+  "members": [
+    {"role": "metadata", "path": "/data/run-m.h5", "sha256": "REPLACE_WITH_ACTUAL_SHA256"},
+    {"role": "raw", "path": "/data/run-r.h5", "sha256": "REPLACE_WITH_ACTUAL_SHA256"}
+  ]
+}
+```
+
+```sh
+python -m h5reclaim rescue /data/run-m.h5 --dataset /readings --split-members split.json --output local.h5 --report evidence.json
+python -m h5reclaim rescue /data/run-m.h5 --split-members split.json --output whole-local.h5 --report whole-evidence.json
+```
+
+The source argument is the metadata member. The route validates the stored two-member address map and supplied files, then exports whole files or selected datasets with current-value status maps. Metadata and raw members remain distinct physical inputs. Checkpoints include both hashes, so changed raw bytes cannot reuse earlier values.
+
+## Interrupted-write status
+
+Ordinary selected-dataset rescue automatically recognizes a version-3 write flag. `--status-trial` selects that route explicitly. The route checks the original superblock checksum, flags, and physical end before changing only status and checksum on a private copy. It then exports readable values.
+
+`probe-status FILE --json` can run an installed `h5clear --status` on a disposable copy for diagnosis. The original is unchanged. A readable status trial describes current values; prior captures provide historical comparison.
+
+See the [usage guide](usage.md) for command selection and the [HDF5 format specification](https://support.hdfgroup.org/documentation/hdf5/latest/_f_m_t4.html) for storage layouts.

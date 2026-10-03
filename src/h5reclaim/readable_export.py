@@ -28,6 +28,7 @@ import numpy as np
 
 from .hints import DatasetHints, HintsError, compare_hints, require_no_conflicts
 from .metadata import UnsupportedCase
+from .native_io import read_fixed_block, write_fixed_block
 from .ownership_inventory import (
     OwnershipInventory, inventory_other_allocations, reject_sibling_overlap,
 )
@@ -56,25 +57,21 @@ MAX_REFERENCE_ELEMENTS_PER_BLOCK = 4096
 NATIVE_WORKER_SECONDS = 900
 NATIVE_WORKER_MEMORY_BYTES = 3 * 1024 * 1024 * 1024
 MAX_WORKER_MESSAGE_BYTES = 65536
-# These filters ship with HDF5. Unknown filters may load third-party plugins.
+# HDF5's standard filters and h5py's compiled-in LZF implementation.
 NATIVE_FILTERS = frozenset((h5py.h5z.FILTER_DEFLATE, h5py.h5z.FILTER_SHUFFLE,
                             h5py.h5z.FILTER_FLETCHER32, h5py.h5z.FILTER_SZIP,
                             h5py.h5z.FILTER_NBIT,
-                            h5py.h5z.FILTER_SCALEOFFSET))
+                            h5py.h5z.FILTER_SCALEOFFSET, h5py.h5z.FILTER_LZF))
 
 
 def _selected_dataset(handle: h5py.File, path: str) -> h5py.Dataset:
     if not isinstance(path, str) or not path.startswith("/") or path == "/":
         raise UnsupportedCase("select an absolute dataset path such as /group/data")
-    if len(path.encode("utf-8")) > MAX_PATH_BYTES or any(
-        ord(character) < 32 or ord(character) == 127 for character in path
-    ):
-        raise UnsupportedCase("selected dataset path is too long")
+    if "\x00" in path:
+        raise UnsupportedCase("selected dataset path contains a NUL byte")
     parts = path[1:].split("/")
-    if len(parts) > 64 or any(part in ("", ".", "..") for part in parts):
+    if any(part in ("", ".", "..") for part in parts):
         raise UnsupportedCase("selected dataset path must be canonical")
-    if parts[0] == "_h5reclaim":
-        raise UnsupportedCase("the /_h5reclaim output namespace is reserved")
     current: h5py.Group | h5py.Dataset = handle["/"]
     for position, part in enumerate(parts):
         if not isinstance(current, h5py.Group):
@@ -341,7 +338,8 @@ def _check_storage(dataset: h5py.Dataset, snapshot_size: int,
             if chunk.byte_offset is None or int(chunk.size) == 0:
                 unknown.append(tuple(indices))
                 continue
-            address, length = int(chunk.byte_offset), int(chunk.size)
+            from .native_addresses import chunk_address
+            address, length = chunk_address(dataset, chunk.byte_offset), int(chunk.size)
             if tuple(int(position) for position in chunk.chunk_offset) != tuple(indices):
                 raise UnsupportedCase("a chunk record disagrees with its requested coordinate")
             if int(chunk.filter_mask) & ~((1 << filter_count) - 1):
@@ -434,26 +432,56 @@ def _allocated_selections(storage: StorageInspection, shape: tuple[int, ...],
                     for start, step, length in zip(origin, chunks, shape))
 
 
-def _create_matching_dataset(target: h5py.File, source: h5py.Dataset, path: str) -> h5py.Dataset:
+def _create_matching_dataset(target: h5py.File, source: h5py.Dataset, path: str, *,
+                             preserve_filters: bool = True) -> h5py.Dataset:
     """Keep the selected type, extent limits, fill rules, layout and filter order."""
     parts = path[1:].split("/")
     parent = target["/"]
     for part in parts[:-1]:
-        parent = parent.create_group(part)
+        parent = parent.require_group(part)
+    creation = source.id.get_create_plist().copy()
+    creation.set_attr_creation_order(h5py.h5p.CRT_ORDER_TRACKED | h5py.h5p.CRT_ORDER_INDEXED)
+    if not preserve_filters:
+        for identifier, *_ in [creation.get_filter(i) for i in range(creation.get_nfilters())]:
+            creation.remove_filter(identifier)
+    pipeline = [creation.get_filter(i) for i in range(creation.get_nfilters())]
+    if any(item[0] == 32008 for item in pipeline):
+        # Bitshuffle prepends its version and record width in set_local.
+        # Replaying persisted parameters would prepend them a second time,
+        # changing the compression options and making the output unreadable.
+        for identifier, *_ in pipeline:
+            creation.remove_filter(identifier)
+        for identifier, flags, values, _name in pipeline:
+            if identifier == 32008:
+                if len(values) not in (5, 6) or values[2] != source.id.get_type().get_size():
+                    raise UnsupportedCase("Bitshuffle persisted parameters disagree with the dataset type")
+                values = values[3:]
+            creation.set_filter(identifier, flags, values)
+    typ = source.id.get_type().copy()
+    if source.id.get_type().committed():
+        named_path = h5py.h5i.get_name(source.id.get_type())
+        if named_path:
+            type_parent, type_name = named_path.rsplit(b'/', 1)
+            group = target.require_group(type_parent or b'/')
+            if type_name not in group:
+                from .output_annotations import commit_type
+                commit_type(group, type_name, typ)
+            else:
+                typ = group[type_name].id
     created = h5py.h5d.create(parent.id, parts[-1].encode("utf-8"),
-                              source.id.get_type().copy(), source.id.get_space().copy(),
-                              dcpl=source.id.get_create_plist().copy())
+                              typ, source.id.get_space().copy(),
+                              dcpl=creation)
     created.close()
     result = target[path]
     source_creation = source.id.get_create_plist()
     output_creation = result.id.get_create_plist()
-    if (result.dtype != source.dtype or result.shape != source.shape
+    if (result.shape != source.shape
             or result.maxshape != source.maxshape or result.chunks != source.chunks
             or not result.id.get_type().equal(source.id.get_type())
             or output_creation.get_layout() != source_creation.get_layout()
-            or output_creation.get_nfilters() != source_creation.get_nfilters()
+            or (preserve_filters and (output_creation.get_nfilters() != source_creation.get_nfilters()
             or any(output_creation.get_filter(i) != source_creation.get_filter(i)
-                   for i in range(source_creation.get_nfilters()))):
+                   for i in range(source_creation.get_nfilters()))))):
         raise RecoveryError("output dataset schema differs from selected source metadata")
     return result
 
@@ -522,8 +550,8 @@ def _export_readable_local(source: str | Path, dataset_path: str, output: str | 
                 else:
                     _safe_fixed_type(selected.id.get_type(), dtype)
                 shape = tuple(int(value) for value in selected.shape)
-                if not 1 <= len(shape) <= MAX_RANK or any(length <= 0 for length in shape):
-                    raise UnsupportedCase("expected a nonempty dataset with rank one through four")
+                if len(shape) > MAX_RANK or any(length <= 0 for length in shape):
+                    raise UnsupportedCase("expected a scalar or nonempty dataset with rank at most four")
                 file_itemsize = selected.id.get_type().get_size()
                 logical_bytes = prod(shape) * file_itemsize
                 if logical_bytes > MAX_DATA_BYTES:
@@ -571,8 +599,10 @@ def _export_readable_local(source: str | Path, dataset_path: str, output: str | 
                             for selection in _allocated_selections(
                                     storage, shape, selected.chunks, dtype.itemsize,
                                     reference_block_limit):
-                                block = np.asarray(selected[selection])
-                                if block.dtype != dtype or block.nbytes > MAX_BLOCK_BYTES:
+                                block = (np.asarray(selected[selection]) if reference_kind else
+                                         read_fixed_block(selected, selection))
+                                expected_dtype = dtype if reference_kind else np.dtype(f"V{file_itemsize}")
+                                if block.dtype != expected_dtype or block.nbytes > MAX_BLOCK_BYTES:
                                     raise RecoveryError("native read returned an unexpected bounded block")
                                 if reference_kind:
                                     tokens, nulls, selves = _reference_tokens(
@@ -593,7 +623,7 @@ def _export_readable_local(source: str | Path, dataset_path: str, output: str | 
                                     null_references += nulls
                                     self_references += selves
                                 else:
-                                    exported[selection] = block
+                                    write_fixed_block(exported, selection, block)
                                     source_values.update(block.tobytes(order="C"))
                                 block_count += 1
                                 accepted_elements += block.size
@@ -626,7 +656,8 @@ def _export_readable_local(source: str | Path, dataset_path: str, output: str | 
                             for selection in _allocated_selections(
                                     storage, shape, selected.chunks, dtype.itemsize,
                                     reference_block_limit):
-                                block = np.asarray(exported[selection])
+                                block = (np.asarray(exported[selection]) if reference_kind else
+                                         read_fixed_block(exported, selection))
                                 if reference_kind:
                                     tokens, _, _ = _reference_tokens(
                                         block, target, exported, output_address, reference_kind)

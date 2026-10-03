@@ -1,137 +1,44 @@
-# Guide to the project files
+# Repository guide
 
-H5Reclaim is an experimental tool with bounded structural recovery and separate routes for copying currently readable values or checking prospective captures. An HDF5 dataset can be split into chunks, much like a large image into tiles. An index tells a reader where each chunk lives. The older tree route can handle one interior missing leaf or internal-subtree pointer with two rooted reciprocal neighboring anchors and a complete candidate subtree. Five modern index families have bounded intact-index export routes; selected checksum-constrained link repairs have narrower gates.
-
-This is a data recovery project, not a robotics simulator. An HDF5 file may contain data from a robot, microscope, simulation, or another application. The program cares about the file's internal layout, not the instrument that produced it. See the [usage guide](usage.md) for the current supported layouts.
-
-## How the pieces fit
-
-1. `corpus/files/` provides four unchanged scientific HDF5 files. `benchmarks/run_real_corpus.py` verifies their hashes; `run_gwosc_recovery.py`, `run_damage_catalog.py`, and `run_seeded_matrix.py` create disposable controlled damage and independently score values and refusals. These do not establish a real-world success rate.
-2. `h5reclaim diagnose` triages some unreadable files and declared dependencies. `survey` inventories local metadata, `inspect` checks one supported index, and `recover` exports evidence-backed chunks. `rescue` selects among separate structural, truncation, checked metadata trial, related-file, prospective evidence, replica, and native-readable routes. `capture-baseline`, `capture-element-baseline`, `capture-capsule`, and `capture-erasure` retain different independent evidence while the selected data is still intact. `protect`, `verify-protection`, and `drill-protection` bundle, verify, and test prospective evidence. `probe-status` tests an eligible status flag only on a disposable copy; `export-fragments` publishes unresolved raw bytes without coordinates. Hints cannot supply missing structural evidence.
-3. The new file contains a chunk or element validity map. Guided rescue also separates current-value status from prior-capture equality; `--strict-history` refuses values without a matching capture route. A separate JSON report and its embedded copy explain which values were copied, where they came from, which regions remain unknown, and which surrounding scientific metadata was omitted.
-4. The controlled recovery benchmarks compare output with pristine references at exact chunk coordinates. This comparison is evaluation work; it is not part of the recovery algorithm.
-
-## Project setup and entry points
-
-| File | What it does |
+| Path | Role |
 | --- | --- |
-| `.gitignore` | Keeps virtual environments, caches, build products, and generated experiment files out of Git. |
-| `AGENTS.md` | Instructions for people and coding assistants changing the project, including evidence and testing rules. |
-| `LICENSE` | Apache 2.0 terms for project code; bundled scientific data have separate CC BY 4.0 provenance in the corpus manifest. |
-| `README.md` | Main starting point: project goal, principles, current stage, and installation. It links to detailed usage and evaluation guides. |
-| `pyproject.toml` | Python package details, dependencies, build settings, and the `h5reclaim` terminal command. |
-| `assets/logo-*.svg` | Three matching README logo options: Bridge, Trace, and Monogram. The README currently shows Monogram. |
-| `assets/icon-*.svg` | Matching square marks for avatars and compact placements. |
-| `assets/README.md` | Explains the logo options, sizes, palette, and how to switch the README image. |
+| `src/h5reclaim/__main__.py` | Public commands and argument validation |
+| `src/h5reclaim/rescue.py` | Automatic route selection from file condition and selected schema |
+| `src/h5reclaim/whole_file.py` | Dataset discovery, independent recovery, context restoration, consolidated report |
+| `src/h5reclaim/route_worker.py`, `worker_limits.py`, `native_worker.py` | Isolated native work, resource control, staging, and publication |
+| `src/h5reclaim/recovery.py`, `format.py` | Older chunk-tree parsing, recovery, snapshots, and output |
+| `src/h5reclaim/metadata.py`, `metadata_fallback.py` | Rooted dataset paths, datatype, layout, and filter metadata |
+| `src/h5reclaim/modern_recovery.py`, `modern_indexes.py` | Modern chunk indexes and recovered output |
+| `src/h5reclaim/filtered_fixed_array.py`, `extensible_array.py`, `v2_btree_chunks.py`, `modern_link_repair.py` | Modern index-family parsing and implemented pointer repairs |
+| `src/h5reclaim/schema_codec.py` | Numeric and fixed-record schema interpretation; DEFLATE, LZF, shuffle, Fletcher32 |
+| `src/h5reclaim/nonchunked_recovery.py`, `chunk_truncation.py` | Compact/contiguous elements and physical tail truncation |
+| `src/h5reclaim/readable_export.py`, `native_io.py`, `native_addresses.py` | Native-readable export, allocation checks, exact fixed-record I/O and runtime chunk-address normalization |
+| `src/h5reclaim/variable_readable.py` | Element-wise variable strings and ragged primitive numeric export |
+| `src/h5reclaim/native_stream.py`, `logical_types.py` | Partial streamed exports, unusual file numeric widths, bounded heap batches and reference tokens |
+| `src/h5reclaim/filter_registry.py` | Explicit packaged codec registration and reversible output-filter policy |
+| `src/h5reclaim/object_discovery.py`, `checked_view.py` | Legacy and modern detached headers, private root views and checksum-justified root correction |
+| `src/h5reclaim/source_session.py`, `checkpoint.py`, `unit_checkpoint.py` | Shared images, locked dataset checkpoints and append-only verified selection caches |
+| `src/h5reclaim/large_streaming.py`, `large_structural.py` | Sparse snapshots, configurable streaming budgets, larger exports |
+| `src/h5reclaim/ownership_inventory.py`, `evidence.py`, `evidence_adapter.py`, `modern_evidence_adapter.py` | Physical ownership and evidence reconciliation |
+| `src/h5reclaim/status_trial_export.py`, `metadata_trial_export.py`, `metadata_correction.py`, `header_dimension_trial.py` | Checked disposable status and metadata correction trials |
+| `src/h5reclaim/dependency_routes.py`, `external_raw_export.py`, `external_link_export.py` | Pinned related files and external storage |
+| `src/h5reclaim/vds_export.py`, `vds_nested.py`, `family_bundle.py`, `split_bundle.py` | Virtual mappings and driver address spaces |
+| `src/h5reclaim/dependency_stream.py`, `related_recovery.py`, `related_manifest.py` | Large/growing dependency graphs, external group trees and automatic pinned manifests |
+| `src/h5reclaim/bundle_stream.py`, `native_bindings.py`, `userblock.py` | General native Family/Split streaming, public HDF5 APIs and application header preservation |
+| `src/h5reclaim/baseline.py`, `chunk_integrity.py`, `payload_integrity.py`, `replica_recovery.py` | Prior hashes, integrity comparison, and independent replicas |
+| `src/h5reclaim/parity_sidecar.py`, `erasure_sidecar.py`, `gf256.py` | XOR and multiple-erasure reconstruction |
+| `src/h5reclaim/recovery_capsule.py`, `protection_bundle.py` | Prospective physical maps and bundled protection |
+| `src/h5reclaim/historical_integrity.py`, `output_annotations.py`, `scientific_context.py` | History maps, selected-dataset annotations, context inventory |
+| `tests/` | Recovery regressions, misleading inputs, source preservation, CLI and publication checks |
+| `tests/test_broader_recovery.py` | LZF, exact multidimensional records, variable values, whole-file context and aliases |
+| `tests/test_universality.py` | Automatic decoder fallback, partial chunks, logical datatypes, references, optional codecs, discovery, budgets and resume checks |
+| `tests/test_completion.py`, `tests/test_completion_streaming.py` | Namespace collisions, large/null attributes, committed identities, legacy roots, growing VDS, file-scoped references, heap batches and selection resumes |
+| `tests/test_applications.py`, `benchmarks/run_application_corpus.py` | Independent MATLAB 7.3, netCDF4 and NWB writer/reader checks, intact and controlled damage |
+| `tools/make_healthy_fixture.py`, `tools/make_broken_link_fixture.py` | Reproducible healthy and damaged development fixtures |
+| `corpus/` | Unchanged attributed scientific files, hashes, and structural survey baseline |
+| `benchmarks/` | Controlled recovery evaluations and independent scoring tools |
+| `docs/usage.md` | Operator commands and output interpretation |
+| `docs/dependency-bundles.md` | Related-file, Family, and Split manifests |
+| `docs/evidence-model.md` | Current placement, values, history, and fragments |
 
-## Recovery program
-
-| File | What it does |
-| --- | --- |
-| `src/h5reclaim/__init__.py` | Marks the directory as the Python package and describes its scope. |
-| `src/h5reclaim/__main__.py` | Parses public commands, selects the guided route, and prints readable summaries. |
-| `src/h5reclaim/format.py` | Reads bounded byte ranges from the snapshot and interprets older superblocks, v1 object headers, chunked layout, and rank-one through rank-four version-1 B-tree records. It checks two rooted reciprocal siblings and exact parent key boundaries before proposing one interior missing leaf or internal subtree root; recovery validates the candidate's full disjoint descendants. |
-| `src/h5reclaim/modern_indexes.py`, `extensible_array.py`, `filtered_fixed_array.py`, `v2_btree_chunks.py`, `modern_recovery.py`, `modern_evidence_adapter.py`, `modern_link_repair.py` | Validate checksummed newer metadata and all five chunk-index families within bounded variants; attribute chunk ranges and reconcile pointers. Selected broken links are tested only when a unique substitution restores the original stored checksum, the child matches its parent, and full traversal remains consistent. |
-| `src/h5reclaim/evidence.py`, `evidence_adapter.py` | Record anchors, pointer paths, physical ranges, checksums, contradictions, accepted/unknown decisions, and bounded raw-fragment export. The adapter independently checks version-1 parser records. |
-| `src/h5reclaim/snapshot_io.py` | Streams a quota-bound source snapshot in small blocks after a full logical disk-space preflight. |
-| `src/h5reclaim/dependency_routes.py` | Observes raw superblock status, inventories external/VDS declarations, validates explicit related-file manifests, and confines optional h5clear to a disposable status-only trial. |
-| `src/h5reclaim/metadata.py`, `metadata_fallback.py`, `dense_group_links.py`, `schema_codec.py` | Resolve only local hard links; check canonical numeric and bounded self-contained fixed-record schemas, filter pipeline and bounded decoding. Exact HDF5 file-type encoding preserves compound offsets, enum labels and other supported fixed representations. A rooted older/modern raw fallback may resolve selected metadata when native open fails. |
-| `src/h5reclaim/shared_messages.py` | Resolves selected committed datatype, bounded SOHM single-list and type-7 v2 B-tree leaf/one-internal-level managed-heap references after checking pointer chains and available checksums. Other variants refuse. |
-| `src/h5reclaim/ownership_inventory.py` | Records bounded native observations of sibling chunk and contiguous allocations and rooted hard-link counts, then rejects selected values overlapping a known competing owner or contradictory excess link counts. Incomplete enumeration is disclosed, not a global ownership proof. |
-| `src/h5reclaim/survey.py` | Inventories bounded local dataset metadata and index nodes without reading values. It reports candidate, unsupported, or indeterminate reasons and skips soft and external links. |
-| `src/h5reclaim/diagnose.py` | Checks a bounded snapshot's format signature and, when possible, local metadata; records condition, supported candidate, suggested action, and questions without reading values. |
-| `src/h5reclaim/hints.py` | Parses size-limited scientist assertions about one dataset and compares them with independently observed metadata and the damaged input hash. Conflicts stop export; unobserved assertions remain unverified. |
-| `src/h5reclaim/recovery.py` | Analyzes a private snapshot, combines selected metadata and parsed index, rejects overlapping payload and metadata ranges, decodes bounded DEFLATE and verifies Fletcher32 where applicable, and writes a new dataset, status map, and provenance report. It rechecks source identity and hash before publication and rejects unsafe destination paths. |
-| `src/h5reclaim/readable_export.py`, `native_worker.py` | Copies bounded native-readable fixed-size schemas in a deadline-bound child, verifies current bytes, and marks sparse regions unknown. It does not repair structural damage or verify historical measurements. |
-| `src/h5reclaim/nonchunked_recovery.py` | Follows rooted metadata to compact/contiguous numeric bytes, including complete prefix elements of a physically truncated payload, with element validity. |
-| `src/h5reclaim/status_trial_export.py` | Validates version-3 status-only eligibility and original checksum; changes flag and checksum in a disposable copy, then exports selected currently native-readable values without publishing a modified source container. |
-| `src/h5reclaim/chunk_truncation.py` | Temporarily pads only a private cut-tail snapshot for bounded raw parsing; accepts complete physically present rooted chunk ranges and marks indexed ranges cut by actual EOF unavailable. |
-| `src/h5reclaim/metadata_correction.py`, `header_dimension_trial.py`, `metadata_trial_export.py` | Test one original-checksum-constrained root pointer, selected index pointer or selected chunk-dimension byte, validate a disposable corrected copy, and publish only a bounded derived native-readable dataset. |
-| `src/h5reclaim/recovery_capsule.py` | Prospectively capture exact selected schema, physical chunk coordinates/ranges and hashes without storing measurements, then read matching raw bytes despite a broken root/header/index; use element validity for matching blocks inside unfiltered chunks. If a rooted selected object survives, its exact HDF5 datatype must agree with capture. |
-| `src/h5reclaim/output_annotations.py` | Adds convenience status attributes only when their names do not collide with source scientific attributes; reports skipped names. The validity datasets under `/_h5reclaim/` remain authoritative. |
-| `src/h5reclaim/external_raw_export.py`, `vds_export.py`, `vds_nested.py`, `external_link_export.py` | Materialize selected values from explicit hash-pinned related files, including one bounded nested VDS hop. Map accepted elements to source extents and selections, refusing unknown fill and further recursion. External-link evidence addresses the pinned target file. |
-| `src/h5reclaim/family_bundle.py` | Reconstructs a bounded Family driver address space from explicit numbered members and exports currently readable selected values with physical member provenance. |
-| `src/h5reclaim/split_bundle.py` | Validates a pinned two-member Split-compatible Multi map and exports bounded current values from separate metadata and raw files. |
-| `src/h5reclaim/baseline.py`, `replica_recovery.py`, `parity_sidecar.py` | Record prospective decoded-chunk hashes and XOR stripes, then reconcile independent copies or one lost chunk per stripe against the prior baseline. |
-| `src/h5reclaim/gf256.py`, `erasure_sidecar.py` | Compute and verify two to four prospective parity shards per stripe. With prior coordinate hashes and rooted damaged metadata, reconstruct up to that many unknown nominal chunks in one stripe. |
-| `src/h5reclaim/payload_integrity.py`, `chunk_integrity.py` | Gate currently present rooted compact/contiguous elements or decoded structural chunks against independently retained prospective hashes. A mismatch stays unknown; a hash cannot replace lost bytes. |
-| `src/h5reclaim/historical_integrity.py`, `protection_bundle.py` | Before publication, classify current status against operator-supplied prior captures and optionally refuse an unverified export. Capture a prospective ZIP, verify it with a separately retained digest, and drill exact capsule/parity restoration on disposable copies. |
-| `src/h5reclaim/scientific_context.py` | Audit bounded selected and ancestor metadata in a source-hash-bound child; report omitted links, scales, units, attributes, and unreadable context without changing measurements. |
-| `src/h5reclaim/large_streaming.py` | Stream currently native-readable one-dimensional numeric values from larger sparse or ordinary files with disk, time, chunk, grid and output quotas. Its evidence and validity arrays live in the output HDF5 file. |
-| `src/h5reclaim/large_structural.py` | Stream checked raw chunks after one FAHD-to-FADB pointer fault in an otherwise rooted unfiltered one-dimensional numeric fixed array. It uses a sparse-aware large snapshot, an original-checksum-constrained candidate and full child/grid/ownership checks; unknown slots and physical hashes live in output HDF5 datasets. It does not assert historical truth for unchecksummed payloads. |
-| `src/h5reclaim/route_worker.py`, `worker_limits.py` | Run native routes under a deadline, disable dynamic plugins, apply POSIX address-space or Windows Job Object memory/process-tree limits, finalize history/context annotations, then link the staged report before output with rollback if the second link fails. Two path publication is not an atomic filesystem transaction. |
-
-The recovery program does not import the fixture generator or the benchmark. It receives the damaged file and the selected dataset path. Other local datasets may coexist; the selected object's header normally anchors the index, while a separately retained prospective capsule can supply pre-incident physical coordinates when those anchors are gone. If mandatory evidence or coordinate ownership cannot be established, it stops or leaves a region unknown. Ordinary structural output copies bounded supported scalar attributes for the selected rank-one through four dataset and lists omissions; capsule templates preserve a narrow set of safe selected attributes. Links, dimension scales, sibling objects, and larger scientific context remain outside the derived output.
-
-## Controlled experiment and evaluation
-
-| File | What it does |
-| --- | --- |
-| `tools/make_healthy_fixture.py` | Generates a fully written, uncompressed, two-dimensional `uint32` test dataset and reopens it to check every expected value. |
-| `tools/make_broken_link_fixture.py` | Verifies the healthy index, changes one root child pointer in a copy, records that mutation in a separate manifest, and checks which ordinary HDF5 reads were affected. |
-| `benchmarks/README.md` | Explains the benchmark command, its output directories, scoring, and pass/fail conditions. |
-| `corpus/manifest.json` and `corpus/README.md` | Pin original scientific files with checksums, URLs, licenses, attribution, representative layouts, and expected support classifications. |
-| `corpus/files/*.h5` and `corpus/files/*.hdf5` | Original, unmodified research files bundled for offline, real-structure checks. |
-| `benchmarks/run_real_corpus.py` | Verifies original file hashes and surveys 251 real datasets without reading their measurements. |
-| `benchmarks/run_real_candidate_exports.py` | Scores all six current intact structural candidates against untouched originals by exact values and physical coordinates. |
-| `benchmarks/run_real_readable_corpus.py` | Scores bounded native-readable exports of the two intact Zenodo originals that remain structurally unsupported. |
-| `benchmarks/run_gwosc_recovery.py` | Cross-checks the 16 kHz GWOSC file's real B-tree against h5py, makes a controlled damaged copy, measures native-read failure, and scores bit-exact recovery in a separate subprocess. |
-| `benchmarks/run_damage_catalog.py` | Applies ten controlled damage and refusal cases to verified authentic-file copies and checks exact values, status labels, safe refusals, and source hashes. |
-| `benchmarks/run_seeded_matrix.py` | Makes seeded varied controlled mutations of authentic-file copies and separately scores exact accepted chunks, unknowns, wrong acceptance, and safe refusals. |
-| `benchmarks/run_heldout_trials.py` | Scores a separately supplied hash-pinned panel by declared fault class, including planned, eligible, excluded, exact, wrong, unknown, and refused counts. The bundled originals are calibration, not held-out validation. |
-| `benchmarks/run_incident_intake.py`, `INCIDENT_INTAKE.md` | Receive permissioned naturally damaged files with pinned incident IDs and provenance; run without truth, then separately score only against independently supplied earlier truth. No natural cases are bundled or scored in this release. |
-| `benchmarks/run_recovery.py` | Builds a trial with random reference values, runs recovery in a separate process, and scores exact chunk values and coordinates against the pristine dataset. It also checks native-reader failures and file hashes. |
-
-The benchmark keeps `truth/pristine.h5`, `truth/challenge.json`, and `truth/mutation.json` for evaluation. The recovery subprocess is called with `inputs/damaged.h5`, the dataset path, and output paths. It is not passed the pristine file, random seed, or mutation manifest. These files live under the same trial directory, so this is separation of program inputs and responsibilities, not a security boundary against a program intentionally searching the filesystem.
-
-## Tests
-
-| File | What it checks |
-| --- | --- |
-| `tests/test_fixture.py` | The healthy fixture command creates allocated chunks with the expected values and metadata. |
-| `tests/test_damage.py` | The damage tool changes one verified pointer, demonstrates a standard-reader failure, and rejects unsuitable fixture structures. |
-| `tests/test_format.py` | Small constructed HDF5 byte examples test parser bounds, supported layouts, B-tree traversal, and the two-sided link rule. |
-| `tests/test_gwosc_format.py` | Checks the original 16 kHz file's continued object header, rank-one index, anchored missing child, and parser bounds. |
-| `tests/test_gwosc_recovery.py` | Checks rank-one filtered decoding, checksum failure behavior, and selected attribute handling. |
-| `tests/test_support.py`, `test_schema_codec.py` | Filters, partial edge chunks, numeric types, newer layouts, and selected nested datasets are compared against native HDF5 writes; noncanonical storage is refused. |
-| `tests/test_datatype.py` | Canonical integer storage is accepted while reduced precision, shifted bits, and nonstandard padding are refused. |
-| `tests/test_survey.py` | Survey candidates, independent local datasets, skipped links, support reasons, traversal limits, and CLI text and JSON output. |
-| `tests/test_diagnose.py` | Read-only triage with openable, unsupported, signature-damaged, and metadata-damaged inputs. |
-| `tests/test_hints.py` | Strict JSON parsing and comparison of operator assertions with file evidence, including conflicts and unobserved fields. |
-| `tests/test_readable_export.py` | Native copy, bitwise verification, allocated-storage checks, unsupported layouts/types, path safety, and source preservation. |
-| `tests/test_triage_cli.py` | Public diagnosis, hint-conflict refusal, and native-readable export commands. |
-| `tests/test_damage_catalog.py` | Runs the ten-case real-data catalog and checks the readable and JSON command results. |
-| `tests/test_level_zero.py` | Verifies authentic 4 kHz direct-index export against exact independent values and refusal of a missing payload pointer. |
-| `tests/test_corpus_cli.py` | Corpus survey command's readable summary and opt-in JSON output. |
-| `tests/test_mutation_positions.py` | Exercises every eligible broken child position in one synthetic index, using damaged-only recovery subprocesses and exact value comparisons against independent test truth. |
-| `tests/test_recovery_safety.py` | Destination aliases, contradictory or out-of-bounds metadata, missing sibling evidence, and failures while publishing output do not produce falsely trusted results. |
-| `tests/test_integrity_limits.py` | Deliberately changed payload bytes can still be copied under a structurally valid mapping, so the report must not claim a historical integrity check. |
-| `tests/test_end_to_end.py` | Runs the recovery path on damaged input and checks exact placement, output status, source preservation, and benchmark error categories. |
-| `tests/test_baseline.py`, `test_replica_recovery.py`, `test_parity_sidecar.py` | Complete capture baselines, independently parsed replica attribution, one-loss parity reconstruction, multi-loss refusal, hash conflicts and source preservation. |
-| `tests/test_nonchunked_recovery.py`, `test_external_raw_export.py`, `test_vds_export.py` | Structural nonchunked, ordered external segments and finite virtual mappings with positive, truncated, missing and contradictory evidence cases. |
-| `tests/test_family_bundle.py`, `test_route_worker.py`, `test_rescue_cli.py` | Family address mapping, child staging and public route selection, including absence of output on refusals. |
-| `tests/test_split_bundle.py` | Split address-map parsing and native export across old and newer superblocks, with sparse and corrupt-member negatives. |
-| `tests/test_shared_messages.py`, `test_cross_dataset_ownership.py`, `test_v07_adversarial.py` | Shared-message pointer and checksum checks, competing rooted owners, redirected pointers, and ambiguity/refusal cases. |
-| `tests/test_status_trial_export.py`, `test_external_link_export.py`, `test_external_link_cli.py`, `test_element_baseline_cli.py`, `test_chunk_baseline_cli.py`, `test_owner_link_count.py`, `test_rooted_link_counts.py`, `test_legacy_fallback_broad.py` | Status trial and external-link boundaries, prospective baseline public commands, hard-link owner contradictions, and older rooted metadata failure cases. |
-| `tests/test_chunk_truncation.py`, `test_metadata_correction.py`, `test_header_dimension_trial.py`, `test_deep_v1.py`, `test_recovery_capsule.py`, `test_erasure_sidecar.py`, `test_fixed_schemas.py`, `test_large_streaming.py`, `test_large_structural.py`, `test_modern_link_repair_cli.py`, `test_annotation_collisions.py`, `test_v10_cli_routes.py` | Tail-cut chunk validity, selected checked metadata fields, one bounded older internal subtree bridge/refusal, independent capsule hashes, multiple losses per parity stripe, exact fixed-record HDF5 type preservation, large current-value streaming, sparse large checked index repair, bounded modern link repair/refusal, attribute collision preservation and public route selection. |
-| `benchmarks/test_heldout_trials.py` | Validates panel input and counting protocol; it does not create independent real-world evidence. |
-| `benchmarks/test_incident_intake.py` | Self-checks damaged-only intake, separate truth scoring, false acceptance, refusals, pins and case denominators using controlled faults, not field incidents. |
-
-## Documentation and decisions
-
-| File | What it records |
-| --- | --- |
-| `docs/project-brief.md` | Public technical goal, first supported case, and unproven claims. |
-| `docs/status.md` | What was actually implemented and tested, with environment details, measured results, limits, and next work. |
-| `docs/usage.md` | Current command examples, supported structures, output status, and cautions moved from the former long root README. |
-| `docs/generalization-plan.md` | Format and fault-family coverage plan, evidence requirements, hard limits, and conditions for a statistically defensible coverage claim. |
-| `docs/damage-taxonomy.md` | Damage families, implemented evidence gates, and irrecoverable or unsupported boundaries. |
-| `docs/evidence-model.md`, `docs/dependency-bundles.md` | Explain provenance and conservative reconciliation, plus the explicit manifest contract and external/VDS limits. |
-| `docs/structure-plan.md` | How to verify the generated HDF5 index and derive the location of the pointer changed in the experiment. |
-| `docs/existing-work.md` | Other relevant HDF5 tools and which comparisons have yet to be performed. |
-| `docs/file-guide.md` | This map of the repository and the distinction between recovery and evaluation. |
-| `docs/decisions/0001-first-fixture.md` | Why the first fixture has one simple, fully written dataset and why its actual index must be verified. |
-| `docs/decisions/0002-attribution-and-output.md` | Why a detached leaf needs two-sided evidence, and how output validity and publication are handled. |
-| `docs/decisions/0003-license.md` | The reasoning behind the repository's current license choice. |
-
-The project handoff supplied privately to start the work is not part of this public repository. It described a proposed project before implementation; `docs/status.md` records the current state.
+Run commands from the repository root after installation. Generated benchmark work directories and results are disposable; the original corpus is hash-pinned. The Apache 2.0 license applies to source code; corpus attribution is recorded separately.

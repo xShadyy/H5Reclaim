@@ -281,11 +281,11 @@ class SchemaCodecTests(unittest.TestCase):
 
     def test_missing_decoder_distinct_from_corrupt_bytes(self) -> None:
         from h5reclaim.metadata import DatasetSpec
-        spec = DatasetSpec("/x", 128, (16,), (16,), "<u4", (32000, 3),
-                           filter_pipeline=(FilterDescriptor(32000, 1, ()),
+        spec = DatasetSpec("/x", 128, (16,), (16,), "<u4", (65500, 3),
+                           filter_pipeline=(FilterDescriptor(65500, 1, ()),
                                             FilterDescriptor(3, 0, ())))
         nominal = bytes(64)
-        with self.assertRaisesRegex(MissingFilterDecoder, "32000"):
+        with self.assertRaisesRegex(MissingFilterDecoder, "65500"):
             decode_chunk(b"X" * 32, spec, 0)
         # The unknown optional filter is explicitly skipped, so checksum and
         # value bytes can be checked without loading a plugin.
@@ -302,13 +302,13 @@ class SchemaCodecTests(unittest.TestCase):
             with h5py.File(source, "w", libver="latest") as handle:
                 creation = h5py.h5p.create(h5py.h5p.DATASET_CREATE)
                 creation.set_chunk((4,))
-                creation.set_filter(32000, h5py.h5z.FLAG_OPTIONAL, ())
+                creation.set_filter(65500, h5py.h5z.FLAG_OPTIONAL, ())
                 space = h5py.h5s.create_simple((4,))
                 dataset = h5py.h5d.create(handle.id, b"data", h5py.h5t.py_create(np.dtype("<u4")),
                                           space, dcpl=creation)
                 dataset.write_direct_chunk((0,), nominal, filter_mask=0)
             spec = read_dataset_spec(source, "/data")
-            self.assertEqual(spec.filters, (32000,))
+            self.assertEqual(spec.filters, (65500,))
             with h5py.File(source, "r") as handle:
                 mask, raw = handle["data"].id.read_direct_chunk((0,))
             with self.assertRaises(MissingFilterDecoder):
@@ -323,7 +323,7 @@ class SchemaCodecTests(unittest.TestCase):
             with h5py.File(source, "w", libver=("earliest", "v108")) as handle:
                 creation = h5py.h5p.create(h5py.h5p.DATASET_CREATE)
                 creation.set_chunk((4,))
-                creation.set_filter(32000, h5py.h5z.FLAG_OPTIONAL, ())
+                creation.set_filter(65500, h5py.h5z.FLAG_OPTIONAL, ())
                 dataset = h5py.h5d.create(
                     handle.id, b"data", h5py.h5t.py_create(np.dtype("<u4")),
                     h5py.h5s.create_simple((4,)), dcpl=creation,

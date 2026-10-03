@@ -168,7 +168,9 @@ class FilteredFixedArrayTests(unittest.TestCase):
             pages = [(start, end) for start, end, kind in reader.metadata_ranges
                      if kind == "fixed-array data block page"]
             self.assertEqual(len(pages), 2)
-            self.assertEqual([end-start for start, end in pages], [1024*20+4, 65*20+4])
+            header = reader.read_at(index.base_address, 8)
+            entry_size = header[6]
+            self.assertEqual([end-start for start, end in pages], [1024*entry_size+4, 65*entry_size+4])
             for linear in (0, 1, 1023, 1024, 1088):
                 record = index.chunks[linear]
                 native = dataset.id.get_chunk_info_by_coord(record.coordinate)
@@ -226,7 +228,8 @@ class FilteredFixedArrayTests(unittest.TestCase):
             layout_pointer_offset = index.layout_pointer_offset
             end = next(end for start, end, kind in reader.metadata_ranges
                        if start == block and kind == "fixed-array data block")
-            mask_at = index.chunks[0].pointer_offset + 16
+            entry_size = reader.read_at(index.base_address, 8)[6]
+            mask_at = index.chunks[0].pointer_offset + entry_size - 4
         content = bytearray(self.path.read_bytes())
         content[mask_at:mask_at+4] = (4).to_bytes(4, "little")
         content[end-4:end] = lookup3(content[block:end-4]).to_bytes(4, "little")

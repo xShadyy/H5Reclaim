@@ -8,6 +8,6 @@ Each concept uses the same wordmark, palette, and dimensions. The `logo-*.svg` f
 | Trace | `logo-trace.svg` | `icon-trace.svg` | A route through surviving index nodes. |
 | Monogram | `logo-monogram.svg` | `icon-monogram.svg` | A compact geometric H5 mark. |
 
-The root README currently shows the monogram. To choose another concept, change its image path from `assets/logo-monogram.svg` to the chosen `logo-*.svg`. These SVGs are self-contained and use no external images, scripts, or fonts. Text falls back to the viewer's local sans-serif font.
+The root README uses `h5reclaim-banner.png`. The SVG logo concepts are optional alternatives. These SVGs are self-contained and use no external images, scripts, or fonts. Text falls back to the viewer's local sans-serif font.
 
 Palette: background `#0C2232`, tile `#123348`, foreground `#F0F7F7`, accent `#34D1BB`.
