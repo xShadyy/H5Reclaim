@@ -11,7 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from h5reclaim.large_streaming import LargeBudget, sparse_snapshot
+from h5reclaim.large_streaming import LargeBudget, UnsupportedCase, sparse_snapshot
 from h5reclaim import sparse_io
 from h5reclaim.sparse_io import prepare_sparse_file, sparse_extents, truncate_sparse_file
 
@@ -91,7 +91,9 @@ class SparseCaptureTests(unittest.TestCase):
     def test_sparse_capture_preserves_holes_and_hashes_all_logical_bytes(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "source.h5"
-            size = 16 * 1024**2 + 17
+            # APFS can materialize small gaps as allocated zero-filled data.
+            # Use a gap comfortably above its small-file allocation threshold.
+            size = 64 * 1024**2 + 17
             with source.open("w+b") as file:
                 prepare_sparse_file(file.fileno())
                 truncate_sparse_file(file.fileno(), size)
@@ -107,6 +109,24 @@ class SparseCaptureTests(unittest.TestCase):
                     allocated = sum(end - start for start, end in sparse_extents(captured_file.fileno(), size))
                 self.assertLess(allocated, 1024**2)
                 self.assertEqual(hashlib.sha256(image.read_bytes()).hexdigest(), before)
+            self.assertEqual(hashlib.sha256(source.read_bytes()).hexdigest(), before)
+
+    def test_reported_zero_filled_allocations_still_count_against_copy_quota(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "allocated-zeros.h5"
+            size = 2 * 1024**2
+            source.write_bytes(bytes(size))
+            before = hashlib.sha256(source.read_bytes()).hexdigest()
+            # A filesystem may report zero-filled gaps as allocated data.
+            # Never infer holes from content or bypass the user's copy quota.
+            with patch("h5reclaim.large_streaming.sparse_extents", side_effect=lambda fd, length: iter([(0, length)])):
+                with self.assertRaisesRegex(UnsupportedCase, "copy or free-disk quota"):
+                    with sparse_snapshot(source, budget=LargeBudget(max_copied_bytes=1024**2)):
+                        self.fail("allocated source exceeded its copy quota")
+                with sparse_snapshot(source, budget=LargeBudget(max_copied_bytes=size)) as (image, digest, _, captured, copied):
+                    self.assertEqual((captured, copied), (size, size))
+                    self.assertEqual(digest, before)
+                    self.assertEqual(hashlib.sha256(image.read_bytes()).hexdigest(), before)
             self.assertEqual(hashlib.sha256(source.read_bytes()).hexdigest(), before)
 
     @unittest.skipIf(os.name == "nt", "POSIX buffered-descriptor position regression")

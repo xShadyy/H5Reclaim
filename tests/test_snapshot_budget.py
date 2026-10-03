@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -71,14 +72,30 @@ class SnapshotBudgetTests(unittest.TestCase):
             real_copy = recovery.copy_and_hash
 
             def mutate(*args: object, **kwargs: object) -> tuple[str, int]:
+                before = source.stat()
                 with source.open("r+b") as handle:
                     handle.write(b"b")
+                # Rapid same-size writes can share a Windows timestamp tick.
+                # This case exercises the metadata-change check explicitly.
+                os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns + 2_000_000_000))
                 return real_copy(*args, **kwargs)
 
             with patch("h5reclaim.recovery.copy_and_hash", side_effect=mutate):
                 with self.assertRaisesRegex(RecoveryError, "changed"):
                     with source_snapshot(source):
                         pass
+
+    def test_publication_hash_rejects_byte_changes_even_when_metadata_matches(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.h5"
+            source.write_bytes(b"input A")
+            from h5reclaim import recovery
+            with source_snapshot(source) as (_snapshot, digest, identity, _size):
+                pass
+            source.write_bytes(b"input B")
+            with patch("h5reclaim.recovery._identity", return_value=identity):
+                with self.assertRaisesRegex(RecoveryError, "input bytes changed"):
+                    recovery._verify_source(source, identity, digest)
 
 
 if __name__ == "__main__":
