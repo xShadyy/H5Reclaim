@@ -112,7 +112,9 @@ python -m h5reclaim rescue large.h5 --streaming-budget budget.json --output resc
 python -m h5reclaim rescue large.h5 --dataset /readings --large-readable --streaming-budget budget.json --output streamed.h5 --report streamed.json
 ```
 
-Counts and byte sizes are integers. Duration is a finite positive number. Omitted fields use the defaults above. Increase the relevant budgets for a larger acquisition, metadata inventory or decoded chunk. Sparse snapshots preserve holes where the operating system supports them; dense copying checks the copy budget and free disk space. One private source image is shared across automatic routes and whole-file datasets. Configured budgets govern inventory, datatype validation, automatic fallback, output publication, worker memory and deadlines. The report records how many physical bytes were copied.
+Counts and byte sizes are integers. Duration is a finite positive number. Omitted fields use the defaults above. Increase the relevant budgets for a larger acquisition, metadata inventory or decoded chunk. Sparse snapshots use POSIX allocation ranges or Windows filesystem queries to preserve holes; dense copying checks the copy budget and free disk space. One private source image is shared across automatic routes and whole-file datasets. Configured budgets govern inventory, datatype validation, automatic fallback, output publication, worker memory and deadlines. The report records how many physical bytes were copied.
+
+Worker memory uses an address-space limit on Linux and a Job Object committed-memory limit on Windows. On macOS the parent samples the worker process group's resident memory every 100 milliseconds and stops the group when it exceeds the configured budget. Allocations can exceed that budget between samples. Native-readable reports identify the memory mechanism used.
 
 ## Select an advanced route
 

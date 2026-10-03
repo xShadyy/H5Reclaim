@@ -18,7 +18,7 @@
 | `src/h5reclaim/filter_registry.py` | Explicit packaged codec registration and reversible output-filter policy |
 | `src/h5reclaim/object_discovery.py`, `checked_view.py` | Legacy and modern detached headers, private root views and checksum-justified root correction |
 | `src/h5reclaim/source_session.py`, `checkpoint.py`, `unit_checkpoint.py` | Shared images, locked dataset checkpoints and append-only verified selection caches |
-| `src/h5reclaim/large_streaming.py`, `large_structural.py` | Sparse snapshots, configurable streaming budgets, larger exports |
+| `src/h5reclaim/large_streaming.py`, `large_structural.py`, `sparse_io.py` | Sparse snapshots, POSIX/Windows allocation queries, configurable streaming budgets, larger exports |
 | `src/h5reclaim/ownership_inventory.py`, `evidence.py`, `evidence_adapter.py`, `modern_evidence_adapter.py` | Physical ownership and evidence reconciliation |
 | `src/h5reclaim/status_trial_export.py`, `metadata_trial_export.py`, `metadata_correction.py`, `header_dimension_trial.py` | Checked disposable status and metadata correction trials |
 | `src/h5reclaim/dependency_routes.py`, `external_raw_export.py`, `external_link_export.py` | Pinned related files and external storage |

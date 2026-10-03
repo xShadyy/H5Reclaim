@@ -31,6 +31,7 @@ from .metadata import UnsupportedCase
 from .native_io import read_fixed_block, write_fixed_block
 from .native_addresses import chunk_address
 from .ownership_inventory import inventory_other_allocations
+from .sparse_io import has_sparse_extents, prepare_sparse_file, sparse_extents
 from .readable_export import (
     NATIVE_FILTERS, _create_matching_dataset, _require_no_competing_owner,
     _safe_export_attributes, _safe_fixed_type, _selected_dataset,
@@ -123,8 +124,8 @@ def _copy_dense(source, target, *, size: int, parent: Path,
                 budget: LargeBudget, deadline: float) -> tuple[str, int]:
     """Bounded fallback on systems without sparse extent enumeration.
 
-    Windows users can process inputs above the regular 4 GiB limit when they
-    explicitly have enough disk for the entire source. The copy quota and
+    Users of filesystems without allocation enumeration can process large
+    inputs when they have enough disk for the entire source. The copy quota and
     real free space are enforced; this never silently expands a huge hole.
     """
     if size > budget.max_copied_bytes or shutil.disk_usage(parent).free < size + budget.disk_reserve_bytes:
@@ -146,15 +147,15 @@ def _copy_dense(source, target, *, size: int, parent: Path,
 
 
 def _has_sparse_extents() -> bool:
-    return hasattr(os, "SEEK_DATA") and hasattr(os, "SEEK_HOLE")
+    return has_sparse_extents()
 
 
 def _copy_sparse(source, target, *, size: int, parent: Path,
                  budget: LargeBudget, deadline: float) -> tuple[str, int]:
-    """Preserve SEEK_HOLE ranges; hash their logical zero bytes as well.
+    """Preserve filesystem-reported holes and hash their logical zero bytes.
 
-    SEEK_DATA and SEEK_HOLE are filesystem contracts, not content inference.
-    If either is unavailable, a full copy is allowed only under a separate
+    POSIX SEEK_DATA/HOLE and Windows allocated ranges are OS contracts.
+    If unavailable, a full copy is allowed only under a separate
     explicit byte and free-space quota.
     """
     if not _has_sparse_extents():
@@ -163,31 +164,22 @@ def _copy_sparse(source, target, *, size: int, parent: Path,
     digest = hashlib.sha256()
     total_written = 0
     cursor = 0
+    extents = iter(sparse_extents(source.fileno(), size))
+    try:
+        first = next(extents, None)
+        prepare_sparse_file(target.fileno())
+    except OSError as exc:
+        if exc.errno in (errno.EINVAL, errno.ENOTSUP, errno.ENOSYS):
+            return _copy_dense(source, target, size=size, parent=parent,
+                               budget=budget, deadline=deadline)
+        raise UnsupportedCase("sparse extent lookup failed; input was not copied") from exc
     target.truncate(size)
-    while cursor < size:
+    from itertools import chain
+    for data_start, hole_start in chain(() if first is None else (first,), extents):
         _deadline(deadline)
-        try:
-            data_start = os.lseek(source.fileno(), cursor, os.SEEK_DATA)
-        except OSError as exc:
-            if exc.errno == errno.ENXIO:
-                _hash_zeros(digest, size - cursor, budget.block_bytes, deadline)
-                break
-            if cursor == 0 and exc.errno in (errno.EINVAL, errno.ENOTSUP, errno.ENOSYS):
-                return _copy_dense(source, target, size=size, parent=parent,
-                                   budget=budget, deadline=deadline)
-            raise UnsupportedCase("sparse extent lookup failed; input was not copied") from exc
-        if not cursor <= data_start <= size:
+        if not cursor <= data_start < hole_start <= size:
             raise RecoveryError("filesystem returned an invalid sparse data extent")
         _hash_zeros(digest, data_start - cursor, budget.block_bytes, deadline)
-        try:
-            hole_start = os.lseek(source.fileno(), data_start, os.SEEK_HOLE)
-        except OSError as exc:
-            if cursor == 0 and exc.errno in (errno.EINVAL, errno.ENOTSUP, errno.ENOSYS):
-                return _copy_dense(source, target, size=size, parent=parent,
-                                   budget=budget, deadline=deadline)
-            raise UnsupportedCase("sparse hole lookup failed; input was not copied") from exc
-        if not data_start < hole_start <= size:
-            raise RecoveryError("filesystem returned an invalid sparse hole extent")
         source.seek(data_start)
         target.seek(data_start)
         remaining = hole_start - data_start
@@ -205,6 +197,7 @@ def _copy_sparse(source, target, *, size: int, parent: Path,
             total_written += length
             remaining -= length
         cursor = hole_start
+    _hash_zeros(digest, size - cursor, budget.block_bytes, deadline)
     target.flush()
     return digest.hexdigest(), total_written
 
