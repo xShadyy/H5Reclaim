@@ -25,9 +25,11 @@ def _apply_memory_limit(max_bytes: int) -> int | None:
     if hasattr(resource, "RLIMIT_CORE"):
         _, core_hard = resource.getrlimit(resource.RLIMIT_CORE)
         resource.setrlimit(resource.RLIMIT_CORE, (0, core_hard))
-    if hasattr(resource, "RLIMIT_AS"):
+    # Darwin's address-space resource does not support these worker limits;
+    # the parent enforces a sampled process-group resident-memory budget.
+    if sys.platform != "darwin" and hasattr(resource, "RLIMIT_AS"):
         _, hard = resource.getrlimit(resource.RLIMIT_AS)
-        applied = min(max_bytes, hard) if hard >= 0 else max_bytes
+        applied = max_bytes if hard == resource.RLIM_INFINITY else min(max_bytes, hard)
         resource.setrlimit(resource.RLIMIT_AS, (applied, hard))
         return applied
     return None
@@ -49,6 +51,7 @@ def main() -> int:
 
         from .hints import DatasetHints
         from .readable_export import _export_readable_local
+        from .worker_limits import memory_budget_record
 
         hint_fields = request.get("hints")
         if hint_fields is not None:
@@ -62,7 +65,7 @@ def main() -> int:
             published_output=Path(request["published_output"]),
             worker_budget={
                 "wall_time_seconds": request["timeout_seconds"],
-                "address_space_cap_bytes": applied_memory_limit,
+                **memory_budget_record(int(request["memory_bytes"]), applied_memory_limit),
                 "dynamic_plugins_disabled": True,
             },
         )

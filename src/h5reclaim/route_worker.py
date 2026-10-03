@@ -81,7 +81,7 @@ def _child(request_path: Path, response_path: Path) -> int:
         os.environ.pop("HDF5_PLUGIN_PATH", None)
         os.environ.pop("HDF5_EXTFILE_PREFIX", None)
         from .native_worker import _apply_memory_limit
-        _apply_memory_limit(int(request["memory_bytes"]))
+        applied_memory_limit = _apply_memory_limit(int(request["memory_bytes"]))
         from .source_session import activate_worker_session
         activate_worker_session()
         args: dict[str, Any] = request["args"]
@@ -210,11 +210,12 @@ def _child(request_path: Path, response_path: Path) -> int:
             # The outer worker is already isolated and has a resource limit;
             # avoid another process and preserve the final published path.
             from .readable_export import _export_readable_local
+            from .worker_limits import memory_budget_record
             _export_readable_local(
                 args["source"], args["dataset"], output, report,
                 published_output=Path(request["published_output"]),
                 worker_budget={"wall_time_seconds": 900,
-                               "address_space_cap_bytes": int(request["memory_bytes"]),
+                               **memory_budget_record(int(request["memory_bytes"]), applied_memory_limit),
                                "dynamic_plugins_disabled": True},
             )
         else:

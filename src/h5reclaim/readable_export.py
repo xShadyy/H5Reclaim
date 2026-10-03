@@ -789,7 +789,8 @@ def export_readable(source: str | Path, dataset_path: str, output: str | Path,
     """Copy a local dataset in a time-bounded process, publishing only after verification.
 
     The subprocess isolates native HDF5 crashes and hangs from the caller. On
-    POSIX it also limits virtual address space. On Windows a Job Object caps
+    Linux it also limits virtual address space. On macOS the parent monitors
+    process-group resident memory. On Windows a Job Object caps
     committed memory and owns the child process tree. Only a successful staged
     result is linked to the requested output and report destinations.
     """

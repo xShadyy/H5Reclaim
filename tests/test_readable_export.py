@@ -591,7 +591,7 @@ class ReadableExportTests(unittest.TestCase):
             self.assertFalse(report.exists())
             self.assertFalse(list(base.glob(".h5reclaim-*")))
 
-    @unittest.skipIf(os.name == "nt", "POSIX address-space limit test")
+    @unittest.skipIf(os.name == "nt" or sys.platform == "darwin", "RLIMIT_AS platform test")
     def test_worker_sets_address_space_budget_before_h5py_import(self) -> None:
         code = ("from h5reclaim.native_worker import _apply_memory_limit; "
                 "import resource; _apply_memory_limit(536870912); "
