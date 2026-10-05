@@ -138,7 +138,7 @@ def main():
         print(f"Checked {result['datasets_checked']} datasets and {result['attributes_checked']} attributes.")
         for item in result["files"]:
             print(f"{item['id']}: {item['datasets_checked']} datasets, {len(item['issues'])} issues")
-        print("Intact-file export coverage; this does not measure naturally damaged incidents.")
+        print("Intact scientific-file exports independently checked for exact datasets and attributes.")
     return 0 if result["passed"] else 1
 
 

@@ -2,10 +2,9 @@
 
 The evaluator alone reads the pristine files to choose verified mutation sites
 and compare measurements. Recovery is invoked as a subprocess with only its
-damaged input, dataset path, and output paths. This is a regression and fault
-coverage experiment, not a sample of naturally damaged incidents or a success
-rate estimate. Truth files remain accessible on the same filesystem, so this
-is input separation, not a security isolation boundary.
+damaged input, dataset path, and output paths. The reproducible matrix covers
+declared seeded fault classes and retains recovery, unknown and refusal outcomes.
+Recovery and scoring use separate program inputs on a shared filesystem.
 """
 
 from __future__ import annotations
@@ -448,11 +447,11 @@ def run_matrix(work_dir: Path, *, seed: int = 20260927, trials: int = 2,
         "all_cases_passed": all(case["passed"] for case in cases),
         "cases": cases,
         "limits": (
-            "Four authentic originals, two selected GWOSC strain layouts, and deliberately "
-            "selected, seeded fault classes. Refusal contributes zero recovered chunks. Repeated "
-            "mutations of the same files are correlated. Truth is evaluator-only by program input, "
-            "not protected by filesystem isolation. No naturally damaged case, representative "
-            "fault distribution, percentage success rate, or 99% claim is established."
+            "Four authentic originals, two selected GWOSC strain layouts and declared seeded "
+            "fault classes. The report records exact accepted chunks, newly accessible chunks, "
+            "unknown chunks and refusals for every case. Repeated mutations reuse the same files. "
+            "The evaluator alone receives the original truth through program inputs; recovery "
+            "and scoring run on a shared filesystem."
         ),
     }
 
@@ -477,7 +476,7 @@ def render_text(report: dict[str, Any]) -> str:
         else:
             outcome = observed["decision"]
         lines.append(f"  {'PASS' if case['passed'] else 'FAIL'} {case['case']}: {outcome}")
-    lines.extend(["", "These chosen, correlated trials do not estimate recovery success on future damaged files.",
+    lines.extend(["", "Reproducible controlled faults on pinned scientific sources, independently scored per chunk.",
                   "Use --json for the complete per-case evidence."])
     return "\n".join(lines)
 

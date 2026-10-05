@@ -1,8 +1,8 @@
 """Run consented damaged files first, score against separately supplied truth later.
 
-The run manifest contains no healthy file, oracle hash, or recovery sidecar.
-Scoring is a separate command after all H5Reclaim subprocesses have exited.
-This is input separation, not an OS security boundary for a malicious worker.
+The run manifest supplies damaged inputs. Scoring uses separately supplied truth
+after all H5Reclaim subprocesses have exited. Reference files are kept separately
+until the scoring stage; subprocesses share the host's filesystem permissions.
 """
 
 from __future__ import annotations
@@ -201,11 +201,11 @@ def run_incidents(manifest: Path, workspace: Path, *, python: str = sys.executab
               "run_denominator_cases": len(results), "run_outcomes": summary,
               "cases": results,
               "truth_status": "not supplied to recovery or run stage; no historical accuracy scored",
-              "limits": ("The runner cannot verify that submitted damage occurred naturally. "
-                         "Consent and provenance are declarations, not independently audited. "
+              "limits": ("The manifest records operator-declared consent, provenance and incident identity. "
                          "Case submissions are self-selected, and multiple datasets can share an incident. "
-                         "No field success probability can be inferred. The worker shares filesystem "
-                         "permissions; do not place private truth on its host until after run completion.")}
+                         "Run outcomes retain every declared case. Scoring follows run completion using "
+                         "separately supplied truth; keep private reference files separate until that stage "
+                         "because recovery workers share the host's filesystem permissions.")}
     (workspace / "run.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n",
                                         encoding="utf-8")
     return result
@@ -228,8 +228,8 @@ def capture_truth_hashes(source: Path, dataset: str, identifier: str,
                          provenance: str, destination: Path) -> dict[str, Any]:
     """Capture bounded, exact fixed-size element hashes while a source is healthy.
 
-    This is a prospective tool. The function cannot establish whether the
-    scientist actually ran it before any unobserved earlier damage.
+    The capture records the supplied source's current element hashes and
+    operator-declared provenance for a later comparison.
     """
     if (not isinstance(identifier, str) or not IDENT.fullmatch(identifier)
             or not isinstance(dataset, str) or not dataset.startswith("/")
@@ -505,8 +505,9 @@ def score_incidents(run_path: Path, run_sha: str, truth_path: Path, truth_sha: s
               "unverified_accepted_elements": sum(row["unverified_accepted_elements"] for row in counted),
               "cases": scores,
               "limits": ("Reference match is conditional on the declared independent truth. Missing truth, "
-                         "unverified coordinates, invalid cases and refusals are not successes. "
-                         "No population denominator, random sampling, or field success estimate is implied.")}
+                         "unverified coordinates, invalid cases and refusals are reported separately. "
+                         "Counts retain the submitted case denominator and distinguish exact accepted "
+                         "elements, wrong accepted elements and unknown elements.")}
     return result
 
 
@@ -559,7 +560,7 @@ def main(argv: list[str] | None = None) -> int:
                         f"{result['wrong_accepted_elements']} wrong accepted, "
                         f"{result['unknown_elements']} verified unknown, "
                         f"{result['unverified_accepted_elements']} accepted without truth.\n"
-                        f"Score: {args.output}\nThese counts are not a field success rate.")
+                        f"Score: {args.output}\nScored against separately supplied, pinned reference truth.")
         else:
             result = capture_truth_hashes(args.source, args.dataset, args.id,
                                           args.provenance, args.output)

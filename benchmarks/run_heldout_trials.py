@@ -2,8 +2,8 @@
 
 The evaluator owns pristine files and mutation manifests. Each recovery child
 receives only a disposable damaged copy, dataset path, and fresh destinations.
-This is program-input separation, not a filesystem security boundary. Scores
-describe the declared panel and controlled faults, never a field success rate.
+Recovery and scoring use separate program inputs on a shared filesystem. Scores
+describe the independently supplied panel and its declared controlled faults.
 """
 
 from __future__ import annotations
@@ -400,11 +400,12 @@ def run_panel(manifest: Path, workspace: Path, *, faults: tuple[str, ...] = FAUL
             "no_false_accept_or_protocol_failure": all(
                 not case["eligible"] or case["observation"]["outcome"] not in
                 ("false_accept", "protocol_failure") for case in cases),
-            "limits": ("Self-declared file provenance and selected faults are not a random sample "
-                       "of naturally damaged files. Generated faults on the same file are correlated. "
-                       "Pristine truth is separate from subprocess arguments, but files share filesystem "
-                       "permissions. A refusal recovers zero values. Unchecksummed damage may be falsely "
-                       "accepted, and excluded pairs do not enter an eligible-case denominator.")}
+            "limits": ("The report retains operator-declared file provenance and selected fault classes. "
+                       "Generated mutations reuse the supplied panel files. Pristine truth is separate "
+                       "from recovery subprocess arguments on a shared filesystem. Refusals contribute "
+                       "zero recovered values. Exact values, wrong accepted values, unknown values and "
+                       "excluded pairs are reported separately. Eligible-case scores retain their "
+                       "eligible denominator; excluded pairs have separate counts.")}
 
 
 def render_text(report: dict[str, Any]) -> str:

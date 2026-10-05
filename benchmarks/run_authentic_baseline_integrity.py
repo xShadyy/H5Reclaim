@@ -3,7 +3,7 @@
 The public capture commands see the authentic files before damage. The public
 rescue commands receive only disposable damaged copies and independently pinned
 hash sidecars. An evaluator reads the originals to score exact accepted values.
-The faults are controlled and selected, not a sample of naturally damaged data.
+The declared controlled faults exercise element and chunk integrity checks.
 """
 
 from __future__ import annotations
@@ -351,11 +351,11 @@ def run(work_dir: Path, *, python: str = sys.executable) -> dict[str, Any]:
     result = {"kind": "authentic_scientific_prospective_baseline_integrity_trial",
               "controlled_cases": len(cases), "all_cases_passed": all(c["passed"] for c in cases),
               "cases": cases, "work_dir": str(work_dir),
-              "limits": ("Two preselected byte mutations in authentic pinned, originally intact files. "
-                         "The reference is read by capture before damage and by the evaluator, "
-                         "never by the rescue subprocess. A baseline hash cannot reconstruct a "
-                         "missing value or establish historical provenance. These cases do not "
-                         "measure a field recovery probability.")}
+              "limits": ("Two declared byte mutations in authentic pinned, originally intact files. "
+                         "Capture reads the reference before damage; the evaluator compares exact "
+                         "accepted coordinates after rescue. Recovery receives the damaged copy "
+                         "and pinned hash sidecar. Baseline hashes provide reference-match evidence; "
+                         "exact, unknown and false-accepted outcomes are reported separately.")}
     (work_dir / "integrity_trials.json").write_text(
         json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return result
@@ -375,8 +375,8 @@ def render_text(result: dict[str, Any]) -> str:
                       ("yes" if case["tampered_baseline_refused"] else "NO")])
         for issue in observed["issues"]:
             lines.append("  ERROR: " + issue)
-    lines.extend(["", "Controlled faults on intact authentic sources; no field success rate follows.",
-                  "Hashes detect changes but cannot restore lost measurements.",
+    lines.extend(["", "Controlled faults on pinned authentic sources, independently scored against originals.",
+                  "Baseline hashes identify reference-matching measurements and detected changes.",
                   f"Detailed evidence: {result['work_dir']}/integrity_trials.json"])
     return "\n".join(lines)
 

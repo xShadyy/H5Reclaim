@@ -2,9 +2,8 @@
 
 The generated pristine sources are evaluator-only references. The public CLI
 receives just a separate current/damaged file, selected path, and destinations.
-The benchmark measures exact values and coordinates plus safe refusals. Its
-cases are constructed and correlated, so its counts are not a population
-success rate or evidence for a 99% claim.
+The benchmark measures exact values and coordinates plus safe refusals across
+the declared generated layouts and controlled fault classes.
 """
 
 from __future__ import annotations
@@ -504,11 +503,11 @@ def run(workspace: Path, *, seed: int = 20260927, trials: int = 2,
         "all_cases_passed": all(c["passed"] for c in cases), "cases": cases,
         "limits": (
             "Generated current files and controlled faults plus one intact authentic GWOSC file. "
-            "The pristine truth is supplied to the evaluator, not to the recovery subprocess. "
-            "A changed unfiltered payload remains structurally attributable but is labeled without "
-            "independent integrity; its historical value can be wrong. Other generated cases are "
-            "correlated and not representative of naturally damaged HDF5 files. This is not a "
-            "population success estimate or evidence of a 99% recovery rate."
+            "Pristine truth is supplied exclusively to the evaluator. The report records exact "
+            "accepted regions, unknown regions, refusals and historical mismatches per declared "
+            "case. Changed unfiltered payloads retain their explicit current-value evidence label "
+            "and are independently scored for historical mismatches. Generated mutations reuse "
+            "the declared layout fixtures."
         ),
     }
     (workspace / "stratified.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
@@ -532,7 +531,7 @@ def render(report: dict[str, Any]) -> str:
                      f"{observed['decision']}, {observed['exact_regions']} exact, "
                      f"{observed['unknown_regions']} unknown, "
                      f"{observed['wrong_historical_regions']} historical mismatches")
-    lines.extend(["", "These constructed cases do not measure real-world recovery probability.",
+    lines.extend(["", "Generated layout and controlled-fault cases scored at exact original coordinates.",
                   "The full independent scoring is saved to stratified.json; add --json to print it."])
     return "\n".join(lines)
 

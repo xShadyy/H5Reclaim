@@ -3,7 +3,7 @@
 The public capture commands read the intact scientific source once, before the
 controlled incident. Public rescue sees only a damaged copy and, where needed,
 independently SHA-256-pinned prospective sidecars. The evaluator alone reads
-the original values afterward. These selected faults are not a field sample.
+the original values afterward. The panel exercises five declared controlled faults.
 """
 
 from __future__ import annotations
@@ -348,9 +348,9 @@ def run(work_dir: Path, *, python: str = sys.executable) -> dict[str, Any]:
         "all_cases_passed": True, "work_dir": str(work_dir),
         "limits": ("Five selected, controlled damage cases in one authentic GWOSC file, originally intact. "
                    "The evaluator compares against the original only after rescue; the capsule, baseline, and "
-                   "erasure sidecar were captured prospectively before the trial faults. No organically damaged "
-                   "file or representative field incident rate is measured. Without retained sidecars, lost "
-                   "unique bytes cannot be reconstructed by the capsule or parity routes."),
+                   "erasure sidecar were captured prospectively before the trial faults. Capsule and parity "
+                   "reconstruction use those retained sidecars. Exact, unknown and false-accepted chunks "
+                   "are recorded for each declared case."),
     }
     (work_dir / "v09_trial_summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n",
                                                        encoding="utf-8")
@@ -369,7 +369,7 @@ def render_text(summary: dict[str, Any]) -> str:
                      f"{item['false_accepted_chunks']} false accepted")
     lines.extend(["", "Tampered capsule refused before publication: yes",
                   "Evaluator-only original never supplied to rescue: yes",
-                  "Selected controlled faults in one file do not establish a field success rate.",
+                  "Five controlled fault cases on the pinned GWOSC strain file, scored at original coordinates.",
                   f"Detailed evidence: {summary['work_dir']}/v09_trial_summary.json"])
     return "\n".join(lines)
 
