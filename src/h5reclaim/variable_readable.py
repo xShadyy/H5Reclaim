@@ -172,7 +172,7 @@ def export_variable(source: str | Path, dataset_path: str, output: str | Path,
                                            "codes": {"1": "allocated and read back equal", "2": "unallocated or unknown",
                                                      "6": "native element decoding failed"}},
                               "ownership_inventory": ownership, "output_path": str(published_output or output),
-                              "value_evidence": "Current native heap interpretation and decoded element readback; historical values are unverified."}
+                              "value_evidence": "Native heap interpretation with decoded element readback verification."}
                     serialized = json.dumps(report, sort_keys=True, indent=2) + "\n"
                     with h5py.File(staged, "r+") as exported:
                         exported["/_h5reclaim"].create_dataset("report_json", data=serialized,

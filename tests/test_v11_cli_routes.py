@@ -121,7 +121,7 @@ class V11PublicRoutesTests(unittest.TestCase):
             result = cli("rescue", source, "--dataset", "/experiment/readings",
                          "--output", output, "--report", report_path)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("History: unverified", result.stdout)
+            self.assertIn("History: current-source evidence", result.stdout)
             report = json.loads(report_path.read_text(encoding="utf-8"))
             self.assertEqual(report["historical_integrity"]["matching_units"], 0)
             self.assertEqual(report["scientific_context"]["status"], "bounded_observation")

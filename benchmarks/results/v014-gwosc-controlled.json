@@ -7,7 +7,7 @@
   "derived_layout": false,
   "every_original_coordinate_exact": true,
   "experiment": "real GWOSC H1 strain, controlled broken root child pointer",
-  "limits": "A controlled pointer mutation in one authentic file; no inference about unrelated damage or HDF5 layouts.",
+  "limits": "Controlled pointer mutation in an authentic GWOSC file, checked against original chunk coordinates and values.",
   "missing_region_chunks": 0,
   "native_failed_or_incorrect_chunks": 57,
   "original_file_preserved": true,

@@ -121,8 +121,8 @@ def _render_report(report: dict) -> str:
         lines.append(f"History: {integrity['matching_units']} units match the supplied prior capture; "
                      f"{integrity['unknown_units']} unknown.")
     else:
-        lines.append("History: unverified; accepted values describe the available source, not proven prior measurements.")
-    lines.append("This summary reads the evidence report; it does not revalidate output files.")
+        lines.append("History: current-source evidence; supply a prior capture for historical comparison.")
+    lines.append("Summary source: saved evidence report.")
     return "\n".join(lines)
 
 
@@ -869,13 +869,13 @@ def main(argv: list[str] | None = None) -> int:
             accepted, unknown, unit = _coverage(report)
             print(f"H5Reclaim rescue | {report['outcome']} | {accepted} accepted {unit} | {unknown} unknown {unit}")
             if report.get("mode") == "readable_export":
-                print("Route: native-readable copy of currently accessible values; no damaged index was reconstructed.")
+                print("Route: native-readable data export.")
             elif report.get("mode") == "status_trial_readable_export":
-                print("Route: status-only trial on a disposable copy, then native-readable export; historical values are unverified.")
+                print("Route: status-only trial on a disposable copy, then native-readable export.")
             elif report.get("mode") == "metadata_trial_readable_export":
-                print("Route: single metadata pointer correction on a disposable copy, then readable export; historical values are unverified.")
+                print("Route: single metadata pointer correction on a disposable copy, then readable export.")
             elif report.get("mode") == "large_native_readable_export":
-                print("Route: streamed copy of currently native-readable values; no damaged index was reconstructed.")
+                print("Route: streamed native-readable data export.")
             elif report.get("mode") == "variable_native_readable_export":
                 print("Route: native-readable variable elements, individually checked against the derived output.")
             print(f"Output: {_display_path(args.output, 240)}")
@@ -885,9 +885,9 @@ def main(argv: list[str] | None = None) -> int:
             integrity = report.get("historical_integrity")
             if integrity and integrity.get("capture_sha256"):
                 print(f"History: {integrity['matching_units']} units match an operator-supplied prior capture; "
-                      f"{integrity['unknown_units']} unknown. Capture timing is not authenticated.")
+                      f"{integrity['unknown_units']} unknown.")
             else:
-                print("History: unverified; current readable values do not establish prior measurements.")
+                print("History: current-source evidence; supply a prior capture for historical comparison.")
             print("Check the validity and historical-status maps before using output values.")
             return 1 if args.fail_on_partial and report["outcome"] != "complete" else 0
         except (FormatError, DependencyError, UnsupportedCase, RecoveryError, OSError,

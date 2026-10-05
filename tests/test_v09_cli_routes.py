@@ -97,7 +97,7 @@ class V09CliRoutesTests(unittest.TestCase):
         result = self._command("rescue", self.healthy, "--dataset", "/science",
                                "--large-readable", "--output", output, "--report", report)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("no damaged index was reconstructed", result.stdout)
+        self.assertIn("Route: streamed native-readable data export.", result.stdout)
         self.assertEqual(json.loads(report.read_text())["operation"], "large_native_readable_export")
         with h5py.File(output, "r") as file:
             self.assertEqual(file["/science"][...].tobytes(), self.truth.tobytes())
