@@ -45,8 +45,11 @@ def _dimensions(values: list[int] | None) -> str:
 
 def _display_path(value: str, limit: int = 120) -> str:
     # Escape control characters from untrusted filesystem and HDF5 names in
-    # terminal output. JSON mode carries the exact strings for tooling.
-    value = json.dumps(str(value), ensure_ascii=True)[1:-1]
+    # terminal output, retaining literal Windows path separators. Non-ASCII
+    # escapes keep redirected output usable with narrow platform encodings.
+    # JSON mode carries the exact strings for tooling.
+    value = "".join(character if character == "\\" else json.dumps(character, ensure_ascii=True)[1:-1]
+                    for character in str(value))
     return value if len(value) <= limit else value[:limit - 3] + "..."
 
 

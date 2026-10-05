@@ -14,7 +14,7 @@ from pathlib import Path
 import h5py
 import numpy as np
 
-from h5reclaim.__main__ import _render_report
+from h5reclaim.__main__ import _display_path, _render_report
 from h5reclaim.recovery import VERSION
 
 
@@ -49,6 +49,28 @@ class CliUsabilityTests(unittest.TestCase):
         version = command("--version")
         self.assertEqual(version.returncode, 0, version.stderr)
         self.assertEqual(version.stdout.strip(), f"h5reclaim {VERSION}")
+
+    def test_windows_path_separators_and_literal_escape_text_remain_unchanged(self) -> None:
+        for path in (r"C:\Users\runneradmin\recovery results\selected.report.json",
+                     r"\\server\share\measurements.h5",
+                     r"C:\data\n\t\u001b\measurements.h5"):
+            with self.subTest(path=path):
+                self.assertEqual(_display_path(path), path)
+
+    def test_terminal_controls_remain_escaped_with_literal_windows_separators(self) -> None:
+        path = "C:\\data\\unsafe\n\t\x1b[31m\x7f\x85\x9b\u202e\ud800.h5"
+        displayed = _display_path(path, 240)
+        self.assertEqual(displayed, r"C:\data\unsafe\n\t\u001b[31m\u007f\u0085\u009b\u202e\ud800.h5")
+        self.assertTrue(displayed.isascii())
+        self.assertTrue(all(ord(character) >= 32 and ord(character) != 127 for character in displayed))
+
+    def test_nonascii_paths_and_truncation_keep_platform_safe_display(self) -> None:
+        self.assertEqual(_display_path("C:\\Users\\Łukasz\\測定.h5"),
+                         r"C:\Users\\u0141ukasz\\u6e2c\u5b9a.h5")
+        path = r"C:\Users\runneradmin\long directory\selected.report.json"
+        displayed = _display_path(path, 24)
+        self.assertEqual(displayed, path[:21] + "...")
+        self.assertEqual(len(displayed), 24)
 
     def test_whole_file_defaults_publish_new_sibling_files_and_summary(self) -> None:
         before = hashlib.sha256(self.source.read_bytes()).hexdigest()

@@ -2472,7 +2472,7 @@
       "source_unchanged": true
     },
     {
-      "damaged_sha256": "2aa8ed1894d3ee7ed4dfd56cc3b0d0fe300086164813690f030fac32c6f35892",
+      "damaged_sha256": "d0628ce62e4616a81d343f67443233774dd7d0ce9517c6e8d326b9da4f295b0d",
       "family": "compact",
       "fault": "intact",
       "fault_byte_offset": null,
@@ -2489,11 +2489,11 @@
         "useful_output": true,
         "wrong_accepted_elements": 0
       },
-      "original_sha256": "2aa8ed1894d3ee7ed4dfd56cc3b0d0fe300086164813690f030fac32c6f35892",
+      "original_sha256": "d0628ce62e4616a81d343f67443233774dd7d0ce9517c6e8d326b9da4f295b0d",
       "source_unchanged": true
     },
     {
-      "damaged_sha256": "6ee92d177fb4bded40ce9a0439a76c3f2c15f8341d0856788a87ea000424895b",
+      "damaged_sha256": "eaea11e79327e65f999ddd9ae5e04892a11817aefe57069eba3b83cb28be1ff4",
       "family": "compact",
       "fault": "signature_bitflip",
       "fault_byte_offset": 0,
@@ -2510,11 +2510,11 @@
         "useful_output": true,
         "wrong_accepted_elements": 0
       },
-      "original_sha256": "2aa8ed1894d3ee7ed4dfd56cc3b0d0fe300086164813690f030fac32c6f35892",
+      "original_sha256": "d0628ce62e4616a81d343f67443233774dd7d0ce9517c6e8d326b9da4f295b0d",
       "source_unchanged": true
     },
     {
-      "damaged_sha256": "71968624fa80e5397cf59edf3dfcf10190b2fea539855cc7c6b851341238376a",
+      "damaged_sha256": "fdcafabbcf560cff592bfcce3cf92aed9cddd998544a45d1f932ce3dd9fc27f4",
       "family": "compact",
       "fault": "root_pointer_bitflip",
       "fault_byte_offset": 36,
@@ -2531,11 +2531,11 @@
         "useful_output": true,
         "wrong_accepted_elements": 0
       },
-      "original_sha256": "2aa8ed1894d3ee7ed4dfd56cc3b0d0fe300086164813690f030fac32c6f35892",
+      "original_sha256": "d0628ce62e4616a81d343f67443233774dd7d0ce9517c6e8d326b9da4f295b0d",
       "source_unchanged": true
     },
     {
-      "damaged_sha256": "0f046747b79430575e9d472c7753e55117e7dc3f40e09837f22e708b887bc261",
+      "damaged_sha256": "d418df28893828bba24b6dfa74cd0b07aca5cc58bde13cda183dbc9bb91dd23f",
       "family": "compact",
       "fault": "interrupted_write_status",
       "fault_byte_offset": 11,
@@ -2552,7 +2552,7 @@
         "useful_output": true,
         "wrong_accepted_elements": 0
       },
-      "original_sha256": "2aa8ed1894d3ee7ed4dfd56cc3b0d0fe300086164813690f030fac32c6f35892",
+      "original_sha256": "d0628ce62e4616a81d343f67443233774dd7d0ce9517c6e8d326b9da4f295b0d",
       "source_unchanged": true
     },
     {
@@ -2980,7 +2980,7 @@
   "tested_source": {
     "files": 77,
     "method": "SHA-256 of sorted relative-path plus file-SHA-256 lines for src/h5reclaim/*.py, pyproject and both evaluator modules",
-    "sha256": "f9d40f2e48012e4d6842ab99565cfbda2b911fa7be5b5663463a60050316a9bd"
+    "sha256": "3d072738dd9a0c5e6bde24d1712bda663ddc9f1f3aa4abbc5c01194bbfdbc09b"
   },
   "tested_source_unchanged": true,
   "tool_version": "0.15.0"
