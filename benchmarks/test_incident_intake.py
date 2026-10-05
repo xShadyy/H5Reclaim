@@ -109,7 +109,9 @@ class IncidentIntakeTests(unittest.TestCase):
         refused = self.inputs / "no_signature.h5"
         shutil.copyfile(self.reference, refused)
         with refused.open("r+b") as stream:
-            stream.write(b"X")
+            # A single modern signature byte is now recoverable against its
+            # original checksum. Two lost bytes remain outside that route.
+            stream.write(b"XX")
         raw = json.loads(self.manifest.read_text())["cases"][0]
         refusal = dict(raw, id="field-02", incident_id="event-one",
                        path="inputs/no_signature.h5", sha256=digest(refused),

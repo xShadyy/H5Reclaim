@@ -2,21 +2,53 @@
 
 ## Install
 
-Use Python 3.10 or newer in the repository root:
+Use Python 3.10 or newer. Clone the repository or extract its GitHub ZIP, then open a terminal in the repository root:
 
 ```sh
-python -m pip install -e .
-python -m h5reclaim --help
+python -m venv .venv
 ```
 
-Install with `python -m pip install -e ".[filters]"` to enable installed packaged Zstd, Blosc, Blosc2, Bitshuffle, LZ4, BZip2, ZFP, SZ, SZ3, SPERR, HTJ2K and FCI codecs. Recovery workers register packaged codecs explicitly. Add `applications` to run the MATLAB 7.3, netCDF4 and NWB writer/reader evaluations.
+Activate `.venv` with `.venv\Scripts\Activate.ps1` in Windows PowerShell, `.venv\Scripts\activate.bat` in Windows Command Prompt, or `. .venv/bin/activate` on Linux/macOS. Then install:
 
-To use a virtual environment, first run `python -m venv .venv` and activate with `. .venv/bin/activate` on Linux or macOS, or `.venv\Scripts\Activate.ps1` in Windows PowerShell, before installing. The installed `h5reclaim` command and `python -m h5reclaim` are equivalent.
+```sh
+python -m pip install .
+python -m h5reclaim --help
+python -m h5reclaim --version
+```
+
+Install with `python -m pip install ".[filters]"` to enable installed packaged Zstd, Blosc, Blosc2, Bitshuffle, LZ4, BZip2, ZFP, SZ, SZ3, SPERR, HTJ2K and FCI codecs. Recovery workers register packaged codecs explicitly. Add `applications` to run the MATLAB 7.3, netCDF4 and NWB writer/reader evaluations. Developers can use an editable installation with `python -m pip install -e ".[filters]"`.
+
+The installed `h5reclaim` command and `python -m h5reclaim` are equivalent. Quote paths containing spaces. Keep the source closed during recovery so its bytes remain stable.
+
+## First recovery
+
+```sh
+python -m h5reclaim rescue "damaged.h5"
+python -m h5reclaim report "damaged.recovered.report.json"
+```
+
+The first command creates `damaged.recovered.h5` and `damaged.recovered.report.json` beside the source. The second reads the saved report and summarizes recovery outcomes, per-dataset counts, unresolved items, and status-map locations. It does not rerun recovery or verify the output against its source.
+
+Use `--output rescued.h5` to select a destination; its default report becomes `rescued.report.json`. An explicit `--report evidence.json` overrides that choice. All destinations must be new. If a previous result exists, choose different names, for example:
+
+```sh
+python -m h5reclaim rescue damaged.h5 --output rescued-2.h5 --report evidence-2.json
+```
+
+| Command | Use |
+| --- | --- |
+| `rescue` | Recover a whole file, or one dataset with `--dataset` |
+| `report` | Summarize a saved JSON evidence report |
+| `diagnose` | Inspect file metadata and conditions before recovery |
+| `survey` | List readable dataset metadata and structural-parser classifications |
+| `discover` | Find surviving dataset headers when original group links cannot be read |
+
+Use `python -m h5reclaim COMMAND --help` for a command's options. `diagnose` and `survey` describe structural-parser support; an unsupported structural classification can still have a native-readable recovery method. See [coverage](coverage.md) for the evaluated limits.
 
 ## Recover a whole file
 
 ```sh
-python -m h5reclaim rescue damaged.h5 --output rescued.h5 --report evidence.json
+python -m h5reclaim rescue damaged.h5
 ```
 
 Omitting `--dataset` discovers datasets and recovers them independently. `--all` makes the same choice explicit. A failed dataset is listed in the report while the others continue. Available groups, large and null attributes, named datatypes, hard-link aliases, local soft links, object and region references, dimension labels, and dimension scales are rebuilt. Distinct committed datatypes retain their identities even when their definitions match. References are remapped after their targets exist and their logical identities and regions pass readback verification.
@@ -80,6 +112,28 @@ Use the exact map path and code definitions in each report. Common maps are:
 An unknown position may display its dataset's fill value. Only accepted positions represent exported source values. `complete` describes the route's current export coverage. Historical equality is recorded independently and remains unknown without a prior capture.
 
 Whole-file metadata paths include the per-dataset prefix. Each JSON report names its actual `metadata_group`, source hashes, route, counts, output path, and evidence details. Larger native allocation ledgers are HDF5 datasets named by `source_allocations`; smaller ledgers remain in `source_chunk_records`. `--no-context-audit` skips the additional selected-dataset context inventory; whole-file rescue still rebuilds its inventoried context.
+
+### Outcomes and exit codes
+
+`complete` means the selected recovery method exported its current coverage and required context without unresolved items. It does not establish pre-damage historical equality. `partial` means an output was created with unresolved values, datasets, or context. Read its maps and failure entries before analysis.
+
+By default, `rescue` returns exit code `0` when it publishes an output, including a partial output. Add `--fail-on-partial` when automation should treat a partial result as exit code `1`; the output and report are still created. Invalid arguments or recovery failures return `2`.
+
+```sh
+python -m h5reclaim rescue damaged.h5 --fail-on-partial
+```
+
+### Troubleshooting
+
+| Message or situation | Next step |
+| --- | --- |
+| Output or report already exists | Choose fresh `--output` and `--report` paths. Existing files are protected. |
+| Missing compression decoder | Install `python -m pip install ".[filters]"` from the source repository and retry. A custom filter may still require its own installed decoder. |
+| External or virtual data is unresolved | Supply the required companion files with `--related-dir` or a [pinned manifest](dependency-bundles.md). |
+| Resource budget exceeded | Check free disk space and adjust the relevant field in a streaming-budget JSON below. |
+| Source changed during recovery | Close the writer or work from a stable copy, then rerun with fresh destinations. |
+| Partial recovery | Run `python -m h5reclaim report evidence.json` and use its exact status-map paths to identify accepted values. |
+| Dataset names cannot be read | Run `discover --json`; automatic whole-file recovery also checks surviving dataset headers. |
 
 ## Configure streaming resources
 

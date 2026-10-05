@@ -16,7 +16,7 @@
 | `src/h5reclaim/variable_readable.py` | Element-wise variable strings and ragged primitive numeric export |
 | `src/h5reclaim/native_stream.py`, `logical_types.py` | Partial streamed exports, unusual file numeric widths, bounded heap batches and reference tokens |
 | `src/h5reclaim/filter_registry.py` | Explicit packaged codec registration and reversible output-filter policy |
-| `src/h5reclaim/object_discovery.py`, `checked_view.py` | Legacy and modern detached headers, private root views and checksum-justified root correction |
+| `src/h5reclaim/object_discovery.py`, `checked_view.py` | Legacy and modern detached headers, private root views and checksum-justified root or signature correction |
 | `src/h5reclaim/source_session.py`, `checkpoint.py`, `unit_checkpoint.py` | Shared images, locked dataset checkpoints and append-only verified selection caches |
 | `src/h5reclaim/large_streaming.py`, `large_structural.py`, `sparse_io.py` | Sparse snapshots, POSIX/Windows allocation queries, configurable streaming budgets, larger exports |
 | `src/h5reclaim/ownership_inventory.py`, `evidence.py`, `evidence_adapter.py`, `modern_evidence_adapter.py` | Physical ownership and evidence reconciliation |
@@ -33,12 +33,18 @@
 | `tests/test_broader_recovery.py` | LZF, exact multidimensional records, variable values, whole-file context and aliases |
 | `tests/test_universality.py` | Automatic decoder fallback, partial chunks, logical datatypes, references, optional codecs, discovery, budgets and resume checks |
 | `tests/test_completion.py`, `tests/test_completion_streaming.py` | Namespace collisions, large/null attributes, committed identities, legacy roots, growing VDS, file-scoped references, heap batches and selection resumes |
+| `tests/test_cli_usability.py`, `tests/test_nonchunked_fixed_records.py`, `tests/test_signature_recovery.py` | Safe command defaults, report summaries, exact truncated records, immutable snapshots and bounded signature corrections |
 | `tests/test_applications.py`, `benchmarks/run_application_corpus.py` | Independent MATLAB 7.3, netCDF4 and NWB writer/reader checks, intact and controlled damage |
 | `tools/make_healthy_fixture.py`, `tools/make_broken_link_fixture.py` | Reproducible healthy and damaged development fixtures |
+| `tools/check_installed_package.py` | Console-command recovery check against an installed wheel, outside the source checkout |
 | `corpus/` | Unchanged attributed scientific files, hashes, and structural survey baseline |
 | `benchmarks/` | Controlled recovery evaluations and independent scoring tools |
+| `benchmarks/run_release_coverage.py`, `benchmarks/test_release_coverage.py` | Generated automatic-rescue panel and adversarial checks of its independent scoring |
+| `docs/coverage.md` | Declared recovery panel, measured outcomes and remaining limitations |
 | `docs/usage.md` | Operator commands and output interpretation |
 | `docs/dependency-bundles.md` | Related-file, Family, and Split manifests |
 | `docs/evidence-model.md` | Current placement, values, history, and fragments |
 
 Run commands from the repository root after installation. Generated benchmark work directories and results are disposable; the original corpus is hash-pinned. The Apache 2.0 license applies to source code; corpus attribution is recorded separately.
+
+The wheel contains the runtime package and its license. The source distribution also includes the operator documentation and README banner. Scientific fixtures, tests, and benchmark tools remain in the Git repository, so ordinary installations do not download development data. CI builds the wheel from the source distribution, then checks the installed console command from a temporary directory with numeric data, UTF-8 strings, metadata, an evidence report, and source-preservation checks.

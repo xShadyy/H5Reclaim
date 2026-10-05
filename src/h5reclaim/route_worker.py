@@ -88,7 +88,7 @@ def _child(request_path: Path, response_path: Path) -> int:
         from .large_streaming import LargeBudget
         budget = LargeBudget(**json.loads(args.get('streaming_budget', '{}')))
         output, report = request["output"], request["report"]
-        if route in ("native_stream", "large_readable", "variable_readable"):
+        if route in ("native_stream", "large_readable", "variable_readable", "status"):
             from .filter_registry import register_optional
             register_optional()
         if route in ("native_family", "native_split"):
@@ -135,7 +135,7 @@ def _child(request_path: Path, response_path: Path) -> int:
         elif route == "status":
             from .status_trial_export import export_status_trial
             export_status_trial(args["source"], args["dataset"], output, report,
-                                published_output=request["published_output"])
+                                published_output=request["published_output"], budget=budget)
         elif route == "element_baseline":
             from .payload_integrity import export_verified_nonchunked
             export_verified_nonchunked(args["source"], args["dataset"], args["baseline"],

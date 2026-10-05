@@ -7,6 +7,7 @@ Evaluators compare exported values and coordinates with independently retained t
 ```sh
 python -m unittest discover -s tests -q
 python -m unittest benchmarks.test_authentic_v09_routes benchmarks.test_heldout_trials benchmarks.test_incident_intake -q
+python -m unittest benchmarks.test_release_coverage -q
 ```
 
 The recovery suite includes structural parsers, codecs, sparse allocation, tail cuts, metadata trials, driver bundles, prior captures, parity, misleading ownership, source preservation, publication failures, and public CLI routes. `tests/test_broader_recovery.py` covers LZF, multidimensional fixed records, variable strings, ragged arrays, and whole-file context restoration.
@@ -23,6 +24,7 @@ Run from the repository root after installation:
 
 | Command | Evaluation |
 | --- | --- |
+| `python benchmarks/run_release_coverage.py --seed 20261005 --json` | Score public automatic rescue across 23 generated families and declared faults, retaining refusals and independently checking accepted coordinates |
 | `python benchmarks/run_real_corpus.py` | Verify four original hashes and compare structural survey classifications |
 | `python benchmarks/run_real_candidate_exports.py` | Compare structural candidate exports with exact original values and extents |
 | `python benchmarks/run_real_readable_corpus.py` | Compare native-readable numeric and compound representative datasets |
@@ -46,6 +48,8 @@ Install `python -m pip install -e ".[filters,applications]"` for the application
 [Incident intake](INCIDENT_INTAKE.md) provides a run-then-score protocol for submitted naturally damaged files. Recovery runs first without historical truth. A separate score command compares hash-pinned outputs with a matching earlier file or previously captured element hashes.
 
 Reports retain denominators and unscorable cases. Generated faults verify particular behavior; they do not estimate a universal field recovery percentage. Truth held in the same workspace is separated by program inputs, not by operating-system access permissions.
+
+The [0.15.0 release coverage report](../docs/coverage.md) records 132 generated trials. Damaged cases produced useful output in 88/109 trials, including 25 partial exports; 63/109 were fully exact. It separately records exact accepted element counts, sparse-allocation unknowns, context omissions and 21 refusals. The 80.7% useful-case fraction describes that fixed panel only.
 
 ## Development fixtures
 

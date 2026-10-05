@@ -1,13 +1,12 @@
-# H5Reclaim logo options
+# H5Reclaim branding
 
-Each concept uses the same wordmark, palette, and dimensions. The `logo-*.svg` files are README lockups (760 × 224); the matching `icon-*.svg` files are square marks (144 × 144) for avatars and compact placements.
+[`h5reclaim-banner.svg`](h5reclaim-banner.svg) is the banner used by the root README. It keeps the selected geometric H5 mark and royal-blue/cream palette on an opaque navy background so the wordmark remains readable in GitHub's light and dark themes.
 
-| Concept | README image | Square icon | Idea |
-| --- | --- | --- | --- |
-| Bridge | `logo-bridge.svg` | `icon-bridge.svg` | A repaired connection in an H-shaped structure. |
-| Trace | `logo-trace.svg` | `icon-trace.svg` | A route through surviving index nodes. |
-| Monogram | `logo-monogram.svg` | `icon-monogram.svg` | A compact geometric H5 mark. |
+The SVG is self-contained, has accessible title and description text, and uses system sans-serif fonts. It contains no scripts, external fonts, or embedded raster images. Its native dimensions are 960 × 280.
 
-The root README uses `h5reclaim-banner.png`. The SVG logo concepts are optional alternatives. These SVGs are self-contained and use no external images, scripts, or fonts. Text falls back to the viewer's local sans-serif font.
-
-Palette: background `#0C2232`, tile `#123348`, foreground `#F0F7F7`, accent `#34D1BB`.
+| Role | Color |
+| --- | --- |
+| Background | `#101C36` |
+| Royal blue | `#3559F0` |
+| Cream | `#F6F2E9` |
+| Supporting text | `#D1D8E8` |

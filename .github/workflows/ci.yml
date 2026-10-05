@@ -2,12 +2,45 @@ name: H5Reclaim checks
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  installed-package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Build source distribution and wheel from it
+        run: |
+          python -m pip install build
+          python -m build
+      - name: Install wheel without an editable checkout
+        run: python -m pip install dist/*.whl
+      - name: Recover data through the installed console command
+        run: python tools/check_installed_package.py
+  release-coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install recovery dependencies
+        run: python -m pip install -e ".[filters]"
+      - name: Check independent evaluation and incident scoring
+        run: python -m unittest benchmarks.test_authentic_v09_routes benchmarks.test_heldout_trials benchmarks.test_incident_intake benchmarks.test_release_coverage -q
+      - name: Independently score automatic rescue across layouts and faults
+        run: python benchmarks/run_release_coverage.py --work-dir work/release-coverage
   real-data-and-tests:
     strategy:
       fail-fast: false
@@ -24,12 +57,11 @@ jobs:
         run: python -m pip install -e ".[filters]"
       - name: Unit and integration tests
         run: python -m unittest discover -s tests -q
-      - name: Windows worker Job Object checks
-        if: runner.os == 'Windows'
-        run: python -m unittest tests.test_windows_worker_limits -v
       - name: Verify original scientific corpus
+        if: matrix.python-version == '3.12'
         run: python benchmarks/run_real_corpus.py
       - name: Recover controlled GWOSC copy
+        if: matrix.python-version == '3.12'
         run: python benchmarks/run_gwosc_recovery.py
       - name: Independently compare whole-file scientific exports
         if: runner.os == 'Linux' && matrix.python-version == '3.12'
@@ -42,7 +74,9 @@ jobs:
         with:
           python-version: '3.10'
       - name: Install declared minimum dependencies
-        run: python -m pip install numpy==1.26.0 h5py==3.10.0 hdf5plugin && python -m pip install -e . --no-deps
+        run: |
+          python -m pip install numpy==1.26.0 h5py==3.10.0 hdf5plugin
+          python -m pip install -e . --no-deps
       - name: Check recovery compatibility
         run: python -m unittest discover -s tests -q
   application-compatibility:

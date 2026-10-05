@@ -84,7 +84,7 @@ class RescueCliTests(unittest.TestCase):
         with h5py.File(self.out) as file:
             np.testing.assert_array_equal(file["science"][:], np.arange(1000, dtype="<u4"))
 
-    def test_compound_type_uses_explicit_native_readable_route(self) -> None:
+    def test_compound_type_uses_rooted_fixed_record_route(self) -> None:
         source = self.base / "records.h5"
         dtype = np.dtype([("time", "<i4"), ("reading", "<f8")])
         rows = np.array([(1, 1.5), (2, -2.25)], dtype=dtype)
@@ -92,9 +92,10 @@ class RescueCliTests(unittest.TestCase):
             file.create_dataset("science", data=rows)
         result = self._run(source)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("native-readable copy", result.stdout)
         report = json.loads(self.report.read_text())
-        self.assertEqual(report["mode"], "readable_export")
+        self.assertEqual(report["operation"], "structural_nonchunked_export")
+        self.assertEqual(report["accepted_elements"], len(rows))
+        self.assertIsNotNone(report["dataset"]["exact_file_datatype_sha256"])
         with h5py.File(self.out) as file:
             self.assertEqual(file["science"][:].tobytes(), rows.tobytes())
 

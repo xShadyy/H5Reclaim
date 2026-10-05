@@ -100,7 +100,7 @@ def _inventory_local(image: Path, root="/", opened_file=None, budget=None) -> di
         elif condition["status_flags"].get("interpretation") == "write_flag_present":
             from .status_trial_export import _status_only_trial
             inspection_image = Path(directory) / "status-view.h5"
-            _status_only_trial(image, inspection_image, image.stat().st_size)
+            _status_only_trial(image, inspection_image, image.stat().st_size, budget=budget)
             view = "checked_status_trial"
         from contextlib import nullcontext
         from .checked_view import checked_root_view

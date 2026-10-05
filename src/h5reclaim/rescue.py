@@ -129,13 +129,14 @@ def _auto_image(source, dataset, output, report, *, budget, strict_history,
     with tempfile.TemporaryDirectory(prefix=".h5reclaim-auto-", dir=output.parent) as temporary:
         directory = Path(temporary)
         root_trial = False
-        try:
-            from .metadata_correction import _superblock_raw
-            from .modern_indexes import lookup3
-            _, raw, _, _ = _superblock_raw(source)
-            root_trial = lookup3(raw[:-4]) != int.from_bytes(raw[-4:], 'little')
-        except UnsupportedCase:
-            pass
+        if condition["end_of_address"].get("relation") != "past_physical_eof":
+            try:
+                from .metadata_correction import _superblock_raw
+                from .modern_indexes import lookup3
+                _, raw, _, _ = _superblock_raw(source)
+                root_trial = lookup3(raw[:-4]) != int.from_bytes(raw[-4:], 'little')
+            except UnsupportedCase:
+                pass
         if condition["status_flags"].get("interpretation") == "write_flag_present":
             routes = ["status"]
         elif condition["end_of_address"].get("relation") == "past_physical_eof":

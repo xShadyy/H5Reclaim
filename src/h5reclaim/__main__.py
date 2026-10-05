@@ -22,12 +22,19 @@ from .format import FormatError
 from .hints import HintsError, compare_hints, load_hints, require_no_conflicts
 from .metadata import UnsupportedCase
 from .readable_export import export_readable
-from .recovery import RecoveryError, analyze, recover
+from .recovery import VERSION, RecoveryError, analyze, recover
 from .route_worker import run_route
 from .survey import SurveyError, survey
 
 
 MAX_DISPLAY_DATASETS = 5
+
+
+def _dataset_path(value: str) -> str:
+    if (not value.startswith("/") or value == "/" or "\x00" in value
+            or any(part in ("", ".", "..") for part in value[1:].split("/"))):
+        raise argparse.ArgumentTypeError("use an absolute HDF5 dataset path, such as /experiment/readings")
+    return value
 
 
 def _dimensions(values: list[int] | None) -> str:
@@ -38,9 +45,85 @@ def _dimensions(values: list[int] | None) -> str:
 
 def _display_path(value: str, limit: int = 120) -> str:
     # Escape control characters from untrusted filesystem and HDF5 names in
-    # terminal output. JSON mode carries the exact strings for tooling.
-    value = json.dumps(str(value), ensure_ascii=True)[1:-1]
+    # terminal output, retaining literal Windows path separators. Non-ASCII
+    # escapes keep redirected output usable with narrow platform encodings.
+    # JSON mode carries the exact strings for tooling.
+    value = "".join(character if character == "\\" else json.dumps(character, ensure_ascii=True)[1:-1]
+                    for character in str(value))
     return value if len(value) <= limit else value[:limit - 3] + "..."
+
+
+def _coverage(report: dict) -> tuple[int, int, str]:
+    """Keep element counts distinct from chunk counts in terminal summaries."""
+    accepted = report.get("accepted_elements")
+    if accepted is not None:
+        return accepted, report.get("unknown_elements", 0), "elements"
+    counts = report.get("counts", {})
+    validity = report.get("validity") or {}
+    unit = "elements" if (validity.get("granularity") == "element"
+                           or str(validity.get("dataset", "")).endswith("/element_status")) else "chunks"
+    return counts.get("recovered", 0), sum(value for name, value in counts.items()
+                                          if name != "recovered"), unit
+
+
+def _status_maps(report: dict) -> list[str]:
+    """Use report paths, including rebased or collision-safe metadata groups."""
+    validity = report.get("validity") or {}
+    paths = [validity.get("dataset"), validity.get("chunk_status"), validity.get("element_status"),
+             report.get("validity_map"), report.get("element_status")]
+    if not any(paths) and report.get("counts") is not None:
+        paths.append(report.get("metadata_group", "/_h5reclaim") + "/chunk_status")
+    history = report.get("historical_integrity") or {}
+    paths.append(history.get("status_dataset"))
+    paths.append(history.get("prior_capture_match_status_dataset"))
+    return list(dict.fromkeys(path for path in paths if path))
+
+
+def _render_report(report: dict) -> str:
+    """Summarize an existing evidence report without opening its source or output."""
+    lines = [
+        f"H5Reclaim evidence summary | {report['outcome']}",
+        f"Source: {_display_path(report['source']['path'], 240)}",
+        f"Output: {_display_path(report['output_path'], 240)}",
+    ]
+    if report.get("mode") == "whole_file_recovery":
+        lines.append(f"Datasets: {report['datasets_exported']}/{report['datasets_discovered']} exported | "
+                     f"{report['datasets_failed']} failed")
+        records = sorted(report["datasets"], key=lambda item: item["report"]["outcome"] == "complete")
+    else:
+        records = [{"path": report["dataset"]["path"], "report": report}]
+    for item in records[:MAX_DISPLAY_DATASETS]:
+        selected = item["report"]
+        accepted, unknown, unit = _coverage(selected)
+        lines.append(f"[{selected['outcome'].upper()}] {_display_path(item['path'])} | "
+                     f"{accepted} accepted {unit} | {unknown} unknown {unit}")
+        lines.extend(f"  Status map: {_display_path(path, 240)}" for path in _status_maps(selected))
+    if len(records) > MAX_DISPLAY_DATASETS:
+        lines.append(f"... {len(records) - MAX_DISPLAY_DATASETS} more datasets in the JSON report.")
+    failures = report.get("failures", [])
+    for failure in failures[:MAX_DISPLAY_DATASETS]:
+        lines.append(f"Unresolved: {_display_path(failure['path'])}: {_display_path(failure['reason'], 240)}")
+    if len(failures) > MAX_DISPLAY_DATASETS:
+        lines.append(f"... {len(failures) - MAX_DISPLAY_DATASETS} more failures in the JSON report.")
+    context = report.get("scientific_context") or {}
+    omitted = sum(len(item.get("attributes_omitted", [])) for section in ("groups", "datasets", "named_types")
+                  for item in context.get(section, []))
+    if omitted or context.get("issues") or context.get("scales_omitted"):
+        lines.append(f"Context: {omitted} omitted attributes | {len(context.get('issues', []))} issues | "
+                     f"{len(context.get('scales_omitted', []))} omitted scales; see scientific_context in the report.")
+    inventory = report.get("inventory") or {}
+    if inventory.get("issues") or inventory.get("skipped"):
+        lines.append("Inventory is limited; see inventory.issues and inventory.skipped in the report.")
+    if report["outcome"] != "complete":
+        lines.append("Partial export: some values or scientific context remain unresolved. Check the status maps and report.")
+    integrity = report.get("historical_integrity") or {}
+    if integrity.get("capture_sha256"):
+        lines.append(f"History: {integrity['matching_units']} units match the supplied prior capture; "
+                     f"{integrity['unknown_units']} unknown.")
+    else:
+        lines.append("History: unverified; accepted values describe the available source, not proven prior measurements.")
+    lines.append("This summary reads the evidence report; it does not revalidate output files.")
+    return "\n".join(lines)
 
 
 def _render_survey(report: dict) -> str:
@@ -50,7 +133,7 @@ def _render_survey(report: dict) -> str:
         "H5Reclaim dataset survey",
         f"Source: {_display_path(report['source']['path'], 240)}",
         f"Inventory: {report['outcome']} | {report['dataset_count']} local datasets",
-        "Support: " + " | ".join(
+        "Structural support: " + " | ".join(
             f"{statuses[status]} {status}"
             for status in ("candidate", "unsupported", "indeterminate")
         ),
@@ -119,8 +202,10 @@ def _render_survey(report: dict) -> str:
             lines.append(f"  ... {len(report['issues']) - 5} more issues; see --json.")
     lines.extend([
         "",
-        "Candidate means the metadata fits this release; recovery has not been tested by this survey.",
+        "These support labels assess structural parsers only; rescue also uses native-readable and streaming routes.",
+        "Candidate means the metadata fits a structural route; recovery has not been tested by this survey.",
         "Use h5reclaim inspect SOURCE --dataset PATH to check a candidate's chunks.",
+        "Use h5reclaim rescue SOURCE to try automatic recovery, including datasets labeled unsupported here.",
     ])
     return "\n".join(lines)
 
@@ -193,13 +278,13 @@ def _render_diagnose(report: dict) -> str:
         lines.append(
             f"Datasets: {inventory['dataset_count']} local | "
             f"{counts['candidate']} structural candidates | "
-            f"{counts['unsupported']} unsupported | {counts['indeterminate']} indeterminate"
+            f"{counts['unsupported']} structurally unsupported | {counts['indeterminate']} indeterminate"
         )
     selection = report["selection"]
     if selection is not None:
         lines.append(
             f"Selected: {_display_path(selection['selected_path'])} | "
-            f"{selection['support']['status']} | {selection.get('layout', 'unknown')}"
+            f"structural parser {selection['support']['status']} | {selection.get('layout', 'unknown')}"
         )
     status = report.get("file_status")
     if status and status["outcome"] == "observed":
@@ -222,6 +307,8 @@ def _render_diagnose(report: dict) -> str:
         ))
         lines.append("File hash matches do not verify historical measurements or VDS coverage.")
     lines.extend([f"Next action: {report['next_action']}", report["detail"]])
+    if inventory is not None:
+        lines.append("Support labels assess structural parsers only; rescue also tries native-readable and streaming routes.")
     hints = report.get("operator_hints")
     if hints is not None:
         counts = Counter(item["status"] for item in hints["comparisons"])
@@ -238,8 +325,22 @@ def _render_diagnose(report: dict) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="h5reclaim")
-    commands = parser.add_subparsers(dest="command", required=True)
+    parser = argparse.ArgumentParser(
+        prog="h5reclaim", formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "Recover HDF5 data into a new file with a JSON evidence report.\n\n"
+            "Start here:\n"
+            "  h5reclaim rescue damaged.h5\n"
+            "  h5reclaim diagnose damaged.h5\n"
+            "  h5reclaim report damaged.recovered.report.json\n\n"
+            "Rescue discovers all datasets by default and never overwrites the source.\n"
+            "Use rescue --help for destinations, dataset selection and advanced options."
+        ),
+    )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
+    commands = parser.add_subparsers(dest="command", required=True, metavar="COMMAND", title="commands")
+    report_cmd = commands.add_parser("report", help="summarize an existing evidence JSON report and its status-map paths")
+    report_cmd.add_argument("report", type=Path, help="evidence JSON produced by rescue, recover or export-readable")
     manifest_cmd = commands.add_parser("related-manifest", help="find and hash declared companion files in a supplied directory")
     manifest_cmd.add_argument("source", type=Path)
     manifest_cmd.add_argument("--directory", required=True, type=Path)
@@ -249,7 +350,10 @@ def main(argv: list[str] | None = None) -> int:
     discover_cmd.add_argument("source", type=Path)
     discover_cmd.add_argument("--json", action="store_true", help="print complete object-address discovery metadata")
     discover_cmd.add_argument("--streaming-budget", type=Path, help="JSON source, scan and time budgets")
-    diagnose_cmd = commands.add_parser("diagnose", help="classify a file without reading measurements or attempting recovery")
+    diagnose_cmd = commands.add_parser(
+        "diagnose", help="check file condition and structural support without attempting recovery",
+        description="Classify file condition without reading measurements. Support labels cover structural parsers; rescue also uses other routes.",
+    )
     diagnose_cmd.add_argument("source", type=Path)
     diagnose_cmd.add_argument("--dataset", help="local dataset path to assess")
     diagnose_cmd.add_argument("--hints", type=Path, help="optional operator claims in bounded JSON, never proof of data")
@@ -269,7 +373,10 @@ def main(argv: list[str] | None = None) -> int:
     fragments_cmd.add_argument("report", type=Path, help="recovery report containing the evidence ledger")
     fragments_cmd.add_argument("source", type=Path, help="explicit damaged source; its SHA-256 must match the ledger")
     fragments_cmd.add_argument("--output", required=True, type=Path, help="new raw-fragment ZIP destination")
-    survey_cmd = commands.add_parser("survey", help="inventory local datasets without reading values")
+    survey_cmd = commands.add_parser(
+        "survey", help="inventory datasets and structural-parser support without reading values",
+        description="List local datasets without reading values. Unsupported means outside the structural parsers; rescue may still export native-readable values.",
+    )
     survey_cmd.add_argument("source", type=Path)
     survey_cmd.add_argument("--json", action="store_true", help="print the complete machine-readable report")
     inspect_cmd = commands.add_parser("inspect", help="inspect a supported dataset and chunk index")
@@ -348,13 +455,19 @@ def main(argv: list[str] | None = None) -> int:
     drill_cmd.add_argument("--manifest-sha256", required=True)
     rescue_cmd = commands.add_parser(
         "rescue", help="recover one dataset or discover and recover the whole file",
+        description="Discover and recover all datasets, or select one with --dataset. The source stays unchanged.",
+        epilog="Exit status: 0 means an export was created; --fail-on-partial returns 1 for a partial export; errors return 2.",
     )
     rescue_cmd.add_argument("source", type=Path, help="damaged HDF5 file, or member zero for a Family bundle")
     selection = rescue_cmd.add_mutually_exclusive_group()
-    selection.add_argument("--dataset", help="absolute selected HDF5 dataset path")
+    selection.add_argument("--dataset", type=_dataset_path, help="absolute selected HDF5 dataset path")
     selection.add_argument("--all", action="store_true", help="recover all discovered local datasets (the default without --dataset)")
-    rescue_cmd.add_argument("--output", required=True, type=Path)
-    rescue_cmd.add_argument("--report", required=True, type=Path)
+    rescue_cmd.add_argument("--output", type=Path,
+                            help="new HDF5 destination (default: SOURCE stem + .recovered.h5, beside the source)")
+    rescue_cmd.add_argument("--report", type=Path,
+                            help="new JSON evidence destination (default: OUTPUT stem + .report.json)")
+    rescue_cmd.add_argument("--fail-on-partial", action="store_true",
+                            help="return exit status 1 when the reported export outcome is partial")
     rescue_cmd.add_argument("--strict-history", action="store_true",
                             help="publish only when a separately pinned prior capture verifies every accepted unit")
     rescue_cmd.add_argument("--no-context-audit", action="store_true",
@@ -397,7 +510,25 @@ def main(argv: list[str] | None = None) -> int:
                          help="stream currently native-readable multidimensional fixed records")
     choices.add_argument("--large-structural", action="store_true",
                          help="stream one checked damaged fixed-array pointer in a large sparse numeric dataset")
-    args = parser.parse_args(argv)
+    arguments = argv if argv is not None else sys.argv[1:]
+    if not arguments:
+        parser.print_help()
+        return 0
+    args = parser.parse_args(arguments)
+
+    if args.command == "report":
+        try:
+            if args.report.stat().st_size > 256 * 1024 * 1024:
+                raise RecoveryError("evidence report exceeds the 256 MiB summary limit")
+            report = json.loads(args.report.read_text(encoding="utf-8"))
+            if (not isinstance(report, dict) or report.get("tool") != "h5reclaim"
+                    or report.get("schema_version") != 1 or report.get("outcome") not in ("complete", "partial")):
+                raise RecoveryError("expected a H5Reclaim recovery evidence report with schema_version 1")
+            print(_render_report(report))
+            return 0
+        except (RecoveryError, OSError, ValueError, RuntimeError, KeyError, TypeError, AttributeError) as exc:
+            print(f"h5reclaim: report summary failed: {_display_path(exc, 300)}", file=sys.stderr)
+            return 2
 
     if args.command == "related-manifest":
         try:
@@ -548,6 +679,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "rescue":
         try:
+            if args.output is None:
+                args.output = args.source.with_name(args.source.stem + ".recovered.h5")
+            if args.report is None:
+                args.report = args.output.with_name(args.output.stem + ".report.json")
+            from .recovery import _validate_paths
+            _validate_paths(args.source, args.output, args.report)
             source = str(args.source.absolute())
             streaming_budget = None
             if args.streaming_budget is not None:
@@ -603,7 +740,10 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Output: {_display_path(args.output, 240)}")
                 print(f"Evidence report: {_display_path(args.report, 240)}")
                 print(f"Check each dataset's status map under {report['metadata_group']}/datasets before using its values.")
-                return 0
+                if report["outcome"] != "complete":
+                    print("Partial export: some data or scientific context remain unresolved. "
+                          "Use h5reclaim report with the evidence path above for a summary.")
+                return 1 if args.fail_on_partial and report["outcome"] != "complete" else 0
             def run_rescue(route: str, output: Path, report_path: Path, **kwargs: str) -> dict:
                 if streaming_budget is not None:
                     kwargs["streaming_budget"] = json.dumps(streaming_budget)
@@ -726,16 +866,8 @@ def main(argv: list[str] | None = None) -> int:
                                      strict_history=args.strict_history,
                                      audit_science_context=not args.no_context_audit,
                                      streaming_budget=streaming_budget, hints=args.hints, resume_dir=args.resume_dir)
-            accepted = report.get("accepted_elements")
-            if accepted is None and report.get("validity", {}).get("dataset") == "/_h5reclaim/element_status":
-                accepted = report.get("counts", {}).get("recovered", 0)
-                unit = "elements"
-            elif accepted is None:
-                accepted = report.get("counts", {}).get("recovered", 0)
-                unit = "chunks"
-            else:
-                unit = "elements"
-            print(f"H5Reclaim rescue | {report['outcome']} | {accepted} accepted {unit}")
+            accepted, unknown, unit = _coverage(report)
+            print(f"H5Reclaim rescue | {report['outcome']} | {accepted} accepted {unit} | {unknown} unknown {unit}")
             if report.get("mode") == "readable_export":
                 print("Route: native-readable copy of currently accessible values; no damaged index was reconstructed.")
             elif report.get("mode") == "status_trial_readable_export":
@@ -748,6 +880,8 @@ def main(argv: list[str] | None = None) -> int:
                 print("Route: native-readable variable elements, individually checked against the derived output.")
             print(f"Output: {_display_path(args.output, 240)}")
             print(f"Evidence report: {_display_path(args.report, 240)}")
+            for path in _status_maps(report):
+                print(f"Status map: {_display_path(path, 240)}")
             integrity = report.get("historical_integrity")
             if integrity and integrity.get("capture_sha256"):
                 print(f"History: {integrity['matching_units']} units match an operator-supplied prior capture; "
@@ -755,7 +889,7 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print("History: unverified; current readable values do not establish prior measurements.")
             print("Check the validity and historical-status maps before using output values.")
-            return 0
+            return 1 if args.fail_on_partial and report["outcome"] != "complete" else 0
         except (FormatError, DependencyError, UnsupportedCase, RecoveryError, OSError,
                 ValueError, RuntimeError, KeyError, TypeError, UnicodeError) as exc:
             print(f"h5reclaim: rescue failed: {_display_path(exc, 300)}", file=sys.stderr)

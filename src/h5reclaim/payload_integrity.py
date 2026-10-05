@@ -1,4 +1,4 @@
-"""Prospective per-element integrity evidence for rooted numeric storage.
+"""Prospective per-element integrity evidence for rooted fixed-record storage.
 
 Only capture made before damage can distinguish an unchanged measurement from
 an unchecksummed altered payload. This route keeps matching complete elements
@@ -22,6 +22,7 @@ import numpy as np
 from .format import FormatError, UnsupportedFormat
 from .nonchunked_recovery import (
     MAX_ELEMENTS, NonchunkedAnalysis, STATUS_CODES, analyze_nonchunked_snapshot,
+    _create_nonchunked_dataset, _read_nonchunked_bytes, _write_nonchunked_bytes,
 )
 from .recovery import (
     RecoveryError, _identity, _validate_paths, _verify_source, sha256_file,
@@ -48,11 +49,17 @@ def _digest(value: object) -> str:
 
 def _schema(analysis: NonchunkedAnalysis) -> dict[str, Any]:
     spec = analysis.spec
-    return {
-        "path": spec.path, "shape": list(spec.shape), "dtype": spec.dtype,
+    schema = {
+        "path": spec.path, "shape": list(spec.shape),
+        "dtype": spec.dtype if isinstance(spec.dtype, str) else str(spec.dtype),
         "layout": spec.layout, "element_size": spec.element_size,
         "elements": spec.elements,
     }
+    if spec.file_type_encoding is not None:
+        # Width and NumPy's visible dtype do not distinguish enum names,
+        # string padding, opaque tags, or all compound schema information.
+        schema["exact_file_datatype_sha256"] = hashlib.sha256(spec.file_type_encoding).hexdigest()
+    return schema
 
 
 def _aliases(paths: list[Path], targets: list[Path]) -> None:
@@ -236,6 +243,8 @@ def _verified_analysis(analysis: NonchunkedAnalysis, hashes: bytes,
     report["complete"] = recovered == spec.elements
     report["outcome"] = "complete" if report["complete"] else "partial"
     report["counts"] = {"recovered": recovered, "unknown": spec.elements - recovered}
+    report["accepted_elements"] = recovered
+    report["unknown_elements"] = spec.elements - recovered
     report["mappings"] = mappings
     report["unresolved_elements"] = unresolved
     report["baseline"] = {
@@ -259,7 +268,7 @@ def export_verified_nonchunked(
     source: str | Path, dataset_path: str, baseline_path: str | Path,
     baseline_sha256: str, output: str | Path, report_path: str | Path,
 ) -> dict[str, Any]:
-    """Export only currently present numeric elements matching prior hashes."""
+    """Export only currently present fixed records matching prior hashes."""
     source, baseline_path = Path(source), Path(baseline_path)
     output, report_path = Path(output), Path(report_path)
     _validate_paths(source, output, report_path)
@@ -283,30 +292,15 @@ def export_verified_nonchunked(
                 try:
                     with h5py.File(staged, "x") as file:
                         spec = analysis.spec
-                        values = np.zeros(spec.elements, dtype=spec.dtype)
-                        if raw:
-                            values[:len(raw) // spec.element_size] = np.frombuffer(raw, dtype=spec.dtype)
-                        if spec.layout == "compact":
-                            parent_name, name = spec.path.rsplit("/", 1)
-                            parent = file.require_group(parent_name or "/")
-                            space = (h5py.h5s.create(h5py.h5s.SCALAR) if not spec.shape else
-                                     h5py.h5s.create_simple(spec.shape))
-                            dcpl = h5py.h5p.create(h5py.h5p.DATASET_CREATE)
-                            dcpl.set_layout(h5py.h5d.COMPACT)
-                            dataset = h5py.Dataset(h5py.h5d.create(
-                                parent.id, name.encode("utf-8"),
-                                h5py.h5t.py_create(np.dtype(spec.dtype)), space, dcpl=dcpl,
-                            ))
-                        else:
-                            dataset = file.create_dataset(spec.path, shape=spec.shape, dtype=spec.dtype)
-                        dataset[...] = values.reshape(spec.shape)
-                        meta = file.create_group("/_h5reclaim")
+                        dataset = _create_nonchunked_dataset(file, spec)
+                        _write_nonchunked_bytes(dataset, spec, raw)
+                        meta = file.require_group(report["metadata_group"])
                         validity = meta.create_dataset("element_status", data=status, dtype="u1")
                         validity.attrs["codes_json"] = json.dumps(STATUS_CODES, sort_keys=True)
                         validity.attrs["axis_meaning"] = "one entry per selected dataset element"
                         meta.create_dataset("report_json", data=serialized.decode("utf-8"),
                                             dtype=h5py.string_dtype("utf-8"))
-                        dataset.attrs["h5reclaim_element_status"] = "/_h5reclaim/element_status"
+                        dataset.attrs["h5reclaim_element_status"] = meta.name + "/element_status"
                         dataset.attrs["h5reclaim_complete"] = report["complete"]
                         dataset.attrs["h5reclaim_warning"] = (
                             "Unknown output elements read as zero but are not known measurements. "
@@ -316,8 +310,12 @@ def export_verified_nonchunked(
                         meta.attrs["report_schema_version"] = 1
                         file.flush()
                     with h5py.File(staged, "r") as file:
-                        observed = file[dataset_path].astype(np.dtype(analysis.spec.dtype))[...]
-                        if observed.tobytes(order="C")[:len(raw)] != raw:
+                        dataset = file[dataset_path]
+                        if (analysis.spec.file_type_encoding is not None
+                                and dataset.id.get_type().encode() != analysis.spec.file_type_encoding):
+                            raise RecoveryError("verified output HDF5 datatype changed during export")
+                        observed = _read_nonchunked_bytes(dataset, analysis.spec)
+                        if observed[:len(raw)] != raw:
                             raise RecoveryError("verified output bit patterns changed during export")
                     staged_report.write_bytes(serialized)
                     _verify_source(source, identity, source_hash)
