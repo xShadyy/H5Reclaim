@@ -32,7 +32,7 @@ from .snapshot_io import (
 )
 
 
-VERSION = "0.14.0"
+VERSION = "0.15.0"
 _WINDOWS_STAT = os.name == "nt"
 STATUS_CODES = {
     "recovered": 1,
@@ -170,6 +170,7 @@ def source_snapshot(
     *,
     max_source_bytes: int = MAX_SOURCE_BYTES,
     max_seconds: float = MAX_SNAPSHOT_SECONDS,
+    reuse_shared: bool = True,
 ) -> Iterator[tuple[Path, str, tuple[int, int, int, int, int], int]]:
     """Make one quota-bound, streamed image for HDF5 and raw-parser reads.
 
@@ -177,10 +178,12 @@ def source_snapshot(
     buffers and checks free disk space against the *logical* source length,
     including sparse holes. The optional quotas make larger captures an
     explicit decision by the caller. The input itself is never opened writable.
+    Routes that edit their disposable view must set reuse_shared=False so they
+    cannot change the common read-only image used by other recovery attempts.
     """
     source = Path(source)
     from .source_session import reused_image
-    shared = reused_image(source)
+    shared = reused_image(source) if reuse_shared else None
     if shared is not None:
         yield source, shared["sha256"], _identity(source.stat()), shared["size"]
         return

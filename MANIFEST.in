@@ -1,0 +1,10 @@
+include LICENSE README.md pyproject.toml
+recursive-include docs *.md
+prune tests
+prune benchmarks
+prune corpus
+prune tools
+prune assets
+include assets/h5reclaim-banner.svg
+prune .github
+global-exclude __pycache__ *.py[cod]

@@ -35,6 +35,7 @@
 | `tests/test_completion.py`, `tests/test_completion_streaming.py` | Namespace collisions, large/null attributes, committed identities, legacy roots, growing VDS, file-scoped references, heap batches and selection resumes |
 | `tests/test_applications.py`, `benchmarks/run_application_corpus.py` | Independent MATLAB 7.3, netCDF4 and NWB writer/reader checks, intact and controlled damage |
 | `tools/make_healthy_fixture.py`, `tools/make_broken_link_fixture.py` | Reproducible healthy and damaged development fixtures |
+| `tools/check_installed_package.py` | Console-command recovery check against an installed wheel, outside the source checkout |
 | `corpus/` | Unchanged attributed scientific files, hashes, and structural survey baseline |
 | `benchmarks/` | Controlled recovery evaluations and independent scoring tools |
 | `docs/usage.md` | Operator commands and output interpretation |
@@ -42,3 +43,5 @@
 | `docs/evidence-model.md` | Current placement, values, history, and fragments |
 
 Run commands from the repository root after installation. Generated benchmark work directories and results are disposable; the original corpus is hash-pinned. The Apache 2.0 license applies to source code; corpus attribution is recorded separately.
+
+The wheel contains the runtime package and its license. The source distribution also includes the operator documentation and README banner. Scientific fixtures, tests, and benchmark tools remain in the Git repository, so ordinary installations do not download development data. CI builds the wheel from the source distribution, then checks the installed console command from a temporary directory with numeric data, UTF-8 strings, metadata, an evidence report, and source-preservation checks.
