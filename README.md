@@ -1,83 +1,112 @@
 <p align="center">
-  <img src="assets/h5reclaim-banner.png" alt="H5Reclaim: recovery for scientific HDF5 data" width="760">
+  <img src="assets/h5reclaim-banner.svg" alt="H5Reclaim: recover surviving scientific HDF5 data" width="840">
 </p>
 
 <p align="center">
-  <a href="pyproject.toml"><img alt="Python 3.10+" src="https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&amp;logo=python&amp;logoColor=white"></a>
-  <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/License-Apache%202.0-228F91?style=flat-square"></a>
-  <a href="pyproject.toml"><img alt="Version: 0.14.0" src="https://img.shields.io/badge/Version-0.14.0-496477?style=flat-square"></a>
+  <a href="pyproject.toml"><img alt="Python 3.10+" src="https://img.shields.io/badge/Python-3.10%2B-3559F0?style=flat-square&amp;logo=python&amp;logoColor=white"></a>
+  <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/License-Apache%202.0-263557?style=flat-square"></a>
+  <a href="docs/coverage.md"><img alt="Recovery coverage and evidence" src="https://img.shields.io/badge/Coverage-See%20evaluation-263557?style=flat-square"></a>
 </p>
 
-H5Reclaim recovers data from HDF5 files into a new file with a JSON evidence report. It discovers datasets automatically, selects a recovery route for each, and keeps exporting other datasets when one cannot be recovered.
+H5Reclaim is a command-line tool for recovering surviving data from damaged HDF5 files. Scientific instruments and applications use HDF5 to store arrays, measurements, and their metadata. When a file's index or metadata breaks, its measurements may still be present.
 
-## Install and run
+Give H5Reclaim a file. It finds datasets, tries the available recovery methods, and writes a **new HDF5 file plus a JSON evidence report**. The source stays unchanged. A damaged dataset can be recovered partially while others continue.
 
-Use Python 3.10 or newer from the extracted repository root:
+[Quick start](#quick-start) · [Usage guide](docs/usage.md) · [Recovery coverage](docs/coverage.md) · [Report semantics](docs/evidence-model.md)
 
-```sh
-python -m pip install -e .
-python -m h5reclaim rescue damaged.h5 --output rescued.h5 --report evidence.json
-```
+## Quick start
 
-This processes the whole file. It restores available groups, large and null attributes, named datatypes and their shared identities, hard-link aliases, local soft links, object and region references, dimension labels, and dimension scales. Application headers are retained, and source-owned names are preserved when recovery metadata needs a different location. A failed chunk stays unknown while other readable chunks are retained. The report records every exported dataset, failure, and omitted piece of context.
-
-Select a particular dataset when needed:
+You need Python 3.10 or newer. Clone this repository, or download and extract its ZIP from GitHub:
 
 ```sh
-python -m h5reclaim diagnose damaged.h5 --dataset /experiment/readings
-python -m h5reclaim rescue damaged.h5 --dataset /experiment/readings --output selected.h5 --report selected-evidence.json
+git clone https://github.com/xShadyy/H5Reclaim.git
+cd H5Reclaim
+python -m venv .venv
 ```
 
-The input stays unchanged. Choose new output and report paths.
+Activate the environment:
 
-## Recovery capabilities
+| System | Command |
+| --- | --- |
+| Windows PowerShell | `.venv\Scripts\Activate.ps1` |
+| Windows Command Prompt | `.venv\Scripts\activate.bat` |
+| macOS / Linux | `. .venv/bin/activate` |
 
-- Older chunk B-trees and modern single-chunk, implicit, fixed-array, extensible-array, and version-2 B-tree indexes.
-- Automatic routing for physical tail truncation, checked interrupted-write flags, structural recovery, native-readable values, and streaming exports.
-- Numeric arrays, compound records with variable strings or references, enums, bitfields, array records, fixed strings, opaque records, variable strings, ragged numeric arrays, empty datasets, and null dataspaces through their applicable routes.
-- Multidimensional fixed-record streaming through rank 32, including file numeric widths without a NumPy representation, with sparse allocation maps and configurable resource budgets.
-- DEFLATE, LZF, shuffle, Fletcher32 and installed packaged Zstd, Blosc, Blosc2, Bitshuffle, LZ4, BZip2, ZFP, SZ, SZ3, SPERR, HTJ2K and FCI codecs. Pipelines that can change values are materialized without a second lossy encoding.
-- Surviving legacy and modern dataset-header discovery when group links or the root are damaged, automatic uniquely checksum-justified modern root-pointer correction, checked hints and object-address exports.
-- External raw storage, large and growing virtual datasets, nested dependency graphs and external group trees, using pinned companion files. Family and Split exports cover whole files and selected datasets.
-- Automatic companion-file manifests from a supplied directory, one shared source image, batched heap reads, and verified restart checkpoints for completed datasets, chunks and contiguous blocks.
-- Prior baselines, replicas, capsules, and parity for checking or reconstructing data using evidence retained before damage.
-
-Read the validity map named in the report before using exported values. Unresolved positions can display a fill value. Current readable values and equality to a prior capture are reported separately; a newly readable output does not establish its pre-damage values.
-
-Enable the additional codecs and retain recovery progress:
+Install from the repository root and recover a file:
 
 ```sh
-python -m pip install -e ".[filters]"
-python -m h5reclaim rescue damaged.h5 --resume-dir recovery-progress --output rescued.h5 --report evidence.json
+python -m pip install .
+python -m h5reclaim rescue "damaged.h5"
 ```
 
-Rerun with the same input, options and progress directory to reuse completed datasets and native selections. Choose new final output and report paths for each run. `python -m h5reclaim discover damaged.h5 --json` lists checked surviving dataset headers when original names cannot be read.
-
-For a file with companion files in one directory:
+This creates `damaged.recovered.h5` and `damaged.recovered.report.json` beside the source. Existing destinations are never overwritten. Use explicit paths to choose a different location or repeat a run:
 
 ```sh
-python -m h5reclaim rescue container.h5 --related-dir companion-files --output rescued.h5 --report evidence.json
+python -m h5reclaim rescue "damaged.h5" --output "rescued.h5" --report "evidence.json"
 ```
 
-MATLAB 7.3, netCDF4 and NWB examples are checked with independent Python writers and readers, on intact files and controlled payload damage. Install `.[applications]` to run those evaluations.
+The installed `h5reclaim` command also works. Run `python -m h5reclaim --help` to see commands, or `python -m h5reclaim rescue --help` for recovery options.
 
-## Guides and verification
+## Understand the result
 
-The [usage guide](docs/usage.md) covers commands and output interpretation. The [file guide](docs/file-guide.md) maps the implementation. See [related files](docs/dependency-bundles.md) for manifests and the [evidence model](docs/evidence-model.md) for report semantics.
+The terminal summary identifies complete or partial recovery and lists output locations. The JSON report records recovered datasets, unresolved data, recovery methods, and any omitted metadata.
+
+**Check each dataset's status map before using recovered values.** The report gives its exact location in the output file. Unknown positions may display a fill value such as zero. That fill value is not a recovered measurement. A successful export confirms what the current source supports; matching the original, pre-damage measurements requires an independently retained baseline or equivalent prior evidence.
+
+## Common workflows
+
+| Goal | Command |
+| --- | --- |
+| Inspect a file before recovery | `python -m h5reclaim diagnose damaged.h5` |
+| Recover one dataset | `python -m h5reclaim rescue damaged.h5 --dataset /experiment/readings` |
+| Summarize an existing result | `python -m h5reclaim report damaged.recovered.report.json` |
+| Resume a longer recovery | `python -m h5reclaim rescue damaged.h5 --resume-dir recovery-progress` |
+| Supply companion files | `python -m h5reclaim rescue container.h5 --related-dir companion-files` |
+| Find datasets after their names are lost | `python -m h5reclaim discover damaged.h5 --json` |
+
+Some files need additional compression codecs. Install `python -m pip install ".[filters]"` from the repository root, then retry. The [usage guide](docs/usage.md) covers larger files, resource budgets, dependent files, resumable runs, and prior protection bundles.
+
+## Recovery coverage
+
+H5Reclaim reads a file's own dataset descriptions. It does not require a particular experiment, dataset name, or array shape. Recovery still depends on the damage and the bytes that survive.
+
+| Area | Implemented coverage |
+| --- | --- |
+| Storage | Compact, contiguous, and chunked datasets; legacy and modern chunk indexes |
+| Values | Numeric arrays, compound records, fixed and variable strings, ragged arrays, enums, references, empty and null datasets through applicable methods |
+| Damage | Selected broken index links and checked metadata fields, interrupted-write flags, surviving dataset headers, unreadable chunks, and physical tail truncation |
+| Compression | DEFLATE, LZF, shuffle, Fletcher32, and supported optional packaged codecs |
+| File structure | Available groups, attributes, links, named datatypes, references, dimension scales, and application headers |
+| Dependencies | External storage, virtual datasets, external links, and Family/Split files with explicitly supplied companion files or manifests |
+
+Destroyed payload bytes cannot be recreated without replacement information such as a replica or prior parity. Some metadata repairs have deliberately bounded scope. Unknown filters, unrecoverable ownership, or missing companion files can leave data unresolved. The report records those limitations rather than assigning unsupported measurements.
+
+There is **no established success rate for arbitrary damaged HDF5 files**. Controlled faults and intact-file compatibility checks measure defined cases. They do not establish that 80% of files submitted in the wild are recoverable. See the [coverage evaluation](docs/coverage.md) for its case definitions, denominators, and results.
+
+Recorded v0.14.0 evaluations include:
+
+| Evaluation | Recorded result |
+| --- | --- |
+| [Four intact scientific files](benchmarks/results/v014-scientific-whole.json) | 251 datasets and 253 attributes compared exactly with retained originals |
+| [Controlled broken GWOSC index link](benchmarks/results/v014-gwosc-controlled.json) | 128/128 chunks recovered at their exact coordinates; zero wrong chunks |
+| [MATLAB 7.3, netCDF4, and NWB](benchmarks/results/v014-application-readers.json) | Independent readers opened six intact/controlled-damage outputs; zero wrong accepted elements, with damaged regions left unknown |
+
+The [benchmark guide](benchmarks/README.md) explains how to reproduce evaluations. The [corpus notes](corpus/README.md) provide scientific-file attribution.
+
+## Contributing and reporting problems
+
+Open an [issue](https://github.com/xShadyy/H5Reclaim/issues) with the command, tool and Python versions, observed error, and expected result. A small reproducible file and its report help distinguish unsupported storage from a recovery bug.
+
+For development, install `python -m pip install -e ".[filters]"` and run:
 
 ```sh
 python -m unittest discover -s tests -q
-python -m unittest benchmarks.test_authentic_v09_routes benchmarks.test_heldout_trials benchmarks.test_incident_intake -q
-python benchmarks/run_real_corpus.py
-python benchmarks/run_gwosc_recovery.py
-python benchmarks/run_whole_file_corpus.py
-python benchmarks/run_application_corpus.py
 ```
 
-The [benchmark guide](benchmarks/README.md) describes independent evaluation, and the [corpus notes](corpus/README.md) record the bundled scientific files and their attribution.
+Tests check recovery correctness, source preservation, and unresolved-data handling. Benchmarks score accepted values against separate originals. The [repository guide](docs/file-guide.md) maps the implementation and explains why those files are present.
 
 ## License
 
-H5Reclaim is available under the [Apache License 2.0](LICENSE).
+Source code is available under the [Apache License 2.0](LICENSE). Bundled scientific files have [separate attribution and licenses](corpus/README.md).
 
-<sub>A project by Tymoteusz Netter.</sub>
+<sub>Created by Tymoteusz Netter.</sub>
