@@ -35,7 +35,18 @@ def equal_values(expected, observed, source, output):
         if source[expected].name != output[observed].name:
             return False
         if isinstance(expected, h5py.RegionReference):
-            return h5py.h5r.get_region(expected, source.id).encode() == h5py.h5r.get_region(observed, output.id).encode()
+            old = h5py.h5r.get_region(expected, source.id)
+            new = h5py.h5r.get_region(observed, output.id)
+            if (old.get_simple_extent_dims() != new.get_simple_extent_dims()
+                    or old.get_select_type() != new.get_select_type()
+                    or old.get_select_npoints() != new.get_select_npoints()):
+                return False
+            selection = old.get_select_type()
+            if selection == h5py.h5s.SEL_POINTS:
+                return np.array_equal(old.get_select_elem_pointlist(), new.get_select_elem_pointlist())
+            if selection == h5py.h5s.SEL_HYPERSLABS:
+                return np.array_equal(old.get_select_hyper_blocklist(), new.get_select_hyper_blocklist())
+            return selection in (h5py.h5s.SEL_ALL, h5py.h5s.SEL_NONE)
         return True
     if isinstance(expected, h5py.Empty):
         return isinstance(observed, h5py.Empty) and expected.dtype == observed.dtype

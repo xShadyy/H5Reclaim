@@ -27,6 +27,19 @@ jobs:
         run: python -m pip install dist/*.whl
       - name: Recover data through the installed console command
         run: python tools/check_installed_package.py
+  release-coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install recovery dependencies
+        run: python -m pip install -e ".[filters]"
+      - name: Check independent evaluation and incident scoring
+        run: python -m unittest benchmarks.test_authentic_v09_routes benchmarks.test_heldout_trials benchmarks.test_incident_intake benchmarks.test_release_coverage -q
+      - name: Independently score automatic rescue across layouts and faults
+        run: python benchmarks/run_release_coverage.py --work-dir work/release-coverage
   real-data-and-tests:
     strategy:
       fail-fast: false

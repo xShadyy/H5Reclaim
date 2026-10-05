@@ -74,7 +74,7 @@ H5Reclaim reads a file's own dataset descriptions. It does not require a particu
 | --- | --- |
 | Storage | Compact, contiguous, and chunked datasets; legacy and modern chunk indexes |
 | Values | Numeric arrays, compound records, fixed and variable strings, ragged arrays, enums, references, empty and null datasets through applicable methods |
-| Damage | Selected broken index links and checked metadata fields, interrupted-write flags, surviving dataset headers, unreadable chunks, and physical tail truncation |
+| Damage | Selected broken index links and checked metadata fields, a uniquely checksum-justified modern signature byte, interrupted-write flags, surviving dataset headers, unreadable chunks, and physical tail truncation |
 | Compression | DEFLATE, LZF, shuffle, Fletcher32, and supported optional packaged codecs |
 | File structure | Available groups, attributes, links, named datatypes, references, dimension scales, and application headers |
 | Dependencies | External storage, virtual datasets, external links, and Family/Split files with explicitly supplied companion files or manifests |
@@ -82,6 +82,8 @@ H5Reclaim reads a file's own dataset descriptions. It does not require a particu
 Destroyed payload bytes cannot be recreated without replacement information such as a replica or prior parity. Some metadata repairs have deliberately bounded scope. Unknown filters, unrecoverable ownership, or missing companion files can leave data unresolved. The report records those limitations rather than assigning unsupported measurements.
 
 There is **no established success rate for arbitrary damaged HDF5 files**. Controlled faults and intact-file compatibility checks measure defined cases. They do not establish that 80% of files submitted in the wild are recoverable. See the [coverage evaluation](docs/coverage.md) for its case definitions, denominators, and results.
+
+The **0.15.0 automatic-rescue panel** produced useful output in **88/109 controlled damaged-file cases (80.7%)**: 63 fully exact, 25 partial, and 21 refused. It accepted 69.0% of the original elements at their exact coordinates, with zero wrong accepted values or changed sources. The panel spans 23 generated data and layout families; [every case and limitation is recorded](benchmarks/results/v015-release-coverage.json).
 
 Recorded v0.14.0 evaluations include:
 
