@@ -24,7 +24,7 @@ class CorpusCliTests(unittest.TestCase):
         self.assertIn("Original files verified: 4/4 (size and SHA-256)", plain.stdout)
         self.assertIn("Datasets surveyed: 251", plain.stdout)
         self.assertIn("Candidate means the metadata fits", plain.stdout)
-        self.assertIn("this survey does not", plain.stdout)
+        self.assertIn("verifies original hashes and metadata/index classifications", plain.stdout)
         self.assertIn("GWOSC GW150914, Hanford H1 (16 kHz)", plain.stdout)
         self.assertNotIn('"kind":', plain.stdout)
 
