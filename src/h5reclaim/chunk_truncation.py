@@ -28,11 +28,12 @@ from .metadata_fallback import read_dataset_spec_fallback
 from .modern_evidence_adapter import build_modern_evidence
 from .modern_indexes import ModernH5File
 from .ownership_inventory import inventory_other_allocations, reject_sibling_overlap
-from .output_annotations import add_output_annotations
+from .output_annotations import add_output_annotations, metadata_group_for_path
 from .recovery import (
     Analysis, ChunkDecodeError, ChunkRecord, MAX_CHUNKS, MAX_NODES,
     MAX_SOURCE_BYTES, MissingDecoderError, RecoveryError, STATUS_CODES, VERSION,
     _decode_chunk, _validate_paths, _verify_source, source_snapshot,
+    _create_recovered_dataset,
 )
 from .schema_codec import ChunkDecodeError as SchemaChunkDecodeError
 from .schema_codec import fletcher32_applied, validate_stored_size
@@ -239,7 +240,7 @@ def analyze_truncated(source: Path, dataset_path: str, *,
     if not isinstance(max_missing_tail_bytes, int) or not 0 < max_missing_tail_bytes <= MAX_SOURCE_BYTES:
         raise ValueError("max_missing_tail_bytes must be a positive bounded integer")
     source = Path(source)
-    with source_snapshot(source) as (snapshot, original_hash, identity, physical_size):
+    with source_snapshot(source, reuse_shared=False) as (snapshot, original_hash, identity, physical_size):
         declared, version = _declared_end(snapshot, physical_size, max_missing_tail_bytes)
         if shutil.disk_usage(snapshot.parent).free < declared - physical_size + 32 * 1024 * 1024:
             raise UnsupportedCase("insufficient free space for bounded private tail extension")
@@ -282,7 +283,11 @@ def analyze_truncated(source: Path, dataset_path: str, *,
                    "sha256_before": original_hash, "sha256_after": original_hash},
         "dataset": {"path": spec.path, "object_address": spec.object_address,
                     "shape": list(spec.shape), "chunks": list(spec.chunks),
-                    "dtype": spec.dtype, "chunk_grid": list(spec.chunk_grid),
+                    "dtype": spec.dtype if isinstance(spec.dtype, str) else str(spec.dtype),
+                    "exact_file_datatype_sha256": (
+                        hashlib.sha256(spec.file_type_encoding).hexdigest()
+                        if spec.file_type_encoding is not None else None),
+                    "chunk_grid": list(spec.chunk_grid),
                     "filters": list(spec.filters),
                     "filter_pipeline": [{"id": item.id, "flags": item.flags,
                                          "values": list(item.values)} for item in spec.filter_pipeline],
@@ -312,7 +317,7 @@ def analyze_truncated(source: Path, dataset_path: str, *,
         "integrity_note": ("The original physical EOF bounds every accepted metadata extent "
                            "and payload. Structural placement does not prove historical byte "
                            "integrity when the chunk lacks an independent checksum."),
-        "metadata_note": ("Only the selected dataset's rooted numeric schema and accepted "
+        "metadata_note": ("Only the selected dataset's rooted fixed-record schema and accepted "
                           "chunks are exported. Listed omitted attributes and other scientific "
                           "context are not copied."),
         "limits": ("A bounded tail-only truncation with fully present rooted path, schema, "
@@ -330,8 +335,10 @@ def recover_truncated(source: Path, dataset_path: str, output: Path,
     _validate_paths(source, output, report_path)
     analysis = analyze_truncated(source, dataset_path,
                                  max_missing_tail_bytes=max_missing_tail_bytes)
+    metadata_group = metadata_group_for_path(dataset_path)
+    analysis.report["metadata_group"] = metadata_group
     annotation_values = {
-        "h5reclaim_chunk_status": "/_h5reclaim/chunk_status",
+        "h5reclaim_chunk_status": metadata_group + "/chunk_status",
         "h5reclaim_complete": analysis.report["complete"],
         "h5reclaim_execution_state": "finished",
         "h5reclaim_integrity": "per_chunk_in_report; some chunks may lack a payload checksum",
@@ -354,15 +361,12 @@ def recover_truncated(source: Path, dataset_path: str, output: Path,
             try:
                 with h5py.File(output_temp, "x") as handle:
                     spec = analysis.spec
-                    data = handle.create_dataset(
-                        spec.path, shape=spec.shape, maxshape=spec.maxshape or spec.shape,
-                        chunks=spec.chunks, dtype=spec.dtype, fillvalue=0,
-                    )
+                    data = _create_recovered_dataset(handle, spec)
                     for record in analysis.records:
                         data.id.write_direct_chunk(record.coordinate, record.payload, filter_mask=0)
                     for name, value in spec.attributes:
                         data.attrs[name] = value
-                    meta = handle.create_group("/_h5reclaim")
+                    meta = handle.require_group(metadata_group)
                     validity = meta.create_dataset("chunk_status", data=analysis.status, dtype="u1")
                     validity.attrs["codes_json"] = json.dumps(STATUS_CODES, sort_keys=True)
                     validity.attrs["axis_meaning"] = ", ".join(
@@ -374,6 +378,15 @@ def recover_truncated(source: Path, dataset_path: str, output: Path,
                     if add_output_annotations(data, annotation_values) != annotation_collisions:
                         raise RecoveryError("selected attributes changed during publication")
                     handle.flush()
+                with h5py.File(output_temp, "r") as handle:
+                    data = handle[analysis.spec.path]
+                    if (analysis.spec.file_type_encoding is not None
+                            and data.id.get_type().encode() != analysis.spec.file_type_encoding):
+                        raise RecoveryError("truncated output datatype changed during export")
+                    for record in analysis.records:
+                        mask, raw = data.id.read_direct_chunk(record.coordinate)
+                        if mask != 0 or raw != record.payload:
+                            raise RecoveryError("truncated output chunk bytes changed during export")
                 report_temp.write_text(report_text, encoding="utf-8")
                 _verify_source(source, analysis.source_identity,
                                analysis.report["source"]["sha256_before"])

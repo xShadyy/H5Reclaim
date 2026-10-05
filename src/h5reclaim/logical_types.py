@@ -116,9 +116,33 @@ def encode_value(value, typ, handle, *, address_map=None, max_bytes=4 * 1024**2,
 
 
 def token_bytes(token):
+    def canonical_region(encoded):
+        # HDF5 can encode the same region with different dataspace versions
+        # in files created with different library bounds. Compare the extent
+        # and copied selection in one fresh H5S representation, retaining
+        # point order and hyperslabs without enumerating potentially huge
+        # selections. The original token still carries a decodable region.
+        source = h5py.h5s.decode(bytes.fromhex(encoded))
+        shape = source.get_simple_extent_dims()
+        canonical = (h5py.h5s.create_simple(shape) if shape else
+                     h5py.h5s.create(source.get_simple_extent_type()))
+        if hasattr(canonical, "select_copy"):
+            canonical.select_copy(source)
+        else:
+            # h5py 3.10 does not expose this public HDF5 operation yet.
+            # Resolve it from the same linked HDF5 library as the SpaceIDs.
+            import ctypes
+            from .native_bindings import public_function
+            copy_selection = public_function("H5Sselect_copy", [ctypes.c_int64, ctypes.c_int64])
+            if copy_selection(canonical.id, source.id) < 0:
+                raise ValueError("HDF5 could not normalize a reference selection")
+        return canonical.encode().hex()
+
     def identity(item):
         if isinstance(item, dict):
-            return {key: identity(value) for key, value in item.items() if key != "path"}
+            return {key: (canonical_region(value) if key == "region" and isinstance(value, str)
+                          else identity(value))
+                    for key, value in item.items() if key != "path"}
         if isinstance(item, list):
             return [identity(value) for value in item]
         return item

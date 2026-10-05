@@ -1,4 +1,4 @@
-"""Rooted, read-only recovery of compact and contiguous numeric datasets.
+"""Rooted, read-only recovery of compact and contiguous fixed-record datasets.
 
 Only a selected local hard-link path can assign a raw byte range to a dataset.
 The rooted group path, dataspace, canonical datatype, and storage-layout message
@@ -28,7 +28,7 @@ import numpy as np
 
 from .format import DEFAULT_ISTORE_K, SIGNATURE, FormatError, H5File, Superblock, UnsupportedFormat
 from .metadata_fallback import (
-    MAX_DEPTH, MAX_PATH_BYTES, _compact_links, _messages, _numeric_dtype,
+    MAX_DEPTH, MAX_PATH_BYTES, _compact_links, _file_dtype, _messages,
     _old_group, _old_messages, _old_root_address, _unique,
     _validate_metadata_ranges,
 )
@@ -152,7 +152,7 @@ class NonchunkedSpec:
     path: str
     object_address: int
     shape: tuple[int, ...]
-    dtype: str
+    dtype: str | np.dtype
     layout: str
     source_address: int | None
     source_absolute_offset: int | None
@@ -164,6 +164,7 @@ class NonchunkedSpec:
     omitted_auxiliary_metadata: tuple[str, ...]
     truncated_source: bool
     uninspected_rooted_objects: int
+    file_type_encoding: bytes | None = None
 
     @property
     def element_size(self) -> int:
@@ -187,8 +188,8 @@ def _dataspace(raw: bytes, lsize: int, *, older: bool) -> tuple[int, ...]:
     if len(raw) < 4:
         raise FormatError("truncated dataspace message")
     version, rank, flags, kind = raw[:4]
-    if rank > 4 or flags & ~1:
-        raise UnsupportedFormat("nonchunked route requires rank zero through four simple dataspace")
+    if rank > 32 or flags & ~1:
+        raise UnsupportedFormat("nonchunked route requires rank zero through 32 simple dataspace")
     if version == 1:
         if len(raw) < 8 or any(raw[3:8]):
             raise FormatError("invalid older dataspace prefix")
@@ -217,14 +218,11 @@ def _dataspace(raw: bytes, lsize: int, *, older: bool) -> tuple[int, ...]:
     return shape
 
 
-def _datatype(raw: bytes, *, older: bool) -> str:
-    if older:
-        candidates = [n for n in (12, 20) if len(raw) == (n + 7) // 8 * 8
-                      and not any(raw[n:])]
-        if len(candidates) != 1:
-            raise UnsupportedFormat("noncanonical or unbounded older datatype message")
-        raw = raw[:candidates[0]]
-    return _numeric_dtype(raw)
+def _datatype(raw: bytes, *, older: bool) -> tuple[str | np.dtype, bytes | None]:
+    # Shared fixed-record validation retains exact HDF5 schema information
+    # such as enum names, string padding, opaque tags and compound offsets.
+    # Heap pointers and references cannot be copied as self-contained records.
+    return _file_dtype(raw, older_padding=older)
 
 
 def _layout(raw: bytes, *, older: bool, osize: int, lsize: int,
@@ -261,7 +259,7 @@ def _layout(raw: bytes, *, older: bool, osize: int, lsize: int,
         if absolute >= declared_eof or absolute + stored > declared_eof:
             raise FormatError("contiguous allocation crosses declared EOF")
         return "contiguous", address, absolute, stored
-    raise UnsupportedFormat("chunked or virtual layout is not a nonchunked numeric dataset")
+    raise UnsupportedFormat("chunked or virtual layout is not a nonchunked fixed-record dataset")
 
 
 def _check_path(dataset_path: str) -> list[str]:
@@ -487,7 +485,7 @@ def read_nonchunked_spec(snapshot: Path, dataset_path: str) -> NonchunkedSpec:
         if selected_hard_link_count < 1:
             raise FormatError("selected object has no valid hard-link count")
         shape = _dataspace(space.data, reader.superblock.length_size, older=old_header)
-        dtype = _datatype(datatype.data, older=old_header)
+        dtype, type_encoding = _datatype(datatype.data, older=old_header)
         expected = prod(shape) * np.dtype(dtype).itemsize
         if expected <= 0 or expected > MAX_DATA_BYTES:
             raise UnsupportedFormat("dataset bytes exceed bounded nonchunked route")
@@ -533,6 +531,7 @@ def read_nonchunked_spec(snapshot: Path, dataset_path: str) -> NonchunkedSpec:
             omitted_auxiliary_metadata=omitted,
             truncated_source=(reader.superblock.eof_address > reader.size),
             uninspected_rooted_objects=uninspected,
+            file_type_encoding=type_encoding,
         )
 
 
@@ -589,7 +588,11 @@ def analyze_nonchunked_snapshot(
         "source": {"path": str(source), "size_bytes": size,
                    "sha256_before": before_hash, "sha256_after": before_hash},
         "dataset": {"path": spec.path, "object_address": spec.object_address,
-                    "shape": list(spec.shape), "dtype": spec.dtype,
+                    "shape": list(spec.shape),
+                    "dtype": spec.dtype if isinstance(spec.dtype, str) else str(spec.dtype),
+                    "exact_file_datatype_sha256": (
+                        hashlib.sha256(spec.file_type_encoding).hexdigest()
+                        if spec.file_type_encoding is not None else None),
                     "layout": spec.layout, "element_size": spec.element_size,
                     "attributes_copied": [], "attributes_omitted": list(spec.omitted_auxiliary_metadata)},
         "metadata_resolution": {
@@ -636,6 +639,7 @@ def analyze_nonchunked_snapshot(
             "rooted_objects_beyond_physical_eof": spec.uninspected_rooted_objects,
         },
         "counts": {"recovered": recovered, "unknown": spec.elements - recovered},
+        "accepted_elements": recovered, "unknown_elements": spec.elements - recovered,
         "metadata_group": metadata_group_for_path(spec.path),
         "validity": {"dataset": metadata_group_for_path(spec.path) + "/element_status", "codes": STATUS_CODES,
                      "granularity": "one code per selected dataset element"},
@@ -658,6 +662,41 @@ def analyze_nonchunked_snapshot(
         ),
     }
     return NonchunkedAnalysis(spec, status, raw, report, identity)
+
+
+def _create_nonchunked_dataset(handle: h5py.File, spec: NonchunkedSpec) -> h5py.Dataset:
+    """Create the observed storage class with its exact self-contained H5T."""
+    type_id = (h5py.h5t.decode(spec.file_type_encoding) if spec.file_type_encoding is not None
+               else h5py.h5t.py_create(np.dtype(spec.dtype)))
+    if type_id.get_size() != spec.element_size:
+        raise FormatError("selected HDF5 datatype disagrees with the recovered record width")
+    parent_name, name = spec.path.rsplit("/", 1)
+    parent = handle.require_group(parent_name or "/")
+    space = (h5py.h5s.create(h5py.h5s.SCALAR) if not spec.shape else
+             h5py.h5s.create_simple(spec.shape))
+    creation = h5py.h5p.create(h5py.h5p.DATASET_CREATE)
+    creation.set_attr_creation_order(h5py.h5p.CRT_ORDER_TRACKED | h5py.h5p.CRT_ORDER_INDEXED)
+    creation.set_layout(h5py.h5d.COMPACT if spec.layout == "compact" else h5py.h5d.CONTIGUOUS)
+    return h5py.Dataset(h5py.h5d.create(
+        parent.id, name.encode("utf-8"), type_id, space, dcpl=creation,
+    ))
+
+
+def _write_nonchunked_bytes(dataset: h5py.Dataset, spec: NonchunkedSpec, raw: bytes) -> None:
+    """Write complete raw records with no dtype conversion or padding loss."""
+    if len(raw) > spec.stored_size or len(raw) % spec.element_size:
+        raise FormatError("exported bytes do not contain bounded complete records")
+    records = np.zeros(spec.elements, dtype=f"V{spec.element_size}")
+    if raw:
+        records[:len(raw) // spec.element_size] = np.frombuffer(raw, dtype=records.dtype)
+    dataset.id.write(h5py.h5s.ALL, h5py.h5s.ALL, records.reshape(spec.shape),
+                     mtype=dataset.id.get_type())
+
+
+def _read_nonchunked_bytes(dataset: h5py.Dataset, spec: NonchunkedSpec) -> bytes:
+    records = np.empty(spec.shape, dtype=f"V{spec.element_size}")
+    dataset.id.read(h5py.h5s.ALL, h5py.h5s.ALL, records, mtype=dataset.id.get_type())
+    return records.tobytes(order="C")
 
 
 def export_nonchunked(
@@ -705,27 +744,8 @@ def export_nonchunked(
                 try:
                     with h5py.File(output_temp, "x") as handle:
                         spec = analysis.spec
-                        values = np.zeros(spec.elements, dtype=np.dtype(spec.dtype))
-                        count = analysis.report["counts"]["recovered"]
-                        if count:
-                            values[:count] = np.frombuffer(analysis.recovered_bytes, dtype=spec.dtype)
-                        if spec.layout == "compact":
-                            parent_name, name = spec.path.rsplit("/", 1)
-                            parent = handle.require_group(parent_name or "/")
-                            space = (h5py.h5s.create(h5py.h5s.SCALAR) if not spec.shape else
-                                     h5py.h5s.create_simple(spec.shape))
-                            creation = h5py.h5p.create(h5py.h5p.DATASET_CREATE)
-                            creation.set_attr_creation_order(h5py.h5p.CRT_ORDER_TRACKED | h5py.h5p.CRT_ORDER_INDEXED)
-                            creation.set_layout(h5py.h5d.COMPACT)
-                            dataset = h5py.Dataset(h5py.h5d.create(
-                                parent.id, name.encode("utf-8"),
-                                h5py.h5t.py_create(np.dtype(spec.dtype)),
-                                space, dcpl=creation,
-                            ))
-                        else:
-                            dataset = handle.create_dataset(spec.path, shape=spec.shape,
-                                                            dtype=spec.dtype, track_order=True)
-                        dataset[...] = values.reshape(spec.shape)
+                        dataset = _create_nonchunked_dataset(handle, spec)
+                        _write_nonchunked_bytes(dataset, spec, analysis.recovered_bytes)
                         from .output_annotations import metadata_group_for_path
                         meta = handle.require_group(metadata_group_for_path(dataset_path))
                         validity = meta.create_dataset("element_status", data=analysis.status,
@@ -744,9 +764,13 @@ def export_nonchunked(
                         meta.attrs["report_schema_version"] = 1
                         handle.flush()
                     with h5py.File(output_temp, "r") as handle:
-                        observed = handle[dataset_path].astype(np.dtype(analysis.spec.dtype))[...]
-                        if observed.tobytes(order="C")[:len(analysis.recovered_bytes)] != analysis.recovered_bytes:
-                            raise RecoveryError("output numeric bit patterns changed during export")
+                        dataset = handle[dataset_path]
+                        if (analysis.spec.file_type_encoding is not None
+                                and dataset.id.get_type().encode() != analysis.spec.file_type_encoding):
+                            raise RecoveryError("output HDF5 datatype changed during export")
+                        observed = _read_nonchunked_bytes(dataset, analysis.spec)
+                        if observed[:len(analysis.recovered_bytes)] != analysis.recovered_bytes:
+                            raise RecoveryError("output record bytes changed during export")
                     report_temp.write_text(report_text, encoding="utf-8")
                     _verify_source(source, identity, source_hash)
                     _validate_paths(source, output, report_path)
