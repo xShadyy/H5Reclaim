@@ -1,26 +1,19 @@
-# Real-incident intake and independent scoring
+# Evaluate submitted datasets
 
-This protocol is for **actual damaged files submitted with permission**. The
-repository does not contain a naturally damaged scientific incident or a
-field success-rate measurement. The tests for this runner create controlled
-faults solely to check the evaluator. They are never entered as natural cases.
+Use this workflow to recover submitted damaged files and measure the result
+against independently retained originals or earlier element hashes.
 
-The run and score steps are deliberately separate. The run manifest contains
-only damaged inputs and operational provenance. Recovery runs in a fresh
-subprocess on a copy, without a healthy file, earlier hash, or truth manifest.
-After it has finished, an independent evaluator can introduce a separately
-retained truth manifest and compare accepted values. The subprocess shares OS
-filesystem permissions with the evaluator, so this is an **input boundary**, not
-a defense against a malicious process. To keep truth genuinely inaccessible,
-run recovery on a machine or account that has no access to the reference, then
-transfer the hash-pinned output and receipt to an evaluator.
+The **run** step calls H5Reclaim on a source copy and records its output, report,
+and file hashes. The **score** step then compares accepted values with a
+separately supplied reference. This keeps recovery and evaluation distinct
+while preserving a reproducible record for each dataset.
 
 ## Run manifest
 
 Save as `intake.json` next to `damaged/case1.h5`. The digest and byte size must
 be filled in from the actual immutable source. Document the source, incident,
-selected dataset and authorization. One incident may contribute several cases;
-they share `incident_id` so they are not mistaken for independent events.
+selected dataset and authorization. Group datasets from the same incident
+under a shared `incident_id`.
 
 ```json
 {
@@ -47,13 +40,11 @@ they share `incident_id` so they are not mistaken for independent events.
 ```
 
 `declared_cause` is one of `unknown`, `interrupted_write`, `truncation`,
-`metadata`, `index`, `payload`, `missing_dependency`, or `other`. The runner
-does not assume that an operator's diagnosis is correct. The consent fields
-record the custodian's declaration; the tool cannot verify their authority.
-Do not submit patient, confidential or restricted measurements without the
-appropriate authorization. The report omits the descriptive provenance and
-custodian name, but the private work directory contains a **full copy** of each
-damaged file and its output. Do not publish that directory by default.
+`metadata`, `index`, `payload`, `missing_dependency`, or `other`. It records
+the reported cause; H5Reclaim determines recovery methods from the file.
+Include the data custodian's local-processing approval in `consent`.
+The report omits descriptive provenance and custodian names. The private work
+directory retains source copies and recovered outputs for evaluation.
 
 Run from the repository root:
 
@@ -62,25 +53,22 @@ python benchmarks/run_incident_intake.py run --manifest /path/intake.json --work
 ```
 
 This prints `run.json` and its SHA-256. Store that digest independently. The
-manifest is restricted to a safe relative path under its own directory, a
-bounded regular input of at most 4 GiB per case, explicit consent, and a
-size/SHA-256 pin. The work directory must be new or empty. The runner checks
-source and copy hashes after the subprocess. Each source is passed to the
-public `h5reclaim rescue` CLI on a disposable copy, without synthetic edits.
-Up to 128 declared cases are accepted. Cases can end in output, safe refusal,
-timeout, or protocol failure. A refusal is counted in the run denominator.
+manifest accepts relative source paths under its directory, regular files of
+at most 4 GiB per case, recorded consent, and matching size/SHA-256 values.
+The work directory must be new or empty. The runner checks source and copy
+hashes after each recovery process. Each source is passed to the public
+`h5reclaim rescue` CLI on a disposable copy. Up to 128 declared cases are
+accepted, with outputs, refusals, timeouts, and protocol failures recorded.
 
 The report has `case_count`, `distinct_incident_ids`, `run_denominator_cases`,
-and all outcomes. It does **not** label any accepted value historically exact.
-A selected cohort is not a random draw from all laboratory failures.
+and all outcomes. The score step adds exact-value comparisons.
 
 ## Score after recovery
 
 For an incident with an independently retained, matching healthy source, put
 the reference in a separate private directory after the run. Its manifest
 uses the same case ID, pins the reference bytes, and declares why it represents
-the exact pre-incident values. Different acquisitions or nearby timestamps are
-not automatically valid historical truth.
+the exact acquisition being evaluated.
 
 ```json
 {
@@ -128,17 +116,15 @@ python benchmarks/run_incident_intake.py capture-hashes \
   --output /private/truth.json
 ```
 
-Keep the generated manifest and displayed SHA-256 independently. A trusted
-scientist can also provide a partial set of previously retained hashes in the
-same schema. A hash recorded after an incident cannot establish earlier
-values. The evaluator
-supports at most 100,000 prior hashes in one truth case, 1,048,576 logical
-elements, four axes, and 16 MiB of decoded fixed-size elements. Variable-length
-objects, unknown prior shape or HDF5 type, and cases exceeding these scoring
-bounds remain unscorable or invalid. Capture refuses virtual data, external
-raw storage, and external links, where local bytes alone would give incomplete
-truth. A hash verifies a matching value but
-does not reconstruct missing bytes.
+Keep the generated manifest and displayed SHA-256 independently. Previously
+retained partial hashes can also use this schema.
+
+This scorer supports local fixed-size datasets with a known prior shape and
+HDF5 datatype. Its per-case bounds are 100,000 prior hashes, 1,048,576 logical
+elements, four axes, and 16 MiB of decoded values. Hash capture uses local
+storage; virtual datasets, external raw storage, and external links require a
+separately assembled reference. Cases outside the scoring bounds retain their
+unscorable or invalid classification in the report.
 
 Pin `run.json` and `truth.json` SHA-256 **outside** either manifest, then run:
 
@@ -156,21 +142,8 @@ accepted elements, wrong accepted elements, verified unknown elements,
 refused elements, accepted elements without truth, cases without any truth,
 and invalid cases separately. A partially hashed dataset has a partial truth
 denominator. The score command exits 1 when it finds wrong accepted values or
-an invalid case. A refusal does not count as successful repair.
+an invalid case. Refusals remain in the case counts with zero recovered values.
 
-## Public natural-damage candidate, not a scored case
-
-The [HDF Group issue #5417](https://github.com/HDFGroup/hdf5/issues/5417)
-describes a 620 MB HDF5 file reportedly damaged by a computer crash during
-writing and links the broken file. The issue does not supply an independently
-verified pre-incident reference or element hashes, nor an explicit data reuse
-license. We have not bundled, downloaded, or scored it. Its error report is a
-lead for permission and provenance inquiry, **not** evidence that this project
-has been validated against that incident. Other publicly discussed HDF5
-open failures can be reader-version incompatibilities rather than damage.
-
-To make a field claim, obtain a prospectively declared set of distinct
-incidents from independent laboratories, explicit data permission, pinned
-files and environment details, preexisting exact truth where possible,
-blind recovery runs, and a published denominator that includes unsupported
-and unscorable cases. Until then, report conditional counts only.
+For generated layouts and controlled faults, use the
+[release coverage benchmark](../docs/coverage.md). For another supplied panel,
+see `run_heldout_trials.py --help`.

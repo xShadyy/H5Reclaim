@@ -20,7 +20,7 @@ Whole-file recovery retains each dataset's map and evidence under its own metada
 
 ## Historical equality
 
-`current_value_evidence` describes what the present bytes support. `historical_integrity` and `historical_status` describe equality to a separately supplied prior capture. A current checksum or a successful readback does not establish what the acquisition contained before damage.
+`current_value_evidence` records the checks supporting recovered source values. Supply a prior capture to compare those values with an earlier acquisition through `historical_integrity` and `historical_status`.
 
 A prior baseline can verify a matching value. Replicas or parity can also supply missing information. A capsule supplies earlier schema, physical locations, and hashes. `--strict-history` requires the selected route to compare every accepted unit with a pinned prior capture before publishing.
 

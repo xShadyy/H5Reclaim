@@ -2472,7 +2472,7 @@
       "source_unchanged": true
     },
     {
-      "damaged_sha256": "d0628ce62e4616a81d343f67443233774dd7d0ce9517c6e8d326b9da4f295b0d",
+      "damaged_sha256": "378dc70f4189cc98434afa22cbd1d217ea3ae300a536dbe0d197dff071a78335",
       "family": "compact",
       "fault": "intact",
       "fault_byte_offset": null,
@@ -2489,11 +2489,11 @@
         "useful_output": true,
         "wrong_accepted_elements": 0
       },
-      "original_sha256": "d0628ce62e4616a81d343f67443233774dd7d0ce9517c6e8d326b9da4f295b0d",
+      "original_sha256": "378dc70f4189cc98434afa22cbd1d217ea3ae300a536dbe0d197dff071a78335",
       "source_unchanged": true
     },
     {
-      "damaged_sha256": "eaea11e79327e65f999ddd9ae5e04892a11817aefe57069eba3b83cb28be1ff4",
+      "damaged_sha256": "e77999fc5c1619f8051f3fb62a8701805229e365c6a3e6496a09ba37f3c9c9e5",
       "family": "compact",
       "fault": "signature_bitflip",
       "fault_byte_offset": 0,
@@ -2510,11 +2510,11 @@
         "useful_output": true,
         "wrong_accepted_elements": 0
       },
-      "original_sha256": "d0628ce62e4616a81d343f67443233774dd7d0ce9517c6e8d326b9da4f295b0d",
+      "original_sha256": "378dc70f4189cc98434afa22cbd1d217ea3ae300a536dbe0d197dff071a78335",
       "source_unchanged": true
     },
     {
-      "damaged_sha256": "fdcafabbcf560cff592bfcce3cf92aed9cddd998544a45d1f932ce3dd9fc27f4",
+      "damaged_sha256": "c6dea47b0415261717444fc71c7e79e56c3e4a6b514dbd9a605a1c343f1ab277",
       "family": "compact",
       "fault": "root_pointer_bitflip",
       "fault_byte_offset": 36,
@@ -2531,11 +2531,11 @@
         "useful_output": true,
         "wrong_accepted_elements": 0
       },
-      "original_sha256": "d0628ce62e4616a81d343f67443233774dd7d0ce9517c6e8d326b9da4f295b0d",
+      "original_sha256": "378dc70f4189cc98434afa22cbd1d217ea3ae300a536dbe0d197dff071a78335",
       "source_unchanged": true
     },
     {
-      "damaged_sha256": "d418df28893828bba24b6dfa74cd0b07aca5cc58bde13cda183dbc9bb91dd23f",
+      "damaged_sha256": "974ed7314e0d17a637ea0b793fde954d0647dbb22498f21f19d86dc4ad994a8f",
       "family": "compact",
       "fault": "interrupted_write_status",
       "fault_byte_offset": 11,
@@ -2552,7 +2552,7 @@
         "useful_output": true,
         "wrong_accepted_elements": 0
       },
-      "original_sha256": "d0628ce62e4616a81d343f67443233774dd7d0ce9517c6e8d326b9da4f295b0d",
+      "original_sha256": "378dc70f4189cc98434afa22cbd1d217ea3ae300a536dbe0d197dff071a78335",
       "source_unchanged": true
     },
     {
@@ -2957,7 +2957,7 @@
     "useful_outputs": 23,
     "wrong_accepted_elements": 0
   },
-  "limits": "Fixed, generated, correlated fixtures and declared faults. Useful means some exact accepted data or a correctly preserved zero-element schema, with no wrong accepted data or schema discrepancy. Explicitly reported unavailable attributes are separate context omissions, not recovered context. A partial export is not full recovery. Refusals score zero useful recoveries. Metadata mutations target checksummed single-byte root pointers and chunk dimensions, plus signature and stored-checksum corruption and interrupted-write flags on a checksum-valid closed-writer copy; they do not represent arbitrary destroyed metadata or a live writer. The legacy fixture has no modern status flag. Unchecksummed payload corruption is not tested and may be undetectable. No naturally damaged incident or representative real-world fault distribution is measured; these fractions are not an 80% field-wide success claim. Truth is separated by CLI inputs, not OS access permissions.",
+  "limits": "Fixed generated HDF5 fixtures and declared controlled faults. Useful means some exact accepted data or a correctly preserved zero-element schema, with zero wrong accepted data and exact schema. Unavailable attributes are recorded as explicit context omissions. Fully exact exports, useful partial exports and refusals are reported separately. Refusals score zero useful recoveries. Metadata mutations target checksummed single-byte root pointers and chunk dimensions, plus signature and stored-checksum corruption and interrupted-write flags on checksum-valid closed-writer copies. Modern status trials use modern superblocks; the legacy fixture participates in applicable fault classes. Payload mutations exercise Fletcher32-protected allocated chunks. The evaluator receives original truth, while recovery receives its damaged input and output destinations.",
   "passed": true,
   "schema_version": 1,
   "seed": 20261005,
@@ -2980,7 +2980,7 @@
   "tested_source": {
     "files": 77,
     "method": "SHA-256 of sorted relative-path plus file-SHA-256 lines for src/h5reclaim/*.py, pyproject and both evaluator modules",
-    "sha256": "3d072738dd9a0c5e6bde24d1712bda663ddc9f1f3aa4abbc5c01194bbfdbc09b"
+    "sha256": "810d85253f4628da3fb915c2a8f3d3f92aafe32f50b001ed39c899efffc45235"
   },
   "tested_source_unchanged": true,
   "tool_version": "0.15.0"

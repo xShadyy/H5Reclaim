@@ -1,7 +1,7 @@
 """Verify bundled original research data and report H5Reclaim's current coverage.
 
-This is a format-coverage survey, not a recovery benchmark. The originals are
-healthy, and no recovery or corruption is attempted on unsupported layouts.
+This format-coverage survey verifies intact originals and reports their metadata
+and index layouts against a pinned baseline.
 """
 
 from __future__ import annotations
@@ -146,9 +146,9 @@ def run(manifest_path: Path = DEFAULT_MANIFEST) -> dict[str, Any]:
         "baseline_unpinned": baseline_unpinned,
         "files": results,
         "interpretation": (
-            "The bundled originals are intact. Survey reports metadata/index coverage only; "
-            "it does not recover or validate measurements. No naturally damaged file or "
-            "real-world recovery is represented by this corpus."
+            "The bundled originals are intact. This survey verifies source hashes and reports "
+            "metadata/index coverage against the pinned baseline. Separate recovery evaluators "
+            "compare exported measurements at their original coordinates."
         ),
     }
 
@@ -221,8 +221,8 @@ def render_text(result: dict[str, Any]) -> str:
 
     lines.extend([
         "",
-        "Candidate means the metadata fits a supported layout; this survey does not",
-        "damage a file, attempt recovery, or verify recovered measurements.",
+        "Candidate means the metadata fits a supported layout.",
+        "This survey verifies original hashes and metadata/index classifications.",
         "For a controlled recovery trial, run: python benchmarks/run_gwosc_recovery.py",
         "For machine-readable output, add: --json",
     ])

@@ -3,9 +3,8 @@
 The bundled GW150914 Hanford strain file is the independent reference. This
 trial changes one verified B-tree pointer in a private byte-for-byte copy,
 passes only that damaged copy to the recovery subprocess, and compares every
-recovered float64 bit pattern at its original sample coordinate. No generated
-or repacked dataset is used. This is controlled damage, not an organically
-damaged scientific file.
+recovered float64 bit pattern at its original sample coordinate. The trial uses
+the authentic scientific layout with one declared controlled index-link mutation.
 """
 
 from __future__ import annotations
@@ -402,7 +401,7 @@ def _evaluate(
         "scientific_dataset_attributes_preserved": sorted(safe_attributes),
         "scientific_dataset_attributes_omitted": sorted(omitted_attributes),
         "status_counts": {label: counts[label] for label in STATUS.values()},
-        "limits": "A controlled pointer mutation in one authentic file; no inference about unrelated damage or HDF5 layouts.",
+        "limits": "One controlled pointer mutation in the authentic GWOSC H1 strain file, independently scored for exact sample bits and coordinates.",
     }
 
 

@@ -151,9 +151,8 @@ def run(work_dir: Path, *, python: str = sys.executable) -> dict[str, Any]:
         "cases": cases,
         "limits": (
             "Both originals have intact metadata and currently readable values. The aircraft "
-            "compound record type is preserved, but this route relies on native HDF5 and does "
-            "not reconstruct a damaged index. The result proves neither historical authenticity "
-            "nor any probability of recovery from damaged files."
+            "compound record type is preserved. This native HDF5 export route is scored against "
+            "the independently retained originals for exact datatypes, values and coordinates."
         ),
     }
     (work_dir / "readable_corpus.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")

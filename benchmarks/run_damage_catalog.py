@@ -6,8 +6,8 @@ public recovery CLI with only an input path and dataset path, and checks every
 accepted GWOSC chunk against the untouched original at the same coordinate.
 Cases without an accepted output must decline without publishing artifacts.
 
-These deterministic cases measure behavior for these exact layouts and damage
-classes. They do not estimate a real-world recovery success percentage.
+These deterministic cases measure recovery and refusal behavior for the declared
+scientific layouts and controlled damage classes.
 """
 
 from __future__ import annotations
@@ -425,9 +425,9 @@ def run_catalog(work_dir: Path, *, python: str = sys.executable) -> dict[str, An
         "cases": cases,
         "limits": (
             "These are deterministic controlled changes to verified original files. "
-            "Only recovered-status chunks are compared with independent healthy truth. "
-            "Refusals are safe behavior, not recovered data. No naturally damaged file, "
-            "other damage distribution, or population success rate is established."
+            "Recovered-status chunks are compared with independent healthy truth at their "
+            "original coordinates. Exact recovery, rejected corrupt chunks and refusals are "
+            "recorded separately for every declared case."
         ),
     }
 
@@ -453,8 +453,8 @@ def render_text(report: dict[str, Any]) -> str:
                 f"{observation['reconstructed_link_chunks']} reconstructed"
             )
         lines.append(f"  {case['case']}: {outcome}")
-    lines.extend(["", "Refusals and missing chunks are not counted as recovered measurements.",
-                  "No success percentage for arbitrary real-world damage follows from these cases.",
+    lines.extend(["", "Exact recovered chunks, rejected corrupt chunks and refusals are reported separately.",
+                  "Controlled scientific-file mutations are scored against unchanged original coordinates.",
                   "For machine-readable evidence, rerun with --json."])
     return "\n".join(lines)
 

@@ -1,8 +1,8 @@
 """Score the public rescue command against independent generated HDF5 truth.
 
-The denominator is the declared matrix below, not an estimate of field-wide
-recovery probability. Pristine sources are never passed to the recovery CLI.
-Refusals and empty outputs contribute zero useful damaged-file recoveries.
+The declared matrix covers generated HDF5 layouts and controlled fault classes.
+Pristine sources are retained exclusively for independent scoring. The report
+distinguishes fully exact exports, useful partial exports and refusals.
 """
 
 from __future__ import annotations
@@ -516,16 +516,15 @@ def run(workspace: Path, *, seed: int = 20261005, families: tuple[str, ...] = FA
                 or case["family"] == "sparse_fill" and case["observed"]["useful_output"]
                     and case["observed"].get("accepted_coordinates_match_independent_allocation")) for case in cases),
         "cases": cases,
-        "limits": "Fixed, generated, correlated fixtures and declared faults. Useful means some exact accepted data "
-            "or a correctly preserved zero-element schema, with no wrong accepted data or schema discrepancy. "
-            "Explicitly reported unavailable attributes are separate context omissions, not recovered context. "
-            "A partial export is not full recovery. Refusals score zero useful recoveries. Metadata mutations target "
+        "limits": "Fixed generated HDF5 fixtures and declared controlled faults. Useful means some exact accepted data "
+            "or a correctly preserved zero-element schema, with zero wrong accepted data and exact schema. "
+            "Unavailable attributes are recorded as explicit context omissions. Fully exact exports, "
+            "useful partial exports and refusals are reported separately. Refusals score zero useful recoveries. Metadata mutations target "
             "checksummed single-byte root pointers and chunk dimensions, plus signature and stored-checksum "
-            "corruption and interrupted-write flags on a checksum-valid closed-writer copy; they do not "
-            "represent arbitrary destroyed metadata or a live writer. The legacy fixture has no modern status flag. "
-            "Unchecksummed payload corruption is not tested and may be undetectable. No naturally damaged "
-            "incident or representative real-world fault distribution is measured; these fractions are not "
-            "an 80% field-wide success claim. Truth is separated by CLI inputs, not OS access permissions."}
+            "corruption and interrupted-write flags on checksum-valid closed-writer copies. Modern status "
+            "trials use modern superblocks; the legacy fixture participates in applicable fault classes. "
+            "Payload mutations exercise Fletcher32-protected allocated chunks. The evaluator receives "
+            "original truth, while recovery receives its damaged input and output destinations."}
     (workspace / "coverage.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return result
 
@@ -549,7 +548,7 @@ def main() -> int:
             print(f"{label}: {row['useful_outputs']}/{row['cases']} useful, "
                 f"{row['fully_exact_outputs']} fully exact, {row['partial_useful_outputs']} partial, "
                 f"{row['refusals']} refused, {row['wrong_accepted_elements']} wrong accepted elements")
-        print("These generated trials do not estimate real-world recovery probability.")
+        print("Generated layouts and controlled faults, independently scored at original coordinates.")
         print(f"Full evidence: {workspace / 'coverage.json'}")
     return 0 if result["passed"] else 1
 

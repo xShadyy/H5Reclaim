@@ -89,7 +89,7 @@ class CliUsabilityTests(unittest.TestCase):
         self.assertIn("Datasets: 2/2 exported | 0 failed", summarized.stdout)
         self.assertIn("[COMPLETE] /science", summarized.stdout)
         self.assertIn(evidence["metadata_group"] + "/datasets/d", summarized.stdout)
-        self.assertIn("does not revalidate output files", summarized.stdout)
+        self.assertIn("Summary source: saved evidence report.", summarized.stdout)
 
         # A second run cannot silently replace published output or evidence.
         output_bytes, report_bytes = output.read_bytes(), report.read_bytes()

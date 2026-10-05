@@ -1,4 +1,4 @@
-"""Protocol self-checks with constructed faults, never claimed as natural incidents."""
+"""Protocol self-checks with explicitly constructed evaluator faults."""
 
 from __future__ import annotations
 

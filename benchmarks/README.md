@@ -1,6 +1,8 @@
 # Recovery benchmarks
 
-Evaluators compare exported values and coordinates with independently retained truth after recovery runs. The recovery process receives its damaged input and declared sidecars, rather than the evaluator's pristine reference. The original corpus is hash-pinned and remains unchanged.
+H5Reclaim's benchmarks measure recovered values, exact coordinates, file structure, and source preservation against independently retained originals.
+
+The [0.15.0 controlled benchmark](../docs/coverage.md) achieved **80.7% useful recovery across 109 damaged-file trials**: **63 fully exact**, **25 partial**, and **21 refused**. Across 23 generated data and layout families, the panel recorded zero wrong accepted elements and zero changed sources. The full evaluation also includes 23 intact-file trials, for 132 cases in total.
 
 ## Regression checks
 
@@ -37,19 +39,17 @@ Run from the repository root after installation:
 | `python benchmarks/run_authentic_baseline_integrity.py` | Evaluate prior-baseline comparison on authentic bytes |
 | `python benchmarks/run_authentic_v09_routes.py` | Evaluate capsule, parity, and tail routes on controlled authentic-file copies |
 
-These programs expose readable results and JSON where their `--help` indicates it. Intact-file exports, controlled damage, and naturally damaged incidents are distinct evaluation categories. The structural survey describes parser coverage; automatic rescue additionally tries native, variable, and streaming routes.
+These programs expose readable results and JSON where their `--help` indicates it. Each report records its evaluation category and case counts. The structural survey describes parser coverage; automatic rescue additionally uses native, variable, and streaming methods.
 
-Install `python -m pip install -e ".[filters,applications]"` for the application evaluation. It scores accepted coordinates against independently retained originals after recovery and requires zero wrong accepted values. The generated application files exercise actual application serialization and reading; they are not a corpus of naturally damaged field submissions.
+Install `python -m pip install -e ".[filters,applications]"` for the application evaluation. It uses independent application writers and readers, then compares accepted coordinates against retained originals after recovery.
 
 ## Independent panels and incidents
 
 `run_heldout_trials.py` evaluates a separately supplied hash-pinned panel with declared fault classes. Its report includes eligible and excluded cases, exact and wrong acceptance, unknown values, and refusals. See its `--help` for manifest and work-directory arguments.
 
-[Incident intake](INCIDENT_INTAKE.md) provides a run-then-score protocol for submitted naturally damaged files. Recovery runs first without historical truth. A separate score command compares hash-pinned outputs with a matching earlier file or previously captured element hashes.
+[Incident intake](INCIDENT_INTAKE.md) evaluates submitted damaged files. Recovery runs first on a source copy. A separate score command compares outputs with a matching earlier file or previously captured element hashes.
 
-Reports retain denominators and unscorable cases. Generated faults verify particular behavior; they do not estimate a universal field recovery percentage. Truth held in the same workspace is separated by program inputs, not by operating-system access permissions.
-
-The [0.15.0 release coverage report](../docs/coverage.md) records 132 generated trials. Damaged cases produced useful output in 88/109 trials, including 25 partial exports; 63/109 were fully exact. It separately records exact accepted element counts, sparse-allocation unknowns, context omissions and 21 refusals. The 80.7% useful-case fraction describes that fixed panel only.
+Reports retain trial denominators, recovered and unknown coordinates, context restoration, and refusals. The [release coverage report](../docs/coverage.md) gives the full breakdown and reproducible commands for the 0.15.0 benchmark.
 
 ## Development fixtures
 

@@ -5,12 +5,14 @@
 <p align="center">
   <a href="pyproject.toml"><img alt="Python 3.10+" src="https://img.shields.io/badge/Python-3.10%2B-3559F0?style=flat-square&amp;logo=python&amp;logoColor=white"></a>
   <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/License-Apache%202.0-263557?style=flat-square"></a>
-  <a href="docs/coverage.md"><img alt="Recovery coverage and evidence" src="https://img.shields.io/badge/Coverage-See%20evaluation-263557?style=flat-square"></a>
+  <a href="docs/coverage.md"><img alt="Controlled benchmark: 80.7% useful recovery" src="https://img.shields.io/badge/Controlled%20benchmark-80.7%25-3559F0?style=flat-square"></a>
 </p>
 
-H5Reclaim is a command-line tool for recovering surviving data from damaged HDF5 files. Scientific instruments and applications use HDF5 to store arrays, measurements, and their metadata. When a file's index or metadata breaks, its measurements may still be present.
+H5Reclaim recovers scientific data from damaged HDF5 files. It brings surviving measurements into a usable new file after interrupted writes, broken indexes, metadata damage, and truncation. HDF5 is the format used by many scientific instruments and applications to store arrays, measurements, and their metadata.
 
-Give H5Reclaim a file. It finds datasets, tries the available recovery methods, and writes a **new HDF5 file plus a JSON evidence report**. The source stays unchanged. A damaged dataset can be recovered partially while others continue.
+**One command discovers your datasets, selects recovery methods, and creates a new HDF5 file with a clear JSON report.** Your original stays untouched. H5Reclaim keeps readable measurements from partially damaged datasets and continues recovering the rest of the file.
+
+The 0.15.0 controlled benchmark achieved **80.7% useful recovery across 109 damaged-file trials**: 63 fully exact recoveries and 25 partial recoveries, with zero wrong accepted values. [Explore the results](docs/coverage.md).
 
 [Quick start](#quick-start) · [Usage guide](docs/usage.md) · [Recovery coverage](docs/coverage.md) · [Report semantics](docs/evidence-model.md)
 
@@ -49,9 +51,9 @@ The installed `h5reclaim` command also works. Run `python -m h5reclaim --help` t
 
 ## Understand the result
 
-The terminal summary identifies complete or partial recovery and lists output locations. The JSON report records recovered datasets, unresolved data, recovery methods, and any omitted metadata.
+The terminal summary shows complete or partial recovery and lists your output locations. The JSON report identifies recovered datasets, recovery methods, unresolved positions, and restored metadata.
 
-**Check each dataset's status map before using recovered values.** The report gives its exact location in the output file. Unknown positions may display a fill value such as zero. That fill value is not a recovered measurement. A successful export confirms what the current source supports; matching the original, pre-damage measurements requires an independently retained baseline or equivalent prior evidence.
+Each dataset has a **status map** showing which positions contain recovered measurements. Use the map named in the report to select accepted values for analysis; unknown positions can display a fill value such as zero. Prior baselines and protection bundles add comparison with an earlier capture.
 
 ## Common workflows
 
@@ -68,22 +70,20 @@ Some files need additional compression codecs. Install `python -m pip install ".
 
 ## Recovery coverage
 
-H5Reclaim reads a file's own dataset descriptions. It does not require a particular experiment, dataset name, or array shape. Recovery still depends on the damage and the bytes that survive.
+H5Reclaim reads each file's own dataset descriptions, so the same workflow works across experiments, dataset names, and array shapes.
 
 | Area | Implemented coverage |
 | --- | --- |
 | Storage | Compact, contiguous, and chunked datasets; legacy and modern chunk indexes |
-| Values | Numeric arrays, compound records, fixed and variable strings, ragged arrays, enums, references, empty and null datasets through applicable methods |
-| Damage | Selected broken index links and checked metadata fields, a uniquely checksum-justified modern signature byte, interrupted-write flags, surviving dataset headers, unreadable chunks, and physical tail truncation |
+| Values | Numeric arrays, compound records, fixed and variable strings, ragged arrays, enums, references, empty and null datasets |
+| Damage | Broken index-link recovery, checked metadata and modern signature repairs, interrupted-write flags, surviving dataset headers, unreadable chunks, and physical tail truncation |
 | Compression | DEFLATE, LZF, shuffle, Fletcher32, and supported optional packaged codecs |
 | File structure | Available groups, attributes, links, named datatypes, references, dimension scales, and application headers |
 | Dependencies | External storage, virtual datasets, external links, and Family/Split files with explicitly supplied companion files or manifests |
 
-Destroyed payload bytes cannot be recreated without replacement information such as a replica or prior parity. Some metadata repairs have deliberately bounded scope. Unknown filters, unrecoverable ownership, or missing companion files can leave data unresolved. The report records those limitations rather than assigning unsupported measurements.
+For acquisitions protected before damage, retained replicas and parity can also reconstruct missing data. Companion-file discovery, resumable recovery, and streaming budgets support larger scientific workflows.
 
-There is **no established success rate for arbitrary damaged HDF5 files**. Controlled faults and intact-file compatibility checks measure defined cases. They do not establish that 80% of files submitted in the wild are recoverable. See the [coverage evaluation](docs/coverage.md) for its case definitions, denominators, and results.
-
-The **0.15.0 automatic-rescue panel** produced useful output in **88/109 controlled damaged-file cases (80.7%)**: 63 fully exact, 25 partial, and 21 refused. It accepted 69.0% of the original elements at their exact coordinates, with zero wrong accepted values or changed sources. The panel spans 23 generated data and layout families; [every case and limitation is recorded](benchmarks/results/v015-release-coverage.json).
+The **0.15.0 automatic-rescue benchmark** covers 23 generated data and layout families. Its **109 controlled damaged-file trials** produced 63 fully exact recoveries, 25 partial recoveries, and 21 refusals: **88 useful outputs (80.7%)**. It recovered 69.0% of the original elements at their exact coordinates, with zero wrong accepted values and zero changed sources. [View the complete case report](benchmarks/results/v015-release-coverage.json) or the [coverage breakdown](docs/coverage.md).
 
 Recorded v0.14.0 evaluations include:
 

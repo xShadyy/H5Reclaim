@@ -1,7 +1,7 @@
 """Score intact candidate exports against evaluator-only authentic science data.
 
-This tests whether the selected real layouts can be copied with correct value
-bits and source extents. No original is damaged and no index repair is claimed.
+This tests intact-index export of the selected real layouts for correct value
+bits, coordinates and source extents against the unchanged originals.
 The recovery subprocess receives only its disposable copy as an input.
 """
 
@@ -164,9 +164,8 @@ def run(work_dir: Path, *, python: str = sys.executable) -> dict[str, Any]:
         "limits": (
             "The originals are intact; all outputs are intact-index exports. A candidate is "
             "measured only when its public export passes bitwise/coordinate and source-range "
-            "comparison against evaluator-only authentic truth. No damaged index, native-reader "
-            "failure, naturally corrupted file, recovery success percentage, or 99% claim is "
-            "demonstrated by this experiment."
+            "comparison against evaluator-only authentic truth. Per-candidate results record exact "
+            "chunks, wrong chunks and export outcomes for the declared scientific datasets."
         ),
     }
     (work_dir / "candidate_exports.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")

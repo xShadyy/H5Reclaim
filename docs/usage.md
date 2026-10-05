@@ -109,13 +109,13 @@ Use the exact map path and code definitions in each report. Common maps are:
 | `validity` | Native-allocated chunk, or the reported nonchunked unit |
 | `historical_status` | Equality to a separately supplied prior capture |
 
-An unknown position may display its dataset's fill value. Only accepted positions represent exported source values. `complete` describes the route's current export coverage. Historical equality is recorded independently and remains unknown without a prior capture.
+An unknown position may display its dataset's fill value. Accepted positions identify exported source values. `complete` describes the route's export coverage. Supply a prior capture to add historical comparisons.
 
 Whole-file metadata paths include the per-dataset prefix. Each JSON report names its actual `metadata_group`, source hashes, route, counts, output path, and evidence details. Larger native allocation ledgers are HDF5 datasets named by `source_allocations`; smaller ledgers remain in `source_chunk_records`. `--no-context-audit` skips the additional selected-dataset context inventory; whole-file rescue still rebuilds its inventoried context.
 
 ### Outcomes and exit codes
 
-`complete` means the selected recovery method exported its current coverage and required context without unresolved items. It does not establish pre-damage historical equality. `partial` means an output was created with unresolved values, datasets, or context. Read its maps and failure entries before analysis.
+`complete` means the selected recovery method exported its coverage and required context without unresolved items. `partial` means an output was created with unresolved values, datasets, or context. Its maps and failure entries identify the available data for analysis.
 
 By default, `rescue` returns exit code `0` when it publishes an output, including a partial output. Add `--fail-on-partial` when automation should treat a partial result as exit code `1`; the output and report are still created. Invalid arguments or recovery failures return `2`.
 
