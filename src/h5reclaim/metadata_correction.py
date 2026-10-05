@@ -71,15 +71,36 @@ def _unique_one_byte(raw: bytes, positions: range, checksum: int) -> tuple[int, 
 def _superblock_raw(source: Path) -> tuple[int, bytes, int, int]:
     size = source.stat().st_size
     position = 0
+    candidates = []
     with source.open("rb") as handle:
         while position <= MAX_SIGNATURE_OFFSET and position + 12 <= size:
             handle.seek(position)
             prefix = handle.read(12)
             if prefix[:8] == SIGNATURE:
+                if candidates:
+                    raise FormatError("ambiguous exact and checksum-justified modern signatures")
                 break
+            # A missing signature is recoverable only under an independently
+            # retained modern superblock checksum, at a documented offset.
+            # Recognizable magic or a plausible pointer alone is insufficient.
+            if (sum(left != right for left, right in zip(prefix[:8], SIGNATURE)) == 1
+                    and prefix[8] in (2, 3) and prefix[9] in (2, 4, 8)
+                    and prefix[10] in (2, 4, 8) and prefix[11] == 0):
+                length = 16 + 4 * prefix[9]
+                if position + length <= size:
+                    handle.seek(position)
+                    candidate = handle.read(length)
+                    corrected = SIGNATURE + candidate[8:]
+                    if lookup3(corrected[:-4]) == int.from_bytes(candidate[-4:], "little"):
+                        candidates.append((position, candidate))
             position = 512 if position == 0 else 2 * position
         else:
-            raise UnsupportedCase("no modern superblock at a bounded documented signature offset")
+            if len(candidates) > 1:
+                raise FormatError("ambiguous checksum-justified modern signature corrections")
+            if not candidates:
+                raise UnsupportedCase("no modern superblock at a bounded documented signature offset")
+            position, candidate = candidates[0]
+            prefix = candidate[:12]
         version, osize, lsize, flags = prefix[8:12]
         if version not in (2, 3) or osize not in (2, 4, 8) or lsize not in (2, 4, 8) or flags:
             raise UnsupportedCase("requires an ordinary modern v2/v3 superblock with known widths")

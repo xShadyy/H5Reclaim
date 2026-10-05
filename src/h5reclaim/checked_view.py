@@ -1,4 +1,4 @@
-"""Repair a uniquely checksum-justified root pointer in a disposable view."""
+"""Repair uniquely checksum-justified superblock bytes in a disposable view."""
 
 from contextlib import contextmanager
 from pathlib import Path
@@ -7,7 +7,7 @@ import time
 
 import h5py
 
-from .format import FormatError
+from .format import FormatError, SIGNATURE
 from .large_streaming import LargeBudget, _copy_sparse
 from .modern_indexes import ModernH5File, lookup3
 from .metadata import UnsupportedCase
@@ -28,8 +28,17 @@ def checked_root_view(source, budget=None):
     if lookup3(raw[:-4]) == checksum:
         yield source, None
         return
-    offset, value = _unique_one_byte(raw, range(root_start, root_start + width), checksum)
     corrected = bytearray(raw)
+    if raw[:8] != SIGNATURE:
+        differences = [index for index in range(8) if raw[index] != SIGNATURE[index]]
+        if len(differences) != 1 or lookup3(SIGNATURE + raw[8:-4]) != checksum:
+            raise FormatError('signature restoration lacks a unique original-checksum match')
+        offset = differences[0]
+        value = SIGNATURE[offset]
+        kind = 'unique_superblock_signature_checksum_correction'
+    else:
+        offset, value = _unique_one_byte(raw, range(root_start, root_start + width), checksum)
+        kind = 'unique_root_pointer_checksum_correction'
     corrected[offset] = value
     root = int.from_bytes(corrected[root_start:root_start + width], 'little')
     with tempfile.TemporaryDirectory(prefix='h5reclaim-checked-root-') as directory:
@@ -48,7 +57,7 @@ def checked_root_view(source, budget=None):
         with h5py.File(view, 'r') as handle:
             if int(h5py.h5o.get_info(handle['/'].id).addr) != root:
                 raise FormatError('native root address contradicts the corrected pointer')
-        yield view, {'kind': 'unique_root_pointer_checksum_correction',
+        yield view, {'kind': kind,
                      'physical_byte': position + offset, 'before': raw[offset], 'after': value,
                      'root_address': root, 'original_checksum': checksum,
                      'checksum_bytes_changed': 0}

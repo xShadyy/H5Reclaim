@@ -16,6 +16,16 @@ def userblock_size(source):
             if stream.read(8) == SIGNATURE:
                 return offset
             offset = 512 if offset == 0 else offset * 2
+    # A checksum-justified disposable signature correction still identifies
+    # the preceding application header in the unchanged physical source.
+    from .metadata_correction import _superblock_raw
+    from .format import FormatError
+    from .metadata import UnsupportedCase
+    try:
+        position, _raw, _width, _root = _superblock_raw(source)
+        return position
+    except (FormatError, UnsupportedCase):
+        pass
     return 0
 
 
