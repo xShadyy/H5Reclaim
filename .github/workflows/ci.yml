@@ -2,6 +2,7 @@ name: H5Reclaim checks
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 permissions:
