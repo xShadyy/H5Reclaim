@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/h5reclaim-banner.svg" alt="H5Reclaim: recover surviving scientific HDF5 data" width="840">
+  <img src="assets/h5reclaim-banner.png" alt="H5Reclaim: recovery for scientific HDF5 data" width="760">
 </p>
 
 <p align="center">

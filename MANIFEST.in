@@ -5,6 +5,6 @@ prune benchmarks
 prune corpus
 prune tools
 prune assets
-include assets/h5reclaim-banner.svg
+include assets/h5reclaim-banner.png
 prune .github
 global-exclude __pycache__ *.py[cod]
