@@ -138,8 +138,19 @@ def _read_checked_header(reader: ModernH5File, address: int) -> tuple[bytes, int
     return raw, prefix_length
 
 
-def _rooted_compact_target(reader: ModernH5File, name: str) -> int:
+def _rooted_compact_target(reader: ModernH5File, name: str, *, allow_continuation: bool = False) -> int:
     """Resolve one direct local hard link from a checked compact root group."""
+    if allow_continuation:
+        # A healthy root can place its compact links in a checksummed object
+        # header continuation after attributes enlarge the first chunk. The
+        # shared parser checks every block, rejects duplicate names, and
+        # distinguishes dense-index links from compact links.
+        from .metadata_fallback import _compact_links
+        links = _compact_links(reader, reader.superblock.root_object_address)
+        selected = links.get(name)
+        if selected is None or selected.index_record_offset is not None:
+            raise FormatError("selected name does not have one checked compact root hard link")
+        return selected.object_address
     root = reader.superblock.root_object_address
     raw, prefix_length = _read_checked_header(reader, root)
     if raw[5] & 0x04:
@@ -224,12 +235,14 @@ def _selected_layout_pointer(reader: ModernH5File, selected_address: int) -> tup
     return absolute, raw, pointers[0], selected_address
 
 
-def _validate_trial(trial: Path, dataset_path: str, *, expected_object: int | None = None) -> int:
+def _validate_trial(trial: Path, dataset_path: str, *, expected_object: int | None = None,
+                    allow_root_continuation: bool = False) -> int:
     with ModernH5File(trial) as reader:
         root = reader.superblock.root_object_address
         _read_checked_header(reader, root)
         if expected_object is not None:
-            if dataset_path.count("/") != 1 or _rooted_compact_target(reader, dataset_path[1:]) != expected_object:
+            if (dataset_path.count("/") != 1 or _rooted_compact_target(
+                    reader, dataset_path[1:], allow_continuation=allow_root_continuation) != expected_object):
                 raise FormatError("corrected dataset is not anchored by the checked root hard link")
     with h5py.File(trial, "r") as handle:
         if int(h5py.h5o.get_info(handle["/"].id).addr) != root:
