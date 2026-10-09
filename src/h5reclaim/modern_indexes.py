@@ -304,8 +304,8 @@ class ModernH5File:
         shape = tuple(shape); chunks = tuple(chunks)
         if maxshape is None:
             raise UnsupportedFormat("modern index requires observed maximum shape")
-        if len(shape) not in (1, 2, 3, 4) or len(shape) != len(chunks) or len(maxshape) != len(shape):
-            raise UnsupportedFormat("modern index requires rank 1 through 4 and matching dimensions")
+        if len(shape) not in (1, 2, 3, 4, 5) or len(shape) != len(chunks) or len(maxshape) != len(shape):
+            raise UnsupportedFormat("modern index requires rank 1 through 5 and matching dimensions")
         if not all(isinstance(x, int) and x > 0 for x in (*shape, *chunks, element_size)):
             raise FormatError("invalid dataset shape, chunk shape, or element size")
         if any(limit is not None and limit < length for limit, length in zip(maxshape, shape)):
@@ -331,6 +331,8 @@ class ModernH5File:
         if raw_dims != (*chunks, element_size):
             raise FormatError("modern raw chunk dimensions disagree with selected dataset")
         kind = data[end_dims]
+        if len(shape) == 5 and kind != 3:
+            raise UnsupportedFormat("rank-five recovery requires a fixed-array chunk index")
         offset = end_dims + 1
         if kind == 1:
             if any(length > width for length, width in zip(shape, chunks)) or tuple(maxshape) != shape or count != 1:

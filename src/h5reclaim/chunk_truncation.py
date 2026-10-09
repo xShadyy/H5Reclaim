@@ -301,6 +301,10 @@ def analyze_truncated(source: Path, dataset_path: str, *,
                                      "object_address": step.object_address}
                                     for step in rooted.link_chain]},
         "index": index_details, "counts": counts,
+        "validity": {
+            "dataset": metadata_group_for_path(spec.path) + "/chunk_status",
+            "granularity": "chunk", "codes": STATUS_CODES,
+        },
         "reconstructed_chunks": sum(r.route == "reconstructed_fa_header_link" for r in records),
         "truncated_payloads": truncated, "failed_chunks": failed,
         "mappings": [

@@ -739,8 +739,8 @@ def _dataspace(raw: bytes, lsize: int, *, older_padding: bool = False,
     if len(raw) < 4:
         raise FormatError("truncated dataspace")
     version, rank, flags, space_type = raw[:4]
-    if rank not in (1, 2, 3, 4) or flags & ~1:
-        raise UnsupportedFormat("fallback requires rank one through four, simple dataspace")
+    if rank not in (1, 2, 3, 4, 5) or flags & ~1:
+        raise UnsupportedFormat("fallback requires rank one through five, simple dataspace")
     if version == 1:
         if len(raw) < 8 or any(raw[3:8]):
             raise FormatError("invalid version-one dataspace prefix")

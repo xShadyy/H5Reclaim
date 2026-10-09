@@ -109,8 +109,8 @@ def read_fixed_array_variants(
     sb = reader.superblock
     offsize, lensize = sb.offset_size, sb.length_size
     filters, shape, chunks = tuple(filters), tuple(shape), tuple(chunks)
-    if layout_version not in (4, 5) or not 1 <= len(chunks) <= 4:
-        raise UnsupportedFormat("fixed array requires a version-4/5 layout of rank one through four")
+    if layout_version not in (4, 5) or not 1 <= len(chunks) <= 5:
+        raise UnsupportedFormat("fixed array requires a version-4/5 layout of rank one through five")
     if (not isinstance(count, int) or count < 1 or count > min(reader.max_chunks, max_chunks)
             or count != len(coordinates)):
         raise UnsupportedFormat("fixed-array chunk capacity exceeds parser limit or coordinate grid")
