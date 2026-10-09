@@ -80,7 +80,7 @@ python -m h5reclaim diagnose damaged.h5 --dataset /experiment/readings
 python -m h5reclaim rescue damaged.h5 --dataset /experiment/readings --output selected.h5 --report selected.json
 ```
 
-Automatic selection checks file condition, then chooses structural chunk recovery, compact/contiguous recovery, or a native-readable and streaming route. An unavailable structural decoder can fall through to an installed native decoder before publication. Physical tail truncation and a checked version-3 interrupted-write flag are detected automatically. Structural contradictions remain errors.
+Automatic selection checks file condition, then chooses structural chunk recovery, compact/contiguous recovery, or a native-readable and streaming route. An unavailable structural decoder can fall through to an installed native decoder before publication. Physical tail truncation and a checked version-3 interrupted-write flag are detected automatically. Whole-file rescue can also recognize a damaged modern chunk dimension for a directly linked dataset when its original object-header checksum identifies a unique correction; the trial runs on a private copy. Structural contradictions remain errors.
 
 Structural routes decode DEFLATE, LZF, shuffle, Fletcher32 and installed packaged codecs. Readable routes also use available native HDF5 filters. Pipelines that can change values are stored without source filters, preserving the currently decoded source values. Streaming supports rank through 32, scalar, empty and null datasets, preserves the declared HDF5 datatype, and verifies fixed record bytes, including compound padding, array records and numeric widths absent from NumPy. Heap-backed records use bounded batches and logical comparisons of strings, ragged sequences, compound fields and references. Failed native batches fall back to individual records. Failed chunks or elements stay unknown while other readable allocations continue. A selected-dataset export can remap self references; references to other objects remain deferred until whole-file recovery creates their targets.
 
@@ -110,6 +110,21 @@ Use the exact map path and code definitions in each report. Common maps are:
 | `historical_status` | Equality to a separately supplied prior capture |
 
 An unknown position may display its dataset's fill value. Accepted positions identify exported source values. `complete` describes the route's export coverage. Supply a prior capture to add historical comparisons.
+
+For fixed-size datasets, `read_masked` uses the report's per-dataset status map and returns a NumPy masked array. It masks unresolved positions before you analyze the values:
+
+```python
+import numpy as np
+from h5reclaim import read_masked
+
+readings = read_masked(
+    "damaged.recovered.h5", "damaged.recovered.report.json",
+    "/experiment/readings", selection=(slice(0, 1000), Ellipsis),
+)
+average = np.ma.mean(readings)
+```
+
+Choose the dataset path from the recovery report. The selection accepts integers, forward slices, and one ellipsis. The default limits are one million selected elements and 64 MiB of logical data and status; use `max_elements` and `max_bytes` for a different bounded read. Variable-length and null datasets need direct inspection of their reported status maps. The reader refuses absent or inconsistent map metadata. Its mask expresses current-source recovery status, not equality to a historical capture.
 
 Whole-file metadata paths include the per-dataset prefix. Each JSON report names its actual `metadata_group`, source hashes, route, counts, output path, and evidence details. Larger native allocation ledgers are HDF5 datasets named by `source_allocations`; smaller ledgers remain in `source_chunk_records`. `--no-context-audit` skips the additional selected-dataset context inventory; whole-file rescue still rebuilds its inventoried context.
 
