@@ -15,8 +15,11 @@ from pathlib import Path
 
 import h5py
 
+from .large_streaming import LargeBudget
+from .logical_types import contains_pointers
 from .metadata_correction import create_layout_pointer_trial, create_root_address_trial
 from .metadata import UnsupportedCase
+from .native_stream import export_native_stream
 from .readable_export import export_readable
 from .recovery import RecoveryError, _identity, _validate_paths, _verify_source, sha256_file
 
@@ -50,23 +53,47 @@ def export_metadata_trial(
             evidence = create_chunk_dimension_trial(source, dataset_path, trial)
         if evidence.source_sha256 != original_hash:
             raise RecoveryError("metadata trial source changed during correction")
-        exported = export_readable(trial, dataset_path, temporary_output, temporary_report)
-        if exported.get("mode") != "readable_export":
-            raise RecoveryError("metadata trial did not yield a bounded native-readable export")
-        # The ordinary readable route intentionally omits variable-size
-        # attributes. The corrected private view lets the whole-file route
-        # inspect them with its bounded, typed attribute copier as well.
-        from .whole_file import _attributes, _restore_attributes
         with h5py.File(trial, "r") as corrected:
-            attributes, omitted = _attributes(corrected[dataset_path])
-        with h5py.File(temporary_output, "r+") as target:
-            omitted.extend(_restore_attributes(target[dataset_path], attributes))
-        copied = [item["name"] for item in attributes if item["name"] not in omitted]
+            selected = corrected[dataset_path]
+            needs_logical_export = (kind == "dimension" and
+                                    (len(selected.shape) > 4 or contains_pointers(selected.id.get_type())))
+        if needs_logical_export:
+            # Pointer-bearing records need the existing bounded native heap
+            # decoder, per-element logical tokens, readback, and owner checks.
+            # The fixed-record readable route must never copy their pointers.
+            budget = LargeBudget(
+                max_source_bytes=512 << 20, max_copied_bytes=512 << 20,
+                max_logical_bytes=512 << 20, max_output_bytes=512 << 20,
+                max_chunks=8192, max_grid=1_048_576, max_chunk_bytes=1 << 20,
+                max_metadata_bytes=8 << 20, max_seconds=180,
+                max_objects=10_000, max_links=50_000,
+                max_type_depth=4, max_type_members=64,
+            )
+            exported = export_native_stream(trial, dataset_path, temporary_output,
+                                            temporary_report, budget=budget)
+            if exported.get("mode") != "native_stream_export":
+                raise RecoveryError("metadata trial did not yield a bounded logical export")
+            omitted = exported["dataset"].get("attributes_omitted", [])
+        else:
+            exported = export_readable(trial, dataset_path, temporary_output, temporary_report)
+            if exported.get("mode") != "readable_export":
+                raise RecoveryError("metadata trial did not yield a bounded native-readable export")
+            # The ordinary readable route intentionally omits variable-size
+            # attributes. The corrected private view lets the whole-file route
+            # inspect them with its bounded, typed attribute copier as well.
+            from .whole_file import _attributes, _restore_attributes
+            with h5py.File(trial, "r") as corrected:
+                attributes, omitted = _attributes(corrected[dataset_path])
+            with h5py.File(temporary_output, "r+") as target:
+                omitted.extend(_restore_attributes(target[dataset_path], attributes))
+            copied = [item["name"] for item in attributes if item["name"] not in omitted]
         report = dict(exported)
         report["outcome"] = "partial" if omitted else exported["outcome"]
-        report["dataset"] = {**report["dataset"], "attributes_copied": copied,
-                             "attributes_omitted": omitted}
-        report["mode"] = "metadata_trial_readable_export"
+        if not needs_logical_export:
+            report["dataset"] = {**report["dataset"], "attributes_copied": copied,
+                                 "attributes_omitted": omitted}
+        report["mode"] = ("metadata_trial_native_stream_export" if needs_logical_export
+                          else "metadata_trial_readable_export")
         report["operation"] = "single_metadata_byte_original_checksum_disposable_trial"
         report["source"] = {
             "path": str(source), "size_bytes": source.stat().st_size,

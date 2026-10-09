@@ -236,7 +236,8 @@ def _selected_layout_pointer(reader: ModernH5File, selected_address: int) -> tup
 
 
 def _validate_trial(trial: Path, dataset_path: str, *, expected_object: int | None = None,
-                    allow_root_continuation: bool = False) -> int:
+                    allow_root_continuation: bool = False,
+                    defer_schema_validation: bool = False) -> int:
     with ModernH5File(trial) as reader:
         root = reader.superblock.root_object_address
         _read_checked_header(reader, root)
@@ -251,6 +252,12 @@ def _validate_trial(trial: Path, dataset_path: str, *, expected_object: int | No
         object_address = int(h5py.h5o.get_info(selected.id).addr)
         if expected_object is not None and object_address != expected_object:
             raise FormatError("native selected address contradicts checked root link")
+    # The caller of a deferred validation must independently check the full
+    # native schema, modern index and allocation owners before publication.
+    # The fixed-record reader below cannot describe heap-backed datatypes or
+    # rank-five datasets, even when their corrected HDF5 metadata is valid.
+    if defer_schema_validation:
+        return object_address
     spec = read_dataset_spec(trial, dataset_path)
     if object_address != spec.object_address:
         raise FormatError("selected object address changed across verification")

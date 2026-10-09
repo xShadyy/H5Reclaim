@@ -209,6 +209,7 @@ def export_native_stream(source, dataset_path, output, report_path, *, budget=No
                     preserve_filters = preserve_output_filters(filters)
                     target = _create_matching_dataset(result, selected, dataset_path, preserve_filters=preserve_filters)
                     meta = result.require_group(metadata_group_for_path(dataset_path))
+                    meta.attrs["source_sha256"] = digest
                     status_path = None
                     if elements:
                         if pointer_type:

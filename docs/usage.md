@@ -25,9 +25,10 @@ The installed `h5reclaim` command and `python -m h5reclaim` are equivalent. Quot
 ```sh
 python -m h5reclaim rescue "damaged.h5"
 python -m h5reclaim report "damaged.recovered.report.json"
+python -m h5reclaim verify-result "damaged.recovered.h5" "damaged.recovered.report.json"
 ```
 
-The first command creates `damaged.recovered.h5` and `damaged.recovered.report.json` beside the source. The second reads the saved report and summarizes recovery outcomes, per-dataset counts, unresolved items, and status-map locations. It does not rerun recovery or verify the output against its source.
+The first command creates `damaged.recovered.h5` and `damaged.recovered.report.json` beside the source. The second summarizes the saved report. The third checks that the published output and report agree on embedded evidence, dataset shapes, source annotations, and validity maps. It does not read or hash recovered measurement payloads.
 
 Use `--output rescued.h5` to select a destination; its default report becomes `rescued.report.json`. An explicit `--report evidence.json` overrides that choice. All destinations must be new. If a previous result exists, choose different names, for example:
 
@@ -39,6 +40,7 @@ python -m h5reclaim rescue damaged.h5 --output rescued-2.h5 --report evidence-2.
 | --- | --- |
 | `rescue` | Recover a whole file, or one dataset with `--dataset` |
 | `report` | Summarize a saved JSON evidence report |
+| `verify-result` | Check a published output and report for structural and map consistency |
 | `diagnose` | Inspect file metadata and conditions before recovery |
 | `survey` | List readable dataset metadata and structural-parser classifications |
 | `discover` | Find surviving dataset headers when original group links cannot be read |
@@ -127,6 +129,17 @@ average = np.ma.mean(readings)
 Choose the dataset path from the recovery report. The selection accepts integers, forward slices, and one ellipsis. The default limits are one million selected elements and 64 MiB of logical data and status; use `max_elements` and `max_bytes` for a different bounded read. Variable-length and null datasets need direct inspection of their reported status maps. The reader refuses absent or inconsistent map metadata. Its mask expresses current-source recovery status, not equality to a historical capture.
 
 Whole-file metadata paths include the per-dataset prefix. Each JSON report names its actual `metadata_group`, source hashes, route, counts, output path, and evidence details. Larger native allocation ledgers are HDF5 datasets named by `source_allocations`; smaller ledgers remain in `source_chunk_records`. `--no-context-audit` skips the additional selected-dataset context inventory; whole-file rescue still rebuilds its inventoried context.
+
+### Verify a published result
+
+```sh
+python -m h5reclaim verify-result rescued.h5 evidence.json --source damaged.h5
+python -m h5reclaim verify-result rescued.h5 evidence.json --json
+```
+
+`verify-result` compares the saved report to its embedded copy, checks source hash annotations, validates each reported dataset shape and status-map layout, scans declared codes, and checks reported accepted and unknown counts where available. `--source` additionally hashes the explicitly supplied damaged source against the report. The check runs in a worker with memory and time limits. An output with no checkable validity map, such as some contiguous or null-dataspace routes, is reported as unsupported.
+
+Exit code `0` means these consistency checks passed; `1` means the output and report disagree; `2` means an unsupported route, exceeded budget, or worker failure. The command does not read or authenticate measurement payloads, prove that a source was genuine, or establish equality to an earlier capture. A jointly modified output and report can still agree with each other. Retain a trusted earlier capture or independent checksum when historical identity matters.
 
 ### Outcomes and exit codes
 

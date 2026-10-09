@@ -341,6 +341,23 @@ def main(argv: list[str] | None = None) -> int:
     commands = parser.add_subparsers(dest="command", required=True, metavar="COMMAND", title="commands")
     report_cmd = commands.add_parser("report", help="summarize an existing evidence JSON report and its status-map paths")
     report_cmd.add_argument("report", type=Path, help="evidence JSON produced by rescue, recover or export-readable")
+    result_cmd = commands.add_parser(
+        "verify-result", help="check a saved recovery report against its output and validity maps",
+        description=("Check report, schema and validity-map consistency in a bounded HDF5 worker. "
+                     "Recovered values are not read or hashed. This cannot prove historical values "
+                     "or authenticate jointly modified files. "
+                     "Exit status: 0 passed, 1 inconsistent, 2 unsupported or an error."),
+    )
+    result_cmd.add_argument("output", type=Path, help="published recovered HDF5 file")
+    result_cmd.add_argument("report", type=Path, help="matching saved JSON evidence report")
+    result_cmd.add_argument("--source", type=Path,
+                            help="also hash this explicit source file against the report's source SHA-256")
+    result_cmd.add_argument("--max-report-bytes", type=int, default=32 * 1024 * 1024)
+    result_cmd.add_argument("--max-map-bytes", type=int, default=64 * 1024 * 1024)
+    result_cmd.add_argument("--max-source-bytes", type=int, default=16 * 1024 * 1024 * 1024)
+    result_cmd.add_argument("--worker-memory-bytes", type=int, default=1536 * 1024 * 1024)
+    result_cmd.add_argument("--timeout-seconds", type=int, default=45)
+    result_cmd.add_argument("--json", action="store_true", help="print a machine-readable result")
     manifest_cmd = commands.add_parser("related-manifest", help="find and hash declared companion files in a supplied directory")
     manifest_cmd.add_argument("source", type=Path)
     manifest_cmd.add_argument("--directory", required=True, type=Path)
@@ -515,6 +532,35 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 0
     args = parser.parse_args(arguments)
+
+    if args.command == "verify-result":
+        from .result_verification import ResultMismatch, ResultUnsupported, verify_result
+        try:
+            result = verify_result(args.output, args.report, source_path=args.source,
+                                   max_report_bytes=args.max_report_bytes,
+                                   max_map_bytes=args.max_map_bytes,
+                                   max_source_bytes=args.max_source_bytes,
+                                   memory_bytes=args.worker_memory_bytes,
+                                   timeout_seconds=args.timeout_seconds)
+            if args.json:
+                print(json.dumps(result, sort_keys=True))
+            else:
+                print(f"H5Reclaim output/report consistency | passed | {result['datasets_checked']} datasets")
+                for item in result["datasets"][:MAX_DISPLAY_DATASETS]:
+                    print(f"{_display_path(item['path'])}: {item['accepted_elements']} accepted, "
+                          f"{item['unknown_elements']} unknown elements")
+                if len(result["datasets"]) > MAX_DISPLAY_DATASETS:
+                    print(f"... {len(result['datasets']) - MAX_DISPLAY_DATASETS} more in --json")
+                print("Report/map/schema consistency only. Recovered values are not read or hashed; "
+                      "historical values and jointly modified files are not authenticated.")
+            return 0
+        except (ResultMismatch, ResultUnsupported, OSError, ValueError, RuntimeError, TypeError) as exc:
+            status = "inconsistent" if isinstance(exc, ResultMismatch) else "unsupported" if isinstance(exc, ResultUnsupported) else "error"
+            if args.json:
+                print(json.dumps({"status": status, "reason": str(exc)[:1000]}, sort_keys=True))
+            else:
+                print(f"h5reclaim: result verification {status}: {_display_path(exc, 300)}", file=sys.stderr)
+            return 1 if status == "inconsistent" else 2
 
     if args.command == "report":
         try:
@@ -739,7 +785,7 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"Unresolved: {_display_path(failure['path'])}: {_display_path(failure['reason'], 240)}")
                 print(f"Output: {_display_path(args.output, 240)}")
                 print(f"Evidence report: {_display_path(args.report, 240)}")
-                print(f"Check each dataset's status map under {report['metadata_group']}/datasets before using its values.")
+                print("Check each dataset's reported validity map and route evidence before using its values.")
                 if report["outcome"] != "complete":
                     print("Partial export: some data or scientific context remain unresolved. "
                           "Use h5reclaim report with the evidence path above for a summary.")

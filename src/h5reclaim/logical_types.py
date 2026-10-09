@@ -174,11 +174,14 @@ def decode_value(token, typ, handle, paths):
             raise ValueError("remapped region extent differs from target")
         return h5py.h5r.create(handle.id, path.encode("utf-8"), h5py.h5r.DATASET_REGION, space)
     if kind == h5py.h5t.COMPOUND and "compound" in token:
-        result = np.zeros((), dtype=typ.dtype)
+        # A scalar structured array broadcasts a nested VLEN ndarray into
+        # one scalar slot, sometimes storing its first integer instead of the
+        # sequence. A one-record array gives each object field a true slot.
+        result = np.zeros((1,), dtype=typ.dtype)
         for i, child in enumerate(token["compound"]):
             name = typ.get_member_name(i).decode("utf-8")
-            result[name] = decode_value(child, typ.get_member_type(i), handle, paths)
-        return result[()]
+            result[name][0] = decode_value(child, typ.get_member_type(i), handle, paths)
+        return result[0]
     if kind in (h5py.h5t.ARRAY, h5py.h5t.VLEN):
         base = typ.get_super()
         result = np.empty(tuple(token["shape"]), dtype=base.dtype)
