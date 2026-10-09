@@ -32,7 +32,7 @@ from .snapshot_io import (
 )
 
 
-VERSION = "0.15.0"
+VERSION = "0.16.0"
 _WINDOWS_STAT = os.name == "nt"
 STATUS_CODES = {
     "recovered": 1,
@@ -709,6 +709,11 @@ def recover(
     from .output_annotations import metadata_group_for_path
     metadata_group = metadata_group_for_path(analysis.spec.path)
     analysis.report["metadata_group"] = metadata_group
+    analysis.report["validity"] = {
+        "dataset": metadata_group + "/chunk_status",
+        "granularity": "chunk",
+        "codes": STATUS_CODES,
+    }
     annotation_values = {
         "h5reclaim_chunk_status": metadata_group + "/chunk_status",
         "h5reclaim_complete": analysis.report["complete"],

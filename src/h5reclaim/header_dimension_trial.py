@@ -129,7 +129,7 @@ def create_chunk_dimension_trial(
         if lookup3(superblock[:-4]) != int.from_bytes(superblock[-4:], "little"):
             raise FormatError("dimension trial requires an intact modern superblock")
         with ModernH5File(snapshot) as reader:
-            expected_object = _rooted_compact_target(reader, dataset_path[1:])
+            expected_object = _rooted_compact_target(reader, dataset_path[1:], allow_continuation=True)
             start, raw, field, rank, width = _selected_dimension_field(reader, expected_object)
         original_checksum = int.from_bytes(raw[-4:], "little")
         relative_position, value = _unique_one_byte(raw, field, original_checksum)
@@ -155,7 +155,8 @@ def create_chunk_dimension_trial(
                 handle.write(bytes((value,)))
             if private.stat().st_size != size:
                 raise RecoveryError("private correction changed file length")
-            object_address = _validate_trial(private, dataset_path, expected_object=expected_object)
+            object_address = _validate_trial(private, dataset_path, expected_object=expected_object,
+                                             allow_root_continuation=True)
             spec = read_dataset_spec(private, dataset_path)
             if spec.object_address != object_address or spec.chunks[dimension_index] != dimension_after:
                 raise FormatError("corrected chunk dimension contradicts checked native schema")

@@ -53,7 +53,19 @@ def export_metadata_trial(
         exported = export_readable(trial, dataset_path, temporary_output, temporary_report)
         if exported.get("mode") != "readable_export":
             raise RecoveryError("metadata trial did not yield a bounded native-readable export")
+        # The ordinary readable route intentionally omits variable-size
+        # attributes. The corrected private view lets the whole-file route
+        # inspect them with its bounded, typed attribute copier as well.
+        from .whole_file import _attributes, _restore_attributes
+        with h5py.File(trial, "r") as corrected:
+            attributes, omitted = _attributes(corrected[dataset_path])
+        with h5py.File(temporary_output, "r+") as target:
+            omitted.extend(_restore_attributes(target[dataset_path], attributes))
+        copied = [item["name"] for item in attributes if item["name"] not in omitted]
         report = dict(exported)
+        report["outcome"] = "partial" if omitted else exported["outcome"]
+        report["dataset"] = {**report["dataset"], "attributes_copied": copied,
+                             "attributes_omitted": omitted}
         report["mode"] = "metadata_trial_readable_export"
         report["operation"] = "single_metadata_byte_original_checksum_disposable_trial"
         report["source"] = {

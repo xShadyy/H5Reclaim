@@ -70,6 +70,8 @@ def _attributes(obj, *, omit: set[str] | None = None, budget=None) -> tuple[list
 
 def _inventory_local(image: Path, root="/", opened_file=None, budget=None) -> dict[str, Any]:
     import h5py
+    from .format import FormatError
+    from .metadata import UnsupportedCase
     from .rescue import file_condition
     from .source_session import reused_image
     from .large_streaming import LargeBudget
@@ -158,6 +160,7 @@ def _inventory_local(image: Path, root="/", opened_file=None, budget=None) -> di
                     if len(child_path.encode("utf-8")) > budget.max_metadata_bytes:
                         skipped.append({"path": child_path, "reason": "path exceeds the configured metadata budget"})
                         continue
+                    object_address = None
                     try:
                         link = group.get(name, getlink=True)
                         if isinstance(link, h5py.SoftLink):
@@ -207,6 +210,34 @@ def _inventory_local(image: Path, root="/", opened_file=None, budget=None) -> di
                             skipped.append({"path": child_path, "reason": "unsupported object class"})
                     except (OSError, RuntimeError, ValueError, TypeError, KeyError) as exc:
                         issues.append({"path": child_path, "reason": str(exc)[:300]})
+                        # A damaged chunk dimension can make the native dataset
+                        # open fail while its direct root link remains intact.
+                        # Retain the name only after checking that root link and
+                        # the narrowly declared, checksummed layout field. The
+                        # recovery route rechecks the unique correction, index,
+                        # ownership, and schema before it accepts any values.
+                        if (path == "/" and object_address is not None
+                                and child_path.count("/") == 1
+                                and object_address not in by_address):
+                            try:
+                                from .header_dimension_trial import _selected_dimension_field
+                                from .metadata_correction import _rooted_compact_target, _unique_one_byte
+                                from .modern_indexes import ModernH5File
+                                with ModernH5File(image) as reader:
+                                    if _rooted_compact_target(reader, name, allow_continuation=True) != object_address:
+                                        raise ValueError("native and checked link addresses disagree")
+                                    _, raw, field, _, _ = _selected_dimension_field(reader, object_address)
+                                    _unique_one_byte(raw, field, int.from_bytes(raw[-4:], "little"))
+                            except (OSError, RuntimeError, ValueError, TypeError,
+                                    FormatError, UnsupportedCase):
+                                continue
+                            entry = {"path": child_path, "address": object_address,
+                                     "aliases": [], "attributes": [],
+                                     "attributes_omitted": [],
+                                     "is_scale": False, "dimensions": [],
+                                     "metadata_trial": "dimension"}
+                            datasets.append(entry)
+                            by_address[object_address] = entry
             if view != "tail_names_only":
                 for entry in datasets:
                     try:
@@ -478,6 +509,13 @@ def rescue_all(source: str | Path, output: str | Path, report_path: str | Path, 
                                             source_dataset=entry["storage_path"], annotate_history=True,
                                             streaming_budget=json.dumps(remaining_budget),
                                             **({'resume_dir': selection_progress} if selection_progress else {}))
+                                elif entry.get("metadata_trial") == "dimension":
+                                    from .route_worker import run_route
+                                    recovered = run_route("metadata_trial", unit_output, unit_report,
+                                        source=str(image), dataset=path, kind="dimension",
+                                        annotate_history=True, audit_science_context=False,
+                                        streaming_budget=json.dumps(remaining_budget))
+                                    entry["attributes_omitted"] = recovered["dataset"].get("attributes_omitted", [])
                                 elif entry.get("detached"):
                                     from .route_worker import run_route
                                     recovered = run_route("object", unit_output, unit_report, source=str(image),
@@ -506,6 +544,7 @@ def rescue_all(source: str | Path, output: str | Path, report_path: str | Path, 
                                     checkpoint.store(path, unit_output, unit_report)
                         except (ValueError, OSError, RuntimeError) as exc:
                             if (inventory.get("detached_discovery") and "address" in entry
+                                    and not entry.get("metadata_trial")
                                     and not entry.get("detached") and not unit_output.exists()):
                                 try:
                                     from .route_worker import run_route
