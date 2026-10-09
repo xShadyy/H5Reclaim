@@ -2,7 +2,7 @@
 
 H5Reclaim's benchmarks measure recovered values, exact coordinates, file structure, and source preservation against independently retained originals.
 
-The [0.16.0 controlled benchmark](../docs/coverage.md) achieved **90.8% useful recovery across 109 damaged-file trials**: **72 fully exact**, **27 partial**, and **10 refused**. Across 23 generated data and layout families, the panel recorded zero wrong accepted elements and zero changed sources. The full evaluation also includes 23 intact-file trials, for 132 cases in total.
+The [1.0.0rc1 controlled benchmark](../docs/coverage.md) achieved **95.4% useful recovery across 109 damaged-file trials**: **77 fully exact**, **27 partial**, and **5 refused**. Across 23 generated data and layout families, the panel recorded zero wrong accepted elements and zero changed sources. The full evaluation also includes 23 intact-file trials, for 132 cases in total. These are declared generated fixtures, not an expected success rate for submitted files.
 
 ## Regression checks
 
@@ -49,7 +49,7 @@ Install `python -m pip install -e ".[filters,applications]"` for the application
 
 [Incident intake](INCIDENT_INTAKE.md) evaluates submitted damaged files. Recovery runs first on a source copy. A separate score command compares outputs with a matching earlier file or previously captured element hashes.
 
-Reports retain trial denominators, recovered and unknown coordinates, context restoration, and refusals. The [release coverage report](../docs/coverage.md) gives the full breakdown and reproducible commands for the 0.16.0 benchmark. The previous [0.15.0 panel](results/v015-release-coverage.json) remains available.
+Reports retain trial denominators, recovered and unknown coordinates, context restoration, and refusals. The [release coverage report](../docs/coverage.md) gives the full breakdown and reproducible commands for the 1.0.0rc1 benchmark. The previous [0.16.0 panel](results/v016-release-coverage.json) remains available.
 
 ## Development fixtures
 

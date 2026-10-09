@@ -1,18 +1,18 @@
 # Recovery coverage
 
-H5Reclaim 0.16.0 achieved **90.8% useful recovery in its controlled damaged-file benchmark**. The automatic rescue command produced **99 useful outputs from 109 trials** across varied HDF5 storage layouts and logical datatypes: **72 fully exact recoveries**, **27 partial recoveries**, and **10 refusals**.
+H5Reclaim 1.0.0rc1 achieved **95.4% useful recovery in its controlled damaged-file benchmark**. The automatic rescue command produced **104 useful outputs from 109 trials** across varied HDF5 storage layouts and logical datatypes: **77 fully exact recoveries**, **27 partial recoveries**, and **5 refusals**. This is a release candidate measured on declared generated fixtures, not an estimated success rate on submitted files.
 
-The [machine-readable report](../benchmarks/results/v016-release-coverage.json) retains every case, fault location, source identity, refusal, unknown coordinate count, environment and tested source fingerprint. The panel ran on Linux with Python 3.12.14, h5py 3.16.0, HDF5 2.0.0 and NumPy 2.3.5. The tested source fingerprint remained unchanged throughout the evaluation. The [0.15.0 result](../benchmarks/results/v015-release-coverage.json) is retained for comparison.
+The [machine-readable report](../benchmarks/results/v100rc1-release-coverage.json) retains every case, fault location, source identity, refusal, unknown coordinate count, environment and tested source fingerprint. The panel ran on Linux with Python 3.12.14, h5py 3.16.0, HDF5 2.0.0 and NumPy 2.3.5. The tested source fingerprint remained unchanged throughout the evaluation. The [0.16.0 result](../benchmarks/results/v016-release-coverage.json) is retained for comparison.
 
 ## Measured outcomes
 
 | Category | Cases | Useful output | Fully exact | Useful partial | Refused |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Intact generated files | 23 | 23 | 22 | 1 | 0 |
-| Controlled damaged files | 109 | 99 | 72 | 27 | 10 |
-| Entire generated panel | 132 | 122 | 94 | 28 | 10 |
+| Controlled damaged files | 109 | 104 | 77 | 27 | 5 |
+| Entire generated panel | 132 | 127 | 99 | 28 | 5 |
 
-For damaged files, 3,836 of 4,817 logical dataset elements were independently compared and accepted at their correct coordinates, giving **79.6% exact accepted elements**. The other 981 elements remained unknown, including all elements of refused cases. Across the entire panel, 4,715 of 5,758 elements were exact accepted values and 1,043 remained unknown. There were **zero wrong accepted elements**, zero changed source files and zero invalid or unscorable cases.
+For damaged files, 4,001 of 4,817 logical dataset elements were independently compared and accepted at their correct coordinates, giving **83.1% exact accepted elements**. The other 816 elements remained unknown, including all elements of refused cases. Across the entire panel, 4,880 of 5,758 elements were exact accepted values and 878 remained unknown. There were **zero wrong accepted elements**, zero changed source files and zero invalid or unscorable cases.
 
 “Useful output” means at least one accepted element exactly matches the independent original at its coordinate, with no wrong accepted elements or schema discrepancies. A correctly preserved empty or null dataset also qualifies. A partial output may omit attributes only when that omission is explicitly reported. “Fully exact” requires every logical element, exact HDF5 datatype, shape, maximum shape and original attribute to match, with no unknown elements or context omissions. A refused case contributes zero useful recoveries and retains all its elements in the denominator.
 
@@ -27,12 +27,12 @@ One intact sparse fixture deliberately leaves 62 of 77 positions unknown. HDF5 d
 | Interrupted-write status flag on a closed-writer copy | 22 | 22 | 21 | 1 | 0 |
 | One damaged checksummed payload byte | 12 | 12 | 0 | 12 | 0 |
 | Tail cut inside the last stored checksummed payload | 12 | 11 | 0 | 11 | 1 |
-| One damaged modern chunk-dimension byte | 15 | 10 | 9 | 1 | 5 |
+| One damaged modern chunk-dimension byte | 15 | 15 | 14 | 1 | 0 |
 | One damaged stored superblock-checksum byte | 3 | 0 | 0 | 0 | 3 |
 
 Metadata pointer and signature trials retain the original stored checksum. The interrupted-write fixture changes a flag on a verified, cleanly closed source and recomputes the checksum. Modern root-pointer and interrupted-write faults apply to modern files; payload trials use allocated chunks with Fletcher32 checksums. Tail cuts can remove later index metadata as well as data bytes.
 
-The default whole-file command now discovers 10 of the 15 selected objects with a damaged chunk-dimension byte and uses a uniquely checksum-justified correction on a disposable view. Five dimension trials remain outside this bounded route: rank five, scale-offset header continuation, and three variable-length representations. The rank-five fixed-array tail trial now retains 60 exact elements and marks four unknown. The remaining version-2 B-tree tail refusal has lost its sole coordinate index beyond physical EOF, so it cannot safely assign the surviving payload bytes. Stored-superblock-checksum mutations lose the original checksum needed to justify correction, and the legacy signature refusal has no checksum oracle.
+The default whole-file command discovers all 15 selected objects with a damaged chunk-dimension byte and uses a uniquely checksum-justified correction on a disposable view. The new cases cover rank five, a checked scale-offset header continuation, variable strings, ragged numeric arrays and compound variable strings. Heap-backed records use a bounded native export with independently checked chunk coordinates and typed readback. The rank-five fixed-array tail trial retains 60 exact elements and marks four unknown. The remaining version-2 B-tree tail refusal has lost its sole coordinate index beyond physical EOF, so it cannot safely assign the surviving payload bytes. Stored-superblock-checksum mutations lose the original checksum needed to justify correction, and the legacy signature refusal has no checksum oracle.
 
 ## Data and layout families
 

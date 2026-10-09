@@ -5,16 +5,16 @@
 <p align="center">
   <a href="pyproject.toml"><img alt="Python 3.10+" src="https://img.shields.io/badge/Python-3.10%2B-3559F0?style=flat-square&amp;logo=python&amp;logoColor=white"></a>
   <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/License-Apache%202.0-263557?style=flat-square"></a>
-  <a href="docs/coverage.md"><img alt="Controlled benchmark: 90.8% useful recovery" src="https://img.shields.io/badge/Controlled%20benchmark-90.8%25-3559F0?style=flat-square"></a>
+  <a href="docs/coverage.md"><img alt="Controlled benchmark: 95.4% useful recovery" src="https://img.shields.io/badge/Controlled%20benchmark-95.4%25-3559F0?style=flat-square"></a>
 </p>
 
 H5Reclaim recovers scientific data from damaged HDF5 files. It brings surviving measurements into a usable new file after interrupted writes, broken indexes, metadata damage, and truncation. HDF5 is the format used by many scientific instruments and applications to store arrays, measurements, and their metadata.
 
 **One command discovers your datasets, selects recovery methods, and creates a new HDF5 file with a clear JSON report.** Your original stays untouched. H5Reclaim keeps readable measurements from partially damaged datasets and continues recovering the rest of the file.
 
-The 0.16.0 controlled benchmark achieved **90.8% useful recovery across 109 damaged-file trials**: 72 fully exact recoveries and 27 partial recoveries, with zero wrong accepted values. [Explore the results](docs/coverage.md).
+The 1.0.0rc1 release candidate achieved **95.4% useful recovery across 109 controlled damaged-file trials**: 77 fully exact recoveries and 27 partial recoveries, with zero wrong accepted values in this panel. These generated trials measure the declared fault classes, not an expected success rate on other files. [Explore the results](docs/coverage.md).
 
-[Quick start](#quick-start) · [Usage guide](docs/usage.md) · [Recovery coverage](docs/coverage.md) · [Report semantics](docs/evidence-model.md)
+[Quick start](#quick-start) · [Usage guide](docs/usage.md) · [Recovery coverage](docs/coverage.md) · [Report format](docs/report-schema.md) · [Release notes](CHANGELOG.md)
 
 ## Quick start
 
@@ -53,7 +53,15 @@ The installed `h5reclaim` command also works. Run `python -m h5reclaim --help` t
 
 The terminal summary shows complete or partial recovery and lists your output locations. The JSON report identifies recovered datasets, recovery methods, unresolved positions, and restored metadata.
 
-Each dataset has a **status map** showing which positions contain recovered measurements. Use the map named in the report to select accepted values for analysis; unknown positions can display a fill value such as zero. Prior baselines and protection bundles add comparison with an earlier capture.
+Check the published output against its saved report before using it:
+
+```sh
+python -m h5reclaim verify-result "damaged.recovered.h5" "damaged.recovered.report.json" --source "damaged.h5"
+```
+
+This checks report, dataset shape, source hash, and validity-map consistency in a bounded worker. It does not read or authenticate recovered measurement values; routes without a checkable map return an unsupported result. See the [usage guide](docs/usage.md#verify-a-published-result) for exit codes and limits.
+
+When a route publishes a **status map**, it shows which positions contain accepted measurements. Use the map named in the report to select values for analysis; unknown positions can display a fill value such as zero. Some intact contiguous and null datasets have no checkable map, so use their route-specific report before analysis. Prior baselines and protection bundles add comparison with an earlier capture.
 
 For fixed-size datasets, read the recovered values with unknown positions already masked:
 
@@ -75,6 +83,7 @@ This bounded reader uses the dataset's reported status map. The mask identifies 
 | Inspect a file before recovery | `python -m h5reclaim diagnose damaged.h5` |
 | Recover one dataset | `python -m h5reclaim rescue damaged.h5 --dataset /experiment/readings` |
 | Summarize an existing result | `python -m h5reclaim report damaged.recovered.report.json` |
+| Check output and report consistency | `python -m h5reclaim verify-result damaged.recovered.h5 damaged.recovered.report.json` |
 | Resume a longer recovery | `python -m h5reclaim rescue damaged.h5 --resume-dir recovery-progress` |
 | Supply companion files | `python -m h5reclaim rescue container.h5 --related-dir companion-files` |
 | Find datasets after their names are lost | `python -m h5reclaim discover damaged.h5 --json` |
@@ -96,7 +105,7 @@ H5Reclaim reads each file's own dataset descriptions, so the same workflow works
 
 For acquisitions protected before damage, retained replicas and parity can also reconstruct missing data. Companion-file discovery, resumable recovery, and streaming budgets support larger scientific workflows.
 
-The **0.16.0 automatic-rescue benchmark** covers 23 generated data and layout families. Its **109 controlled damaged-file trials** produced 72 fully exact recoveries, 27 partial recoveries, and 10 refusals: **99 useful outputs (90.8%)**. It recovered 79.6% of the original elements at their exact coordinates, with zero wrong accepted values and zero changed sources. [View the complete case report](benchmarks/results/v016-release-coverage.json) or the [coverage breakdown](docs/coverage.md).
+The **1.0.0rc1 automatic-rescue benchmark** covers 23 generated data and layout families. Its **109 controlled damaged-file trials** produced 77 fully exact recoveries, 27 partial recoveries, and 5 refusals: **104 useful outputs (95.4%)**. It recovered 83.1% of the original elements at their exact coordinates, with zero wrong accepted values and zero changed sources. All 15 declared chunk-dimension faults yielded useful outputs, including rank-five arrays, scale-offset, variable strings, ragged arrays, and compound variable fields. [View the complete case report](benchmarks/results/v100rc1-release-coverage.json) or the [coverage breakdown](docs/coverage.md).
 
 Recorded v0.14.0 evaluations include:
 
@@ -112,6 +121,8 @@ The [benchmark guide](benchmarks/README.md) explains how to reproduce evaluation
 
 Open an [issue](https://github.com/xShadyy/H5Reclaim/issues) with the command, tool and Python versions, observed error, and expected result. A small reproducible file and its report help distinguish unsupported storage from a recovery bug.
 
+For a vulnerability, follow the [security reporting policy](SECURITY.md); check reports for sensitive paths and metadata before sharing them.
+
 For development, install `python -m pip install -e ".[filters]"` and run:
 
 ```sh
@@ -119,6 +130,7 @@ python -m unittest discover -s tests -q
 ```
 
 Tests check recovery correctness, source preservation, and unresolved-data handling. Benchmarks score accepted values against separate originals. The [repository guide](docs/file-guide.md) maps the implementation and explains why those files are present.
+The [release runbook](docs/releasing.md) records the candidate build, tag gate, and remaining checks for stable 1.0.
 
 ## License
 
