@@ -65,10 +65,11 @@ def _units(shape: tuple[int, ...]) -> int:
 
 
 def _report(path: Path, max_bytes: int) -> dict[str, Any]:
-    if path.stat().st_size > max_bytes:
+    with path.open("rb") as source:
+        raw = source.read(max_bytes + 1)
+    if len(raw) > max_bytes:
         raise MaskedReadError("report exceeds the byte limit")
-    with path.open("r", encoding="utf-8") as source:
-        report = json.load(source)
+    report = json.loads(raw)
     if not isinstance(report, dict) or report.get("schema_version") != 1 or report.get("tool") != "h5reclaim":
         raise MaskedReadError("expected an H5Reclaim version-1 report")
     return report
@@ -133,6 +134,62 @@ def _check_chunks(dataset: h5py.Dataset, limit: int) -> None:
         raise MaskedReadError("an HDF5 chunk exceeds the byte limit")
 
 
+def _local_object(handle: h5py.File, path: str) -> h5py.Group | h5py.Dataset:
+    """Resolve only local hard links, including ordinary hard-link aliases.
+
+    HDF5's path lookup follows soft and external links, which could silently
+    supply a value, map, or source annotation from another file. Check each
+    component before asking the library to open the next object.
+    """
+    if (not isinstance(path, str) or not path.startswith("/") or path == "/"
+            or "\x00" in path or any(part in ("", ".", "..") for part in path[1:].split("/"))):
+        raise MaskedReadError("reported HDF5 path is not absolute and unambiguous")
+    current: h5py.Group | h5py.Dataset = handle["/"]
+    for part in path[1:].split("/"):
+        if not isinstance(current, h5py.Group):
+            raise MaskedReadError("reported HDF5 path crosses a non-group object")
+        link = current.get(part, getlink=True)
+        if link is None:
+            raise MaskedReadError("reported dataset, status map, or metadata group is missing")
+        if not isinstance(link, h5py.HardLink):
+            raise MaskedReadError("reported HDF5 path follows a soft or external link")
+        current = current[part]
+    return current
+
+
+def _require_local_storage(dataset: h5py.Dataset) -> None:
+    if dataset.is_virtual or dataset.id.get_create_plist().get_external_count():
+        raise MaskedReadError("reported dataset uses external or virtual storage")
+
+
+def _check_embedded_report(handle: h5py.File, metadata_group: str,
+                           saved: dict[str, Any], max_bytes: int) -> None:
+    """Require the selected saved report to match the output's own report."""
+    embedded = _local_object(handle, metadata_group + "/report_json")
+    if (not isinstance(embedded, h5py.Dataset) or embedded.shape != ()
+            or h5py.check_string_dtype(embedded.dtype) is None):
+        raise MaskedReadError("embedded selected report is not a scalar string")
+    _require_local_storage(embedded)
+    # A variable-length HDF5 value can allocate more than its on-disk pointer
+    # indicates. The post-read cap protects subsequent work; native HDF5
+    # allocations still require an isolated process for hostile files.
+    value = embedded[()]
+    if isinstance(value, str):
+        raw = value.encode("utf-8")
+    elif isinstance(value, bytes):
+        raw = value
+    else:
+        raise MaskedReadError("embedded selected report is not UTF-8 text")
+    if len(raw) > max_bytes:
+        raise MaskedReadError("embedded selected report exceeds the byte limit")
+    try:
+        observed = json.loads(raw)
+    except (UnicodeError, ValueError) as exc:
+        raise MaskedReadError("embedded selected report is invalid JSON") from exc
+    if observed != saved:
+        raise MaskedReadError("saved and embedded selected reports differ")
+
+
 def read_masked(
     output_path: str | Path,
     report_path: str | Path,
@@ -148,7 +205,10 @@ def read_masked(
     It is applied before data and status-map reads. Fixed-size HDF5 types are
     supported; variable-length values cannot be bounded by their dtype size.
     The report must explicitly name its map and accepted code. For a whole-file
-    report, ``dataset_path`` selects exactly one nested dataset report.
+    report, ``dataset_path`` selects exactly one nested dataset report. The
+    selected saved report must match the embedded copy. Native HDF5 allocation
+    is not capped by this in-process helper; use an isolated worker for hostile
+    files.
     """
     if not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or max_bytes <= 0:
         raise ValueError("max_bytes must be a positive integer")
@@ -160,12 +220,12 @@ def read_masked(
     report = _dataset_report(_report(Path(report_path), report_limit), dataset_path)
     map_path, claimed_unit, codes = _map_definition(report)
     with h5py.File(output_path, "r") as recovered:
-        if dataset_path not in recovered or map_path not in recovered:
-            raise MaskedReadError("reported dataset or status map is missing from the output")
-        data = recovered[dataset_path]
-        status = recovered[map_path]
+        data = _local_object(recovered, dataset_path)
+        status = _local_object(recovered, map_path)
         if not isinstance(data, h5py.Dataset) or not isinstance(status, h5py.Dataset):
             raise MaskedReadError("reported value or status path is not a dataset")
+        _require_local_storage(data)
+        _require_local_storage(status)
         if data.shape is None or data.dtype.hasobject:
             raise MaskedReadError("null and variable-length datasets have no bounded fixed-size read")
         if status.dtype != np.dtype("u1"):
@@ -173,10 +233,12 @@ def read_masked(
         source = report.get("source")
         digest = source.get("sha256_before") if isinstance(source, dict) else None
         metadata_group = report.get("metadata_group") or map_path.rsplit("/", 1)[0]
+        metadata = _local_object(recovered, metadata_group)
         if (not isinstance(digest, str) or not isinstance(metadata_group, str)
-                or metadata_group not in recovered
-                or recovered[metadata_group].attrs.get("source_sha256") != digest):
+                or not isinstance(metadata, h5py.Group)
+                or metadata.attrs.get("source_sha256") != digest):
             raise MaskedReadError("output metadata does not match the selected report source")
+        _check_embedded_report(recovered, metadata_group, report, report_limit)
         expected_shape = report["dataset"].get("shape")
         if expected_shape is not None and tuple(expected_shape) != data.shape:
             raise MaskedReadError("output dataset shape differs from the report")

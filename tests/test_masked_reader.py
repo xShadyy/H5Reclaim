@@ -24,7 +24,14 @@ class MaskedReaderTests(unittest.TestCase):
     def _write_report(self, dataset: dict, **fields) -> None:
         doc = {"schema_version": 1, "tool": "h5reclaim", "dataset": dataset,
                "source": {"sha256_before": self.sha}, **fields}
-        self.report.write_text(json.dumps(doc), encoding="utf-8")
+        serialized = json.dumps(doc)
+        self.report.write_text(serialized, encoding="utf-8")
+        with h5py.File(self.output, "r+") as file:
+            group = file[doc.get("metadata_group") or "/_h5reclaim"]
+            if "report_json" in group:
+                del group["report_json"]
+            group.create_dataset("report_json", data=serialized,
+                                 dtype=h5py.string_dtype("utf-8"))
 
     def test_chunk_grid_selection_expands_only_selected_edges(self) -> None:
         values = np.arange(35, dtype="i4").reshape(5, 7)
@@ -66,6 +73,9 @@ class MaskedReaderTests(unittest.TestCase):
         whole = {"schema_version": 1, "tool": "h5reclaim", "datasets": [
             {"path": "/signals", "report": nested}]}
         self.report.write_text(json.dumps(whole), encoding="utf-8")
+        with h5py.File(self.output, "r+") as file:
+            file["/_h5reclaim/datasets/d000000"].create_dataset(
+                "report_json", data=json.dumps(nested), dtype=h5py.string_dtype("utf-8"))
         result = read_masked(self.output, self.report, "/signals", selection=slice(1, 4))
         np.testing.assert_array_equal(result.data, [0, 13, 0])
         np.testing.assert_array_equal(np.ma.getmaskarray(result), [True, False, True])
@@ -131,6 +141,107 @@ class MaskedReaderTests(unittest.TestCase):
             selected = read_masked(self.output, self.report, path)
             np.testing.assert_array_equal(selected.data, expected)
             self.assertFalse(np.ma.getmaskarray(selected).any())
+
+    def test_soft_and_external_links_cannot_supply_values_maps_or_annotations(self) -> None:
+        other = self.output.parent / "other.h5"
+        with h5py.File(other, "w") as file:
+            file.create_dataset("values", data=np.array([15, 16], dtype="i4"), chunks=(2,))
+            file.create_dataset("map", data=np.array([1], dtype="u1"))
+        with h5py.File(self.output, "w") as file:
+            file.create_dataset("values", data=np.array([1, 2], dtype="i4"), chunks=(2,))
+            group = file.create_group("_h5reclaim")
+            group.attrs["source_sha256"] = self.sha
+            group.create_dataset("status", data=np.array([1], dtype="u1"))
+        self._write_report({"path": "/values", "shape": [2]},
+                           metadata_group="/_h5reclaim", validity={
+                               "dataset": "/_h5reclaim/status", "granularity": "chunk",
+                               "codes": {"recovered": 1}})
+        np.testing.assert_array_equal(read_masked(self.output, self.report, "/values").data,
+                                      [1, 2])
+        with h5py.File(self.output, "r+") as file:
+            del file["/_h5reclaim/status"]
+            file["/_h5reclaim/status"] = h5py.ExternalLink("other.h5", "/map")
+        with self.assertRaisesRegex(MaskedReadError, "soft or external link"):
+            read_masked(self.output, self.report, "/values")
+        with h5py.File(self.output, "r+") as file:
+            del file["/_h5reclaim/status"]
+            file["/_h5reclaim/status"] = h5py.SoftLink("/real_status")
+            file.create_dataset("real_status", data=np.array([1], dtype="u1"))
+        with self.assertRaisesRegex(MaskedReadError, "soft or external link"):
+            read_masked(self.output, self.report, "/values")
+        with h5py.File(self.output, "r+") as file:
+            del file["/_h5reclaim/status"]
+            file["/_h5reclaim/status"] = file["/real_status"]
+            del file["/values"]
+            file["/values"] = h5py.ExternalLink("other.h5", "/values")
+        with self.assertRaisesRegex(MaskedReadError, "soft or external link"):
+            read_masked(self.output, self.report, "/values")
+        with h5py.File(self.output, "r+") as file:
+            del file["/values"]
+            file.create_dataset("values", data=np.array([1, 2], dtype="i4"), chunks=(2,))
+            group = file["/_h5reclaim"]
+            file["/meta_alias"] = group
+            del file["/_h5reclaim"]
+            file["/_h5reclaim"] = h5py.SoftLink("/meta_alias")
+        with self.assertRaisesRegex(MaskedReadError, "soft or external link"):
+            read_masked(self.output, self.report, "/values")
+        # A true local hard-link alias remains valid.
+        with h5py.File(self.output, "r+") as file:
+            del file["/_h5reclaim"]
+            file["/_h5reclaim"] = file["/meta_alias"]
+        np.testing.assert_array_equal(read_masked(self.output, self.report, "/values").data,
+                                      [1, 2])
+
+    def test_saved_report_tampering_cannot_unmask_unknown_values(self) -> None:
+        with h5py.File(self.output, "w") as file:
+            file.create_dataset("values", data=np.array([700, 900], dtype="i4"), chunks=(2,))
+            meta = file.create_group("_h5reclaim")
+            meta.attrs["source_sha256"] = self.sha
+            meta.create_dataset("status", data=np.array([2], dtype="u1"))
+            meta.create_dataset("other_status", data=np.array([1], dtype="u1"))
+        self._write_report({"path": "/values", "shape": [2]},
+                           metadata_group="/_h5reclaim", validity={
+                               "dataset": "/_h5reclaim/status", "granularity": "chunk",
+                               "codes": {"recovered": 1, "unknown": 2}})
+        self.assertTrue(np.ma.getmaskarray(
+            read_masked(self.output, self.report, "/values")).all())
+        forged = json.loads(self.report.read_text(encoding="utf-8"))
+        forged["validity"]["dataset"] = "/_h5reclaim/other_status"
+        self.report.write_text(json.dumps(forged), encoding="utf-8")
+        with self.assertRaisesRegex(MaskedReadError, "saved and embedded selected reports differ"):
+            read_masked(self.output, self.report, "/values")
+
+    def test_external_raw_and_virtual_storage_are_not_read(self) -> None:
+        raw = self.output.parent / "outside.bin"
+        raw.write_bytes(np.array([1], dtype="u1").tobytes())
+        with h5py.File(self.output, "w") as file:
+            file.create_dataset("values", data=np.array([5, 8], dtype="i4"), chunks=(2,))
+            meta = file.create_group("_h5reclaim")
+            meta.attrs["source_sha256"] = self.sha
+            meta.create_dataset("status", shape=(1,), dtype="u1",
+                                external=[("outside.bin", 0, 1)])
+        self._write_report({"path": "/values", "shape": [2]},
+                           metadata_group="/_h5reclaim", validity={
+                               "dataset": "/_h5reclaim/status", "granularity": "chunk",
+                               "codes": {"recovered": 1}})
+        with self.assertRaisesRegex(MaskedReadError, "external or virtual storage"):
+            read_masked(self.output, self.report, "/values")
+        other = self.output.parent / "other.h5"
+        with h5py.File(other, "w") as file:
+            file.create_dataset("values", data=np.array([5, 8], dtype="i4"))
+        with h5py.File(self.output, "w") as file:
+            layout = h5py.VirtualLayout(shape=(2,), dtype="i4")
+            layout[:] = h5py.VirtualSource(str(other), "/values", shape=(2,))
+            file.create_virtual_dataset("values", layout)
+            meta = file.create_group("_h5reclaim")
+            meta.attrs["source_sha256"] = self.sha
+            meta.create_dataset("status", data=np.array([1, 1], dtype="u1"))
+        self._write_report({"path": "/values", "shape": [2]},
+                           metadata_group="/_h5reclaim", validity={
+                               "dataset": "/_h5reclaim/status", "granularity": "element",
+                               "codes": {"recovered": 1}})
+        with self.assertRaisesRegex(MaskedReadError, "external or virtual storage"):
+            read_masked(self.output, self.report, "/values")
 
 
 if __name__ == "__main__":
