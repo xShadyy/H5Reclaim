@@ -12,16 +12,19 @@ import os
 import shutil
 import tempfile
 from dataclasses import dataclass
+from math import prod
 from pathlib import Path
 
-import numpy as np
+import h5py
 
 from .format import FormatError, UnsupportedFormat
-from .metadata import UnsupportedCase, read_dataset_spec
+from .logical_types import contains_pointers, validate_type
+from .metadata import UnsupportedCase, _selected_local_dataset
 from .metadata_correction import (
     MAX_TRIAL_BYTES, _rooted_compact_target, _superblock_raw, _unique_one_byte,
     _validate_trial,
 )
+from .native_addresses import chunk_address
 from .modern_indexes import ModernH5File, lookup3
 from .ownership_inventory import inventory_other_allocations, reject_sibling_overlap
 from .recovery import RecoveryError, _verify_source, sha256_file, source_snapshot
@@ -29,6 +32,32 @@ from .recovery import RecoveryError, _verify_source, sha256_file, source_snapsho
 
 MAX_DIMENSION_HEADER_BYTES = 16 << 10
 MAX_DIMENSION_BYTES = 32
+
+
+def _file_record_width(typ: h5py.h5t.TypeID, offset_size: int) -> int:
+    """Bound the file record width independently of the chunk layout field.
+
+    HDF5's in-memory VLEN string uses a pointer, whereas its file record is
+    an eight-byte heap descriptor plus the file's address width. Nested
+    records retain their fixed-field bytes and widen each such descriptor.
+    The complete type is checked separately before calling this helper.
+    """
+    kind = typ.get_class()
+    if kind == h5py.h5t.STRING and typ.is_variable_str():
+        return offset_size + 8
+    if kind == h5py.h5t.VLEN:
+        return offset_size + 8
+    if kind == h5py.h5t.ARRAY:
+        base = typ.get_super()
+        return typ.get_size() + prod(typ.get_array_dims()) * (
+            _file_record_width(base, offset_size) - base.get_size())
+    if kind == h5py.h5t.COMPOUND:
+        return typ.get_size() + sum(
+            _file_record_width(typ.get_member_type(i), offset_size)
+            - typ.get_member_type(i).get_size()
+            for i in range(typ.get_nmembers())
+        )
+    return typ.get_size()
 
 
 @dataclass(frozen=True)
@@ -86,13 +115,18 @@ def _selected_dimension_field(
         if length > len(contents) - cursor or flags & 0x22:
             raise FormatError("selected object header has malformed or shared messages")
         data = contents[cursor:cursor + length]
-        if kind == 0x10:
-            raise UnsupportedFormat("selected object-header continuation is outside dimension trial")
+        # A continuation can hold attributes or other messages. The repaired
+        # first-chunk checksum and every continuation checksum, size, cycle,
+        # overlap and duplicate layout are checked by read_index on the
+        # disposable trial before any result is published.
+        if kind == 0x10 and (length != reader.superblock.offset_size
+                              + reader.superblock.length_size):
+            raise FormatError("selected object-header continuation has invalid length")
         if kind == 8:
             if len(data) < 6 or data[0] not in (4, 5) or data[1] != 2 or data[2] & ~3:
                 raise UnsupportedFormat("selected header lacks supported v4/v5 chunk layout")
             ndim, width = data[3:5]
-            if not 2 <= ndim <= 5 or width not in (1, 2, 4, 8):
+            if not 2 <= ndim <= 6 or width not in (1, 2, 4, 8):
                 raise UnsupportedFormat("selected layout dimensions are outside trial bounds")
             extent_bytes = (ndim - 1) * width
             if extent_bytes > MAX_DIMENSION_BYTES or len(data) < 5 + ndim * width + 1:
@@ -155,21 +189,73 @@ def create_chunk_dimension_trial(
                 handle.write(bytes((value,)))
             if private.stat().st_size != size:
                 raise RecoveryError("private correction changed file length")
-            object_address = _validate_trial(private, dataset_path, expected_object=expected_object,
-                                             allow_root_continuation=True)
-            spec = read_dataset_spec(private, dataset_path)
-            if spec.object_address != object_address or spec.chunks[dimension_index] != dimension_after:
-                raise FormatError("corrected chunk dimension contradicts checked native schema")
+            object_address = _validate_trial(
+                private, dataset_path, expected_object=expected_object,
+                allow_root_continuation=True, defer_schema_validation=True,
+            )
+            with h5py.File(private, "r") as handle:
+                selected = _selected_local_dataset(handle, dataset_path)
+                shape, chunks, maxshape = selected.shape, selected.chunks, selected.maxshape
+                if (shape is None or chunks is None or maxshape is None
+                        or not 1 <= len(shape) <= 5 or len(chunks) != len(shape)
+                        or any(n <= 0 for n in (*shape, *chunks))
+                        or prod(shape) > 1_048_576):
+                    raise UnsupportedCase("corrected chunk schema exceeds the bounded trial")
+                if chunks[dimension_index] != dimension_after:
+                    raise FormatError("corrected chunk dimension contradicts checked native schema")
+                typ = selected.id.get_type()
+                validate_type(typ)
+                if contains_pointers(typ):
+                    # The exporter below uses native heap resolution and a
+                    # typed per-element readback, never raw pointer copying.
+                    if not selected.dtype.hasobject:
+                        raise UnsupportedCase("heap-backed datatype has no native object representation")
+                else:
+                    from .schema_codec import fixed_file_datatype
+                    from .schema_codec import SchemaError
+                    try:
+                        fixed_file_datatype(typ)
+                    except SchemaError as exc:
+                        raise UnsupportedCase(str(exc)) from exc
+                with ModernH5File(private) as reader:
+                    itemsize = _file_record_width(typ, reader.superblock.offset_size)
+                if not 0 < itemsize <= 1_048_576 or prod(chunks) * itemsize > 1_048_576:
+                    raise UnsupportedCase("corrected chunk exceeds the 1 MiB trial budget")
+                creation = selected.id.get_create_plist()
+                if creation.get_external_count() or selected.is_virtual or creation.get_nfilters() > 8:
+                    raise UnsupportedCase("corrected selected storage is external, virtual, or over-filtered")
+                filters = tuple(int(creation.get_filter(i)[0])
+                                for i in range(creation.get_nfilters()))
             with ModernH5File(private) as reader:
                 index = reader.read_index(
-                    spec.object_address, spec.shape, spec.chunks, np.dtype(spec.dtype).itemsize,
-                    maxshape=spec.maxshape, filters=spec.filters,
+                    object_address, tuple(shape), tuple(chunks), itemsize,
+                    maxshape=tuple(maxshape), filters=filters,
                 )
                 selected_ranges = [
                     (reader.absolute(chunk.address), reader.absolute(chunk.address) + chunk.size,
                      chunk.coordinate) for chunk in index.chunks
                 ]
-            inventory = inventory_other_allocations(private, spec.object_address)
+                checked_records = {
+                    (chunk.coordinate, reader.absolute(chunk.address), chunk.size,
+                     chunk.filter_mask) for chunk in index.chunks
+                }
+            # Cross-check the independently parsed chunk coordinates and
+            # addresses against the native reader that will supply values.
+            # A successful native open alone cannot establish attribution.
+            with h5py.File(private, "r") as handle:
+                selected = _selected_local_dataset(handle, dataset_path)
+                count = selected.id.get_num_chunks()
+                if count != len(checked_records):
+                    raise FormatError("native and checked chunk allocation counts disagree")
+                native_records = set()
+                for number in range(count):
+                    chunk = selected.id.get_chunk_info(number)
+                    native_records.add((tuple(int(n) for n in chunk.chunk_offset),
+                                        chunk_address(selected, chunk.byte_offset),
+                                        int(chunk.size), int(chunk.filter_mask)))
+                if native_records != checked_records:
+                    raise FormatError("native and checked chunk coordinates or ranges disagree")
+            inventory = inventory_other_allocations(private, object_address)
             if not inventory.complete:
                 raise UnsupportedCase("corrected trial lacks complete rooted ownership inventory")
             reject_sibling_overlap(selected_ranges, inventory)
