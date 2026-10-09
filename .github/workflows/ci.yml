@@ -3,6 +3,7 @@ name: H5Reclaim checks
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
 
 permissions:
@@ -90,3 +91,30 @@ jobs:
         run: python -m pip install -e ".[filters,applications]"
       - name: Check intact and damaged application files
         run: python benchmarks/run_application_corpus.py
+  release-candidate:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [installed-package, release-coverage, real-data-and-tests, minimum-dependencies, application-compatibility]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Build installable archives
+        run: |
+          python -m pip install build twine
+          python -m build
+      - name: Check archive contents and generate hashes
+        run: python tools/check_release_artifacts.py dist --tag "$GITHUB_REF_NAME"
+      - name: Check package descriptions
+        run: python -m twine check --strict dist/*.tar.gz dist/*.whl
+      - name: Make passing candidate archives available
+        uses: actions/upload-artifact@v7
+        with:
+          name: h5reclaim-release-candidate
+          path: |
+            dist/*.tar.gz
+            dist/*.whl
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
