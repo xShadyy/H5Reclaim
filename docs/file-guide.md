@@ -44,7 +44,8 @@
 | `docs/usage.md` | Operator commands and output interpretation |
 | `docs/dependency-bundles.md` | Related-file, Family, and Split manifests |
 | `docs/evidence-model.md` | Current placement, values, history, and fragments |
+| `README.<locale>.md`, `docs/readme-translations.md` | Ten complete README translations and their update procedure |
 
 Run commands from the repository root after installation. Generated benchmark work directories and results are disposable; the original corpus is hash-pinned. The Apache 2.0 license applies to source code; corpus attribution is recorded separately.
 
-The wheel contains the runtime package and its license. The source distribution also includes the operator documentation and README banner. Scientific fixtures, tests, and benchmark tools remain in the Git repository, so ordinary installations do not download development data. CI builds the wheel from the source distribution, then checks the installed console command from a temporary directory with numeric data, UTF-8 strings, metadata, an evidence report, and source-preservation checks.
+The wheel contains the runtime package and its license. The source distribution also includes the operator documentation, translated READMEs, and README banner. Scientific fixtures, tests, and benchmark tools remain in the Git repository, so ordinary installations do not download development data. CI builds the wheel from the source distribution, then checks the installed console command from a temporary directory with numeric data, UTF-8 strings, metadata, an evidence report, and source-preservation checks.

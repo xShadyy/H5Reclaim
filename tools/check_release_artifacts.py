@@ -58,6 +58,9 @@ def check(dist: Path, tag: str | None) -> list[Path]:
                      "pyproject.toml", "assets/h5reclaim-banner.png",
                      "docs/report-schema.md"):
         require(required in contents, f"source distribution is missing {required}")
+    for locale in ("pl", "de", "fr", "es", "pt-BR", "zh-CN", "ja", "ko", "ru", "ar"):
+        required = f"README.{locale}.md"
+        require(required in contents, f"source distribution is missing {required}")
     sources = {path.removeprefix("src/"): data for path, data in contents.items()
                if path.startswith("src/h5reclaim/") and path.endswith(".py")}
     require(sources and "h5reclaim/__main__.py" in sources,
