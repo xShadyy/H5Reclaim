@@ -9,7 +9,6 @@
 </p>
 
 <p align="center">
-  <strong>Languages:</strong>
   <a href="README.md" lang="en">English</a> · <a href="README.pl.md" lang="pl">Polski</a> · <a href="README.de.md" lang="de">Deutsch</a> · <a href="README.fr.md" lang="fr">Français</a> · <a href="README.es.md" lang="es">Español</a> · <a href="README.pt-BR.md" lang="pt-BR">Português (Brasil)</a><br>
   <a href="README.zh-CN.md" lang="zh-CN">简体中文</a> · <a href="README.ja.md" lang="ja">日本語</a> · <a href="README.ko.md" lang="ko">한국어</a> · <a href="README.ru.md" lang="ru">Русский</a> · <a href="README.ar.md" lang="ar">العربية</a>
 </p>
@@ -18,7 +17,7 @@ H5Reclaim recovers scientific data from damaged HDF5 files. It brings surviving 
 
 **One command discovers your datasets, selects recovery methods, and creates a new HDF5 file with a clear JSON report.** Your original stays untouched. H5Reclaim keeps readable measurements from partially damaged datasets and continues recovering the rest of the file.
 
-The 1.0.0rc1 release candidate achieved **95.4% useful recovery across 109 controlled damaged-file trials**: 77 fully exact recoveries and 27 partial recoveries, with zero wrong accepted values in this panel. These generated trials measure the declared fault classes, not an expected success rate on other files. [Explore the results](docs/coverage.md).
+The 1.0.0rc1 release candidate achieved **95.4% useful recovery across 109 controlled damaged-file trials**: 77 fully exact recoveries and 27 partial recoveries, with zero wrong accepted values in this panel. [Explore the results](docs/coverage.md).
 
 [Quick start](#quick-start) · [Usage guide](docs/usage.md) · [Recovery coverage](docs/coverage.md) · [Report format](docs/report-schema.md) · [Release notes](CHANGELOG.md)
 
@@ -141,5 +140,3 @@ The [release runbook](docs/releasing.md) records the candidate build, tag gate, 
 ## License
 
 Source code is available under the [Apache License 2.0](LICENSE). Bundled scientific files have [separate attribution and licenses](corpus/README.md).
-
-<sub>Created by Tymoteusz Netter.</sub>
