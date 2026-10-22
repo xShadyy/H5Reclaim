@@ -1,5 +1,5 @@
-include LICENSE README.md README.*.md CHANGELOG.md SECURITY.md pyproject.toml
-recursive-include docs *.md
+include LICENSE README.md CHANGELOG.md SECURITY.md pyproject.toml
+recursive-include translations README.*.md
 prune tests
 prune benchmarks
 prune corpus

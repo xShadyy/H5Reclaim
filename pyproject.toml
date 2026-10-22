@@ -28,7 +28,7 @@ dependencies = ["h5py>=3.10", "numpy>=1.26"]
 
 [project.urls]
 Repository = "https://github.com/xShadyy/H5Reclaim"
-Documentation = "https://github.com/xShadyy/H5Reclaim/blob/main/docs/usage.md"
+Documentation = "https://github.com/xShadyy/H5Reclaim#readme"
 Issues = "https://github.com/xShadyy/H5Reclaim/issues"
 
 [project.optional-dependencies]
