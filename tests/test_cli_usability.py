@@ -99,6 +99,19 @@ class CliUsabilityTests(unittest.TestCase):
         self.assertEqual(output.read_bytes(), output_bytes)
         self.assertEqual(report.read_bytes(), report_bytes)
 
+    def test_file_path_directly_invokes_whole_file_rescue(self) -> None:
+        before = hashlib.sha256(self.source.read_bytes()).hexdigest()
+        result = command(str(self.source))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = self.base / "measurements.recovered.h5"
+        report = self.base / "measurements.recovered.report.json"
+        self.assertTrue(output.is_file())
+        self.assertEqual(json.loads(report.read_text(encoding="utf-8"))["datasets_exported"], 2)
+        self.assertEqual(hashlib.sha256(self.source.read_bytes()).hexdigest(), before)
+        repeated = command(str(self.source))
+        self.assertEqual(repeated.returncode, 2)
+        self.assertIn("destination already exists", repeated.stderr)
+
     def test_selected_output_derives_report_beside_chosen_destination(self) -> None:
         destination = self.base / "selected.hdf5"
         result = command("rescue", str(self.source), "--dataset", "/science", "--output", str(destination))

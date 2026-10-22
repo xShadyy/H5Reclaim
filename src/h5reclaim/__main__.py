@@ -330,6 +330,7 @@ def main(argv: list[str] | None = None) -> int:
         description=(
             "Recover HDF5 data into a new file with a JSON evidence report.\n\n"
             "Start here:\n"
+            "  h5reclaim damaged.h5\n"
             "  h5reclaim rescue damaged.h5\n"
             "  h5reclaim diagnose damaged.h5\n"
             "  h5reclaim report damaged.recovered.report.json\n\n"
@@ -527,10 +528,14 @@ def main(argv: list[str] | None = None) -> int:
                          help="stream currently native-readable multidimensional fixed records")
     choices.add_argument("--large-structural", action="store_true",
                          help="stream one checked damaged fixed-array pointer in a large sparse numeric dataset")
-    arguments = argv if argv is not None else sys.argv[1:]
+    arguments = list(argv if argv is not None else sys.argv[1:])
     if not arguments:
         parser.print_help()
         return 0
+    if (not arguments[0].startswith("-") and arguments[0] not in commands.choices
+            and (Path(arguments[0]).is_file()
+                 or Path(arguments[0]).suffix.lower() in (".h5", ".hdf5", ".he5"))):
+        arguments.insert(0, "rescue")
     args = parser.parse_args(arguments)
 
     if args.command == "verify-result":
