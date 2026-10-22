@@ -22,9 +22,9 @@ resolution, or misleading acceptance of damaged values.
 
 ## Supported versions
 
-The first 1.0 release candidate is under development. Reports are triaged
-against the current branch and any published candidate. Earlier development
-versions may require an upgrade; there is no separate long-term support line.
+Reports are triaged against the current release and main branch. Earlier
+development versions may require an upgrade; there is no separate long-term
+support line.
 
 ## Handling untrusted inputs
 

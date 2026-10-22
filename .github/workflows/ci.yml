@@ -100,9 +100,9 @@ jobs:
         run: python -m pip install -e ".[filters,applications]"
       - name: Check intact and damaged application files
         run: python benchmarks/run_application_corpus.py
-  release-candidate:
+  release-artifacts:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [installed-package, release-coverage, real-data-and-tests, minimum-dependencies, application-compatibility]
+    needs: [readme-translations, installed-package, release-coverage, real-data-and-tests, minimum-dependencies, application-compatibility]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -117,10 +117,10 @@ jobs:
         run: python tools/check_release_artifacts.py dist --tag "$GITHUB_REF_NAME"
       - name: Check package descriptions
         run: python -m twine check --strict dist/*.tar.gz dist/*.whl
-      - name: Make passing candidate archives available
+      - name: Make passing release archives available
         uses: actions/upload-artifact@v7
         with:
-          name: h5reclaim-release-candidate
+          name: h5reclaim-release-assets
           path: |
             dist/*.tar.gz
             dist/*.whl

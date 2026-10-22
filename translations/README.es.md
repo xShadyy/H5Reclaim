@@ -18,7 +18,7 @@ H5Reclaim recupera datos científicos de archivos HDF5 dañados. Reúne las medi
 
 **Un solo comando descubre los conjuntos de datos, selecciona los métodos de recuperación y crea un archivo HDF5 nuevo con un informe JSON claro.** El archivo original permanece intacto. H5Reclaim conserva las mediciones legibles de conjuntos de datos parcialmente dañados y sigue recuperando el resto del archivo.
 
-La versión candidata 1.0.0rc1 logró **un 95,4 % de recuperaciones útiles en 109 pruebas controladas con archivos dañados**: 77 recuperaciones completamente exactas y 27 parciales, sin valores incorrectos aceptados en este conjunto de pruebas. Estas pruebas generadas miden las clases de fallos declaradas, no una tasa de éxito esperada en otros archivos. [Consulta los resultados](https://github.com/xShadyy/H5Reclaim/blob/main/benchmarks/results/v100rc1-release-coverage.json).
+La versión 1.0.0 logró **un 95,4 % de recuperaciones útiles en 109 pruebas controladas con archivos dañados**: 77 recuperaciones completamente exactas y 27 parciales, sin valores incorrectos aceptados en este conjunto de pruebas. Estas pruebas generadas miden las clases de fallos declaradas, no una tasa de éxito esperada en otros archivos. [Consulta los resultados](https://github.com/xShadyy/H5Reclaim/blob/main/benchmarks/results/v100rc1-release-coverage.json).
 
 <a id="quick-start"></a>
 ## Inicio rápido

@@ -1,4 +1,4 @@
-"""Validate the archives users will install before exposing a release candidate.
+"""Validate the archives users will install before publishing a release.
 
 Run after ``python -m build``. The optional tag check is useful when preparing
 a GitHub release: ``python tools/check_release_artifacts.py dist --tag v1.0.0``.

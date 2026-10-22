@@ -18,7 +18,7 @@ H5Reclaim 可从损坏的 HDF5 文件中恢复科学数据。对于写入中断�
 
 **一条命令即可发现数据集、选择恢复方法，并创建新的 HDF5 文件及清晰的 JSON 报告。** 原始文件保持不变。H5Reclaim 可以保留部分损坏的数据集中仍可读取的测量值，并继续恢复文件的其他部分。
 
-1.0.0rc1 候选发布版在 **109 次受控损坏文件试验中实现了 95.4% 的可用恢复率**：其中 77 次完全精确恢复，27 次部分恢复；在这组试验中，已接受的值没有错误。这些生成的试验只衡量所声明的故障类别，不能作为其他文件的预期成功率。[查看结果](https://github.com/xShadyy/H5Reclaim/blob/main/benchmarks/results/v100rc1-release-coverage.json)。
+1.0.0 版本在 **109 次受控损坏文件试验中实现了 95.4% 的可用恢复率**：其中 77 次完全精确恢复，27 次部分恢复；在这组试验中，已接受的值没有错误。这些生成的试验只衡量所声明的故障类别，不能作为其他文件的预期成功率。[查看结果](https://github.com/xShadyy/H5Reclaim/blob/main/benchmarks/results/v100rc1-release-coverage.json)。
 
 <a id="quick-start"></a>
 ## 快速开始
