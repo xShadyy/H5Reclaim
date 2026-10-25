@@ -95,7 +95,12 @@ def canonical_numeric_dtype(datatype: h5py.h5t.TypeID, dtype: np.dtype) -> str:
     return dtype.str
 
 
-def fixed_file_datatype(datatype: h5py.h5t.TypeID) -> tuple[np.dtype, bytes]:
+def fixed_file_datatype(datatype: h5py.h5t.TypeID, *,
+                        max_encoding_bytes: int = MAX_DATATYPE_ENCODING_BYTES,
+                        max_record_bytes: int = 1_048_576,
+                        max_depth: int = MAX_DATATYPE_DEPTH,
+                        max_members: int = MAX_DATATYPE_MEMBERS,
+                        max_array_rank: int = 4) -> tuple[np.dtype, bytes]:
     """Accept bounded, self-contained HDF5 file types and retain their exact H5T.
 
     A NumPy dtype loses information such as string padding, enum names, opaque
@@ -104,32 +109,40 @@ def fixed_file_datatype(datatype: h5py.h5t.TypeID) -> tuple[np.dtype, bytes]:
     item size and a human-readable schema description. No pointers to a heap,
     another object, or variable-length storage are accepted.
     """
+    if (any(type(n) is not int for n in (max_encoding_bytes, max_record_bytes,
+                                        max_depth, max_members, max_array_rank))
+            or not 8 <= max_encoding_bytes <= 1 << 20
+            or not 1 <= max_record_bytes <= 64 << 20
+            or not 1 <= max_depth <= 256
+            or not 1 <= max_members <= 65_536
+            or not 1 <= max_array_rank <= 32):
+        raise ValueError("invalid fixed-record datatype quotas")
     try:
         encoded = datatype.encode()
         dtype = np.dtype(datatype.dtype)
-        if (not 2 < len(encoded) <= MAX_DATATYPE_ENCODING_BYTES
-                or dtype.hasobject or not 0 < datatype.get_size() <= 1_048_576
+        if (not 2 < len(encoded) <= max_encoding_bytes
+                or dtype.hasobject or not 0 < datatype.get_size() <= max_record_bytes
                 or dtype.itemsize != datatype.get_size()):
             raise SchemaError("datatype is variable, oversized, or disagrees with file width")
 
         def check(type_id: h5py.h5t.TypeID, depth: int) -> None:
-            if depth > MAX_DATATYPE_DEPTH:
+            if depth > max_depth:
                 raise SchemaError("datatype nesting exceeds limit")
             kind = type_id.get_class()
             if kind in (h5py.h5t.INTEGER, h5py.h5t.FLOAT):
                 canonical_numeric_dtype(type_id, type_id.dtype)
             elif kind == h5py.h5t.STRING:
-                if (type_id.is_variable_str() or not 0 < type_id.get_size() <= 4096
+                if (type_id.is_variable_str() or not 0 < type_id.get_size() <= max_record_bytes
                         or type_id.get_cset() not in (h5py.h5t.CSET_ASCII, h5py.h5t.CSET_UTF8)
                         or type_id.get_strpad() not in (h5py.h5t.STR_NULLTERM,
                                                        h5py.h5t.STR_NULLPAD,
                                                        h5py.h5t.STR_SPACEPAD)):
                     raise SchemaError("variable or unsupported fixed-width string")
             elif kind == h5py.h5t.OPAQUE:
-                if not 0 < type_id.get_size() <= 4096 or len(type_id.get_tag()) > 256:
+                if not 0 < type_id.get_size() <= max_record_bytes or len(type_id.get_tag()) > 256:
                     raise SchemaError("opaque type exceeds bounded tag or width")
             elif kind == h5py.h5t.ENUM:
-                if not 0 < type_id.get_nmembers() <= MAX_DATATYPE_MEMBERS:
+                if not 0 < type_id.get_nmembers() <= max_members:
                     raise SchemaError("enum exceeds member limit")
                 check(type_id.get_super(), depth + 1)
                 names = [type_id.get_member_name(index) for index in range(type_id.get_nmembers())]
@@ -137,13 +150,13 @@ def fixed_file_datatype(datatype: h5py.h5t.TypeID) -> tuple[np.dtype, bytes]:
                     raise SchemaError("enum has duplicate or unbounded member names")
             elif kind == h5py.h5t.ARRAY:
                 dimensions = type_id.get_array_dims()
-                if not 1 <= len(dimensions) <= 4 or any(not 0 < n <= 4096 for n in dimensions):
+                if not 1 <= len(dimensions) <= max_array_rank or any(n <= 0 for n in dimensions):
                     raise SchemaError("array dimensions exceed limits")
                 check(type_id.get_super(), depth + 1)
                 if np.prod(dimensions, dtype=object) * type_id.get_super().get_size() != type_id.get_size():
                     raise SchemaError("array width disagrees with dimensions")
             elif kind == h5py.h5t.COMPOUND:
-                if not 0 < type_id.get_nmembers() <= MAX_DATATYPE_MEMBERS:
+                if not 0 < type_id.get_nmembers() <= max_members:
                     raise SchemaError("compound exceeds member limit")
                 names = set()
                 ranges: list[tuple[int, int]] = []

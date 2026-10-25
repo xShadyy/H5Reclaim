@@ -161,11 +161,19 @@ def _selected_local_dataset(handle: h5py.File, path: str) -> h5py.Dataset:
 
 
 def read_dataset_spec(source: Path, dataset_path: str, *, max_elements: int = 1_048_576,
-                      max_chunk_bytes: int = 1_048_576, max_rank: int = 4) -> DatasetSpec:
+                      max_chunk_bytes: int = 1_048_576, max_rank: int = 4,
+                      max_type_depth: int = 4, max_type_members: int = 64,
+                      max_array_rank: int = 4,
+                      max_type_encoding_bytes: int = 16 << 10) -> DatasetSpec:
     """Read local fixed-record metadata under explicit caller-owned quotas."""
     if (type(max_elements) is not int or not 0 < max_elements < 1 << 63
             or type(max_chunk_bytes) is not int or not 0 < max_chunk_bytes <= 64 << 20
-            or type(max_rank) is not int or not 1 <= max_rank <= 5):
+            or type(max_rank) is not int or not 1 <= max_rank <= 32
+            or type(max_type_depth) is not int or not 1 <= max_type_depth <= 256
+            or type(max_type_members) is not int or not 1 <= max_type_members <= 65_536
+            or type(max_array_rank) is not int or not 1 <= max_array_rank <= 32
+            or type(max_type_encoding_bytes) is not int
+            or not 8 <= max_type_encoding_bytes <= 1 << 20):
         raise ValueError("invalid structural metadata limits")
     try:
         with h5py.File(source, "r") as handle:
@@ -186,7 +194,10 @@ def read_dataset_spec(source: Path, dataset_path: str, *, max_elements: int = 1_
             try:
                 # The exact encoded H5T carries enum names, fixed string
                 # padding, opaque tags, and compound layout to the export.
-                dtype, type_encoding = fixed_file_datatype(datatype)
+                dtype, type_encoding = fixed_file_datatype(datatype,
+                    max_encoding_bytes=max_type_encoding_bytes,
+                    max_record_bytes=max_chunk_bytes, max_depth=max_type_depth,
+                    max_members=max_type_members, max_array_rank=max_array_rank)
                 if datatype.get_class() in (h5py.h5t.INTEGER, h5py.h5t.FLOAT):
                     dtype = canonical_numeric_dtype(datatype, selected.dtype)
                     type_encoding = None

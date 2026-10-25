@@ -15,10 +15,11 @@ from __future__ import annotations
 
 from itertools import product
 from math import prod
+from typing import Sequence
 
 from .format import FormatError, UnsupportedFormat
 from .modern_indexes import (
-    MAX_CHUNK_BYTES, MAX_CHUNKS, MAX_READ_BYTES, ModernChunk, ModernH5File,
+    MAX_CHUNK_BYTES, MAX_CHUNKS, ModernChunk, ModernH5File, RowMajorCoordinates,
     ModernIndex, lookup3,
 )
 from .modern_link_repair import candidate_addresses
@@ -54,7 +55,7 @@ def _reconstruct_data_block_pointer(
     bitmap_bytes = (pages + 7) // 8
     prefix_size = 10 + offsize + bitmap_bytes
     block_size = prefix_size + (count * entry_size + pages * 4 if paged else count * entry_size)
-    if block_size > MAX_READ_BYTES:
+    if block_size > reader.max_read_bytes:
         raise UnsupportedFormat("fixed-array data block exceeds bounded read limit")
     wanted_checksum = _uint(header[-4:])
     matches: list[int] = []
@@ -84,7 +85,7 @@ def read_fixed_array_variants(
     root: int,
     count: int,
     chunk_bytes: int,
-    coordinates: tuple[tuple[int, ...], ...],
+    coordinates: Sequence[tuple[int, ...]],
     layout_version: int,
     object_address: int,
     layout_pointer_offset: int,
@@ -109,8 +110,8 @@ def read_fixed_array_variants(
     sb = reader.superblock
     offsize, lensize = sb.offset_size, sb.length_size
     filters, shape, chunks = tuple(filters), tuple(shape), tuple(chunks)
-    if layout_version not in (4, 5) or not 1 <= len(chunks) <= 5:
-        raise UnsupportedFormat("fixed array requires a version-4/5 layout of rank one through five")
+    if layout_version not in (4, 5) or not 1 <= len(chunks) <= 32:
+        raise UnsupportedFormat("fixed array requires a version-4/5 layout of rank one through 32")
     if (not isinstance(count, int) or count < 1 or count > min(reader.max_chunks, max_chunks)
             or count != len(coordinates)):
         raise UnsupportedFormat("fixed-array chunk capacity exceeds parser limit or coordinate grid")
@@ -123,9 +124,11 @@ def read_fixed_array_variants(
     grid = tuple((extent + width - 1) // width for extent, width in zip(shape, chunks))
     if count != prod(grid):
         raise FormatError("fixed-array capacity disagrees with selected row-major grid")
-    expected = tuple(tuple(i * width for i, width in zip(cell, chunks))
-                     for cell in product(*(range(extent) for extent in grid)))
-    if coordinates != expected:
+    if isinstance(coordinates, RowMajorCoordinates):
+        if coordinates.grid != grid or coordinates.chunks != chunks:
+            raise FormatError("fixed-array coordinates disagree with selected row-major grid")
+    elif any(coordinates[linear] != tuple(i * width for i, width in zip(cell, chunks))
+             for linear, cell in enumerate(product(*(range(extent) for extent in grid)))):
         raise FormatError("fixed-array coordinates disagree with selected row-major grid")
     if not isinstance(layout_page_bits, int) or not 0 <= layout_page_bits <= 31:
         raise UnsupportedFormat("fixed-array page bits exceed parser limit")
@@ -154,7 +157,7 @@ def read_fixed_array_variants(
     def reserve(address: int, length: int, label: str) -> int:
         start = reader.absolute(address)
         end = start + length
-        if length < 1 or length > MAX_READ_BYTES or end > sb.eof_address:
+        if length < 1 or length > reader.max_read_bytes or end > sb.eof_address:
             raise UnsupportedFormat("fixed-array metadata size exceeds bounded source")
         for before, after, kind in (*reader.metadata_ranges, *seen_ranges):
             if start < after and before < end:
@@ -191,7 +194,7 @@ def read_fixed_array_variants(
     bitmap_bytes = (pages + 7) // 8
     prefix_size = 10 + offsize + bitmap_bytes if paged else 10 + offsize
     block_size = prefix_size + (count * entry_size + pages * 4 if paged else count * entry_size)
-    if block_size > MAX_READ_BYTES:
+    if block_size > reader.max_read_bytes:
         raise UnsupportedFormat("fixed-array data block exceeds bounded read limit")
     block_absolute = reserve(data_block, prefix_size if paged else block_size,
                              "fixed-array data block")

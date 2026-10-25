@@ -14,7 +14,6 @@ import h5py
 import numpy as np
 
 from h5reclaim.chunk_truncation import recover_truncated
-from h5reclaim.format import UnsupportedFormat
 from h5reclaim.modern_indexes import ModernH5File
 
 
@@ -90,16 +89,17 @@ class RankFiveTruncationTests(unittest.TestCase):
         self.assertEqual(report["datasets_exported"], 1)
         self.assert_exact_survivors(report["datasets"][0]["report"], damaged)
 
-    def test_rank_five_non_fixed_index_remains_outside_raw_parser(self) -> None:
+    def test_rank_five_non_fixed_index_has_checked_coordinates(self) -> None:
         self.make_source(maxshape=(None, None, 2, 2, 4))
         with h5py.File(self.source) as handle, ModernH5File(self.source) as reader:
             selected = handle["science"]
-            with self.assertRaisesRegex(UnsupportedFormat, "rank-five.*fixed-array"):
-                reader.read_index(
-                    int(h5py.h5o.get_info(selected.id).addr), selected.shape,
-                    selected.chunks, selected.dtype.itemsize,
-                    maxshape=selected.maxshape, filters=(1, 3),
-                )
+            index = reader.read_index(
+                int(h5py.h5o.get_info(selected.id).addr), selected.shape,
+                selected.chunks, selected.dtype.itemsize,
+                maxshape=selected.maxshape, filters=(1, 3),
+            )
+            self.assertIn(index.index_type, ("extensible_array", "v2_btree"))
+            self.assertEqual(len({chunk.coordinate for chunk in index.chunks}), len(index.chunks))
 
 
 if __name__ == "__main__":
