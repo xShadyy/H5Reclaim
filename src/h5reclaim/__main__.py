@@ -368,6 +368,7 @@ def main(argv: list[str] | None = None) -> int:
             command.add_argument("--length", type=int, default=64)
     report_cmd = commands.add_parser("report", help="summarize an existing evidence JSON report and its status-map paths")
     report_cmd.add_argument("report", type=Path, help="evidence JSON produced by rescue, recover or export-readable")
+    report_cmd.add_argument("--html", type=Path, help="also write a new self-contained HTML report")
     result_cmd = commands.add_parser(
         "verify-result", help="check a saved recovery report against its output and validity maps",
         description=("Check report, schema and validity-map consistency in a bounded HDF5 worker. "
@@ -673,6 +674,10 @@ def main(argv: list[str] | None = None) -> int:
                     or report.get("schema_version") != 1 or report.get("outcome") not in ("complete", "partial")):
                 raise RecoveryError("expected a H5Reclaim recovery evidence report with schema_version 1")
             print(_render_report(report))
+            if args.html:
+                from .html_report import write_html_report
+                write_html_report(args.report, args.html)
+                print(f"HTML report: {_display_path(args.html, 240)}")
             return 0
         except (RecoveryError, OSError, ValueError, RuntimeError, KeyError, TypeError, AttributeError) as exc:
             print(f"h5reclaim: report summary failed: {_display_path(exc, 300)}", file=sys.stderr)
