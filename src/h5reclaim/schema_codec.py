@@ -31,6 +31,13 @@ KNOWN_FILTERS = frozenset((h5py.h5z.FILTER_SHUFFLE,
                              h5py.h5z.FILTER_DEFLATE,
                              h5py.h5z.FILTER_FLETCHER32,
                              h5py.h5z.FILTER_LZF))
+# These HDF5 built-ins need dataset type and creation-property context to
+# reverse. Reconstruct that context from the checked source schema inside a
+# bounded, in-memory single-chunk dataset rather than interpreting their
+# persisted filter parameters as an independent byte-stream format.
+NATIVE_BUILTIN_FILTERS = frozenset((h5py.h5z.FILTER_NBIT,
+                                    h5py.h5z.FILTER_SCALEOFFSET,
+                                    h5py.h5z.FILTER_SZIP))
 
 
 class SchemaError(ValueError):
@@ -409,7 +416,10 @@ def decode_chunk(raw: bytes, spec: object, filter_mask: int, *,
     if extra:
         from .filter_registry import register_optional
         registered = register_optional()
-        if extra <= registered.keys():
+        native = {identifier for identifier in extra & NATIVE_BUILTIN_FILTERS
+                  if h5py.h5z.filter_avail(identifier) and
+                  h5py.h5z.get_filter_info(identifier) & h5py.h5z.FILTER_CONFIG_DECODE_ENABLED}
+        if extra <= registered.keys() | native:
             return _decode_packaged_chunk(raw, spec, filter_mask, pipeline, chunk_bytes)
     # Decoder availability is a property of the declared pipeline, not an
     # inference from what a later checksum or decompressor does to these
