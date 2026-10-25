@@ -370,6 +370,17 @@ def main(argv: list[str] | None = None) -> int:
     batch_cmd.add_argument("--html", action="store_true")
     batch_cmd.add_argument("--fail-on-partial", action="store_true")
     batch_cmd.add_argument("--streaming-budget", type=Path)
+    capture_meta_cmd = commands.add_parser("capture-metadata", help="capture checked full-file metadata before damage")
+    capture_meta_cmd.add_argument("source", type=Path)
+    capture_meta_cmd.add_argument("--output", required=True, type=Path, help="new independent metadata snapshot ZIP")
+    capture_meta_cmd.add_argument("--streaming-budget", type=Path)
+    restore_meta_cmd = commands.add_parser("restore-metadata", help="restore captured metadata to a new copy if other bytes match")
+    restore_meta_cmd.add_argument("source", type=Path)
+    restore_meta_cmd.add_argument("snapshot", type=Path)
+    restore_meta_cmd.add_argument("--snapshot-sha256", required=True, help="independently retained digest of the earlier snapshot")
+    restore_meta_cmd.add_argument("--output", required=True, type=Path)
+    restore_meta_cmd.add_argument("--report", required=True, type=Path)
+    restore_meta_cmd.add_argument("--streaming-budget", type=Path)
     plan_cmd = commands.add_parser("plan-repair", help="create an exact metadata repair plan without changing the source")
     plan_cmd.add_argument("source", type=Path)
     plan_cmd.add_argument("--output", required=True, type=Path)
@@ -654,6 +665,22 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if result["passed"] else 1
         except (OSError, ValueError, RuntimeError, TypeError) as exc:
             print(f"h5reclaim: batch failed: {_display_path(exc, 300)}", file=sys.stderr)
+            return 2
+
+    if args.command in ("capture-metadata", "restore-metadata"):
+        try:
+            from .metadata_snapshot import capture_metadata_snapshot, restore_metadata_snapshot
+            from .large_streaming import LargeBudget
+            options = json.loads(args.streaming_budget.read_text()) if args.streaming_budget else {}
+            budget = LargeBudget(**options)
+            result = (capture_metadata_snapshot(args.source, args.output, budget=budget)
+                      if args.command == "capture-metadata" else
+                      restore_metadata_snapshot(args.source, args.snapshot, args.snapshot_sha256,
+                                                args.output, args.report, budget=budget))
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 0
+        except (OSError, ValueError, RuntimeError, TypeError, KeyError) as exc:
+            print(f"h5reclaim: metadata snapshot failed: {_display_path(exc, 300)}", file=sys.stderr)
             return 2
 
     if args.command in ("plan-repair", "apply-repair", "explain-plan"):
