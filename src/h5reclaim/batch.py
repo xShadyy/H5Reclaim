@@ -23,7 +23,7 @@ def _save(path, record):
 
 
 def batch_rescue(sources, output_dir, summary_path, *, jobs=1, resume=False,
-                 budget=None, html=False, fail_on_partial=False):
+                 budget=None, fail_on_partial=False):
     budget = budget or LargeBudget()
     from dataclasses import asdict
     from .recovery import VERSION
@@ -106,9 +106,6 @@ def batch_rescue(sources, output_dir, summary_path, *, jobs=1, resume=False,
             item["outcome"] = evidence["outcome"]
             item["output_fingerprint"] = file_digest(output, max_bytes=budget.max_output_bytes)
             item["report_fingerprint"] = file_digest(report, max_bytes=32 << 20)
-            if html:
-                from .html_report import write_html_report
-                write_html_report(report, folder / "report.html")
         except Exception as exc:
             item.update(outcome="failed", reason=f"{type(exc).__name__}: {exc}"[:4000])
         return item
