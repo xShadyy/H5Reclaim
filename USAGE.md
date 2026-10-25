@@ -18,13 +18,14 @@ the input. Select a dataset when its path is known:
 
 ```sh
 h5reclaim rescue damaged.h5 --dataset /experiment/measurements --output recovered.h5 --report recovery.json
-h5reclaim report recovery.json --html recovery.html
+h5reclaim report recovery.json
 h5reclaim doctor
 h5reclaim capabilities
 ```
 
-The HTML report is self-contained and searchable. It summarizes the saved
-JSON evidence without opening the input or rechecking the recovered file.
+`damaged.h5` stands for an existing input file; replace it and the dataset
+path with your own. Run `report` after `rescue` has created `recovery.json`.
+The terminal summary reads the saved JSON evidence without reopening the input.
 
 Install optional codecs or the alternative reader from the checkout:
 
@@ -260,7 +261,7 @@ representation; follow their route-specific evidence instead.
 ## Batches and Python integration
 
 ```sh
-h5reclaim batch-rescue first.h5 second.h5 --output-dir recovered --summary batch.json --jobs 2 --html
+h5reclaim batch-rescue first.h5 second.h5 --output-dir recovered --summary batch.json --jobs 2
 h5reclaim batch-rescue first.h5 second.h5 --output-dir recovered --summary batch.json --resume
 ```
 
@@ -279,7 +280,7 @@ report = rescue("damaged.h5", dataset="/experiment/measurements")
 ```
 
 The API accepts explicit output/report paths, a budget dictionary or
-`LargeBudget`, a resume directory and an optional HTML destination.
+`LargeBudget`, and a resume directory.
 
 ## Alternative-reader exports
 

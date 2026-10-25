@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.1
+
+- Remove HTML report generation from the CLI, batch command and Python API.
+  JSON evidence reports, terminal summaries and result verification remain.
+- Clarify that example input names must be replaced with existing files.
+
 ## 1.3.0
 
 - Repair two damaged child pointers within one independently checked EAIB,

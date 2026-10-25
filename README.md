@@ -39,6 +39,9 @@ python -m pip install .
 python -m h5reclaim rescue "damaged.h5"
 ```
 
+The filename above is an example. Replace it with the path to an existing HDF5
+file, quoting paths that contain spaces.
+
 ## Understand the result
 
 The terminal summary shows complete or partial recovery and lists your output locations. The JSON report identifies recovered datasets, recovery methods, unresolved positions, and restored metadata.
