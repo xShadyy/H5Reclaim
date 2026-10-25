@@ -52,8 +52,8 @@ h5reclaim rescue damaged.h5 --dataset /experiment/measurements --large-structura
 | Index families | Fixed array, extensible array, v2 B-tree |
 | Rank | 1 through 32 when the observed index family and HDF5 layout permit |
 | Records | Bounded fixed-width records, including nested compounds, arrays, enums, opaque and fixed strings; no heap pointers or object references in this route |
-| Filters | gzip, shuffle, Fletcher32, LZF and supported installed hdf5plugin codecs |
-| Damage | Multiple broken links in distinct metadata parents, each uniquely justified by restoration of that parent's original checksum; nested damage that prevents independent child validation is refused |
+| Filters | gzip, shuffle, Fletcher32, LZF, N-bit, scale-offset, SZIP when the native decoder is available, and supported installed hdf5plugin codecs |
+| Damage | Up to two independently checked broken links per EA or B-tree metadata parent, with a unique assignment restoring its original checksum; nested damage that prevents independent child validation is refused |
 | Chunk grid | The configured chunk and grid quotas, with an additional memory reserve that depends on the observed index family |
 | Decoded chunk | At most 64 MiB, subject to the configured budget |
 | Partial edges | Cropped to the declared dataset shape |
@@ -63,6 +63,8 @@ h5reclaim rescue damaged.h5 --dataset /experiment/measurements --large-structura
 Schema, checked index structures, allocation bounds and competing ownership
 are checked before values are accepted. The output stores decoded chunks
 without source compression and records physical ranges and payload digests.
+Scale-offset may have discarded precision when the source was written;
+recovery reproduces the file's stored decoded values.
 
 Default streaming quotas include a 64 GiB source, 8 GiB of physically copied
 source data, 16 GiB of logical selected data, 18 GiB output, and an 8 GiB
@@ -154,16 +156,17 @@ chunk-layout element widths and depth-zero B-tree record totals. Resealing
 establishes current structural coherence. It cannot establish that the bytes
 match their historical values. Unresolved plans are saved for inspection
 with `executable: false`; they cannot be applied. Arbitrary missing metadata,
-other free-space encodings and unconstrained checksum rewriting are outside
+unrecognized free-space encodings and unconstrained checksum rewriting are outside
 the implemented catalog. Use `capabilities` for the exact list.
 
-The file-space repair case covers a rooted version-1 file-space declaration
-and version-0 file-client FSHD/FSSE structures. It checks header and section
-checksums, their reciprocal owner, counts and allocation bounds. The repair
-uses the original checksum where a unique correction exists. The optional
-reseal mode requires checked surviving structure; it does not recover the
-historical free-space list if its content is missing. Other manager encodings
-remain outside this repair case.
+The file-space repair cases cover rooted version-0 and version-1 declarations,
+nonpersistent layouts, and version-0 file-client FSHD/FSSE managers including
+the supported paged small and large section types. They check header and
+section checksums, reciprocal owner, counts and allocation bounds. The repair
+can restore a checked declaration before walking its managers. It uses the
+original checksum where a unique correction exists; explicit resealing needs
+checked surviving structure. Missing historical free-space sections cannot
+be inferred from an absent section list.
 
 ## Restore captured metadata after later damage
 
@@ -190,14 +193,12 @@ h5reclaim discover damaged.h5 --json
 h5reclaim rescue damaged.h5 --output rebuilt.h5 --report rebuilt.json
 ```
 
-Whole-file rescue can export a detached modern group whose own checked header
-still contains unambiguous local links to independently validated child
-groups and datasets. It places the group under
-`/recovered/group_<address>` and preserves checked names inside that group.
-The lost parent name is not inferred. Cyclic, dangling, shared or conflicting
-trees are not assigned a group path; checked datasets may still be exported
-individually by object address. Detached group attributes are reported as
-omitted.
+Whole-file rescue can export checked detached modern groups under
+`/recovered/group_<address>`, retaining checked names, shared hard-link
+aliases and representable group cycles. A dangling or conflicting child edge
+is recorded as omitted while independently checked sibling objects can still
+be exported. The lost parent name is never inferred; detached group
+attributes are reported as omitted.
 
 ## Verify results and use accepted measurements
 
