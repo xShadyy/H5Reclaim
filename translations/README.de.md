@@ -20,6 +20,8 @@ H5Reclaim stellt wissenschaftliche Daten aus beschädigten HDF5-Dateien wieder h
 
 Die Version 1.0.0 erzielte **95.4% nützliche Wiederherstellungen in 109 kontrollierten Versuchen mit beschädigten Dateien**: 77 vollständig exakte und 27 teilweise Wiederherstellungen, ohne einen einzigen fälschlich akzeptierten Wert in dieser Versuchsreihe. Diese generierten Versuche messen die angegebenen Fehlerklassen und lassen keine erwartete Erfolgsquote für andere Dateien erkennen. [Ergebnisse ansehen](https://github.com/xShadyy/H5Reclaim/blob/main/benchmarks/results/v100rc1-release-coverage.json).
 
+Der [Benutzerleitfaden](../USAGE.md) beschreibt die Inspektions- und Reparaturwerkzeuge, unterstützte Formate, die Überprüfung und die Stapelverarbeitung.
+
 <a id="quick-start"></a>
 ## Schnellstart
 

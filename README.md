@@ -19,6 +19,8 @@ H5Reclaim recovers scientific data from damaged HDF5 files. It brings surviving 
 
 The 1.0.0 release achieved **95.4% useful recovery across 109 controlled damaged-file trials**: 77 fully exact recoveries and 27 partial recoveries, with zero wrong accepted values in this panel. [Explore the results](https://github.com/xShadyy/H5Reclaim/blob/main/benchmarks/results/v100rc1-release-coverage.json).
 
+See the [usage guide](USAGE.md) for the recovery workbench, supported formats, verification, and batch workflows.
+
 ## Quick start
 
 You need Python 3.10 or newer. Clone this repository, or download and extract its ZIP from GitHub:

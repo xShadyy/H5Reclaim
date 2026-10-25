@@ -20,6 +20,8 @@ H5Reclaim 可从损坏的 HDF5 文件中恢复科学数据。对于写入中断�
 
 1.0.0 版本在 **109 次受控损坏文件试验中实现了 95.4% 的可用恢复率**：其中 77 次完全精确恢复，27 次部分恢复；在这组试验中，已接受的值没有错误。这些生成的试验只衡量所声明的故障类别，不能作为其他文件的预期成功率。[查看结果](https://github.com/xShadyy/H5Reclaim/blob/main/benchmarks/results/v100rc1-release-coverage.json)。
 
+有关检查与修复工具、支持的格式、验证和批量处理，请参阅[使用指南](../USAGE.md)。
+
 <a id="quick-start"></a>
 ## 快速开始
 
