@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -340,6 +341,24 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
     commands = parser.add_subparsers(dest="command", required=True, metavar="COMMAND", title="commands")
+    alternative_cmd = commands.add_parser("export-alternative", help="export through optional Pyfive with explicit cross-reader or candidate statuses")
+    alternative_cmd.add_argument("source", type=Path)
+    alternative_cmd.add_argument("--dataset", required=True, type=_dataset_path)
+    alternative_cmd.add_argument("--output", required=True, type=Path)
+    alternative_cmd.add_argument("--report", required=True, type=Path)
+    alternative_cmd.add_argument("--streaming-budget", type=Path)
+    for name in ("copy", "repack"):
+        command = commands.add_parser(name, help=f"run official h5{name} on a disposable source copy")
+        command.add_argument("source", type=Path)
+        command.add_argument("--output", required=True, type=Path)
+        command.add_argument("--report", required=True, type=Path)
+        command.add_argument("--streaming-budget", type=Path)
+        if name == "copy":
+            command.add_argument("--dataset", required=True, type=_dataset_path)
+            command.add_argument("--destination-path", type=_dataset_path)
+        else:
+            command.add_argument("--compression", choices=("none", "gzip"))
+            command.add_argument("--level", type=int, default=6)
     commands.add_parser("doctor", help="show installed dependencies, optional readers and HDF5 tools")
     batch_cmd = commands.add_parser("batch-rescue", help="recover multiple files with bounded jobs and verified resumption")
     batch_cmd.add_argument("sources", nargs="+", type=Path)
@@ -586,6 +605,31 @@ def main(argv: list[str] | None = None) -> int:
                  or Path(arguments[0]).suffix.lower() in (".h5", ".hdf5", ".he5"))):
         arguments.insert(0, "rescue")
     args = parser.parse_args(arguments)
+
+    if args.command == "export-alternative":
+        try:
+            options = json.loads(args.streaming_budget.read_text()) if args.streaming_budget else {}
+            result = run_route("alternative_reader", args.output, args.report, source=str(args.source),
+                dataset=args.dataset, streaming_budget=json.dumps(options))
+            print(_render_report(result))
+            return 0
+        except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
+            print(f"h5reclaim: alternative export failed: {_display_path(exc, 300)}", file=sys.stderr)
+            return 2
+
+    if args.command in ("copy", "repack"):
+        try:
+            from .external_tools import export_with_tool
+            from .large_streaming import LargeBudget
+            options = json.loads(args.streaming_budget.read_text()) if args.streaming_budget else {}
+            result = export_with_tool(args.source, args.output, args.report, operation=args.command,
+                dataset=getattr(args, "dataset", None), destination_path=getattr(args, "destination_path", None),
+                compression=getattr(args, "compression", None), level=getattr(args, "level", 6), budget=LargeBudget(**options))
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 0
+        except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
+            print(f"h5reclaim: official HDF5 operation failed: {_display_path(exc, 300)}", file=sys.stderr)
+            return 2
 
     if args.command == "doctor":
         from .doctor import doctor

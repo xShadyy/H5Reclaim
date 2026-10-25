@@ -25,7 +25,7 @@ ROUTES = frozenset({
     "truncated_chunks", "large_readable", "large_structural", "structural", "element_baseline", "chunk_baseline", "readable", "protection",
     "variable_readable",
     "native_stream",
-    "object", "native_family", "native_split",
+    "object", "native_family", "native_split", "alternative_reader",
 })
 
 
@@ -191,6 +191,10 @@ def _child(request_path: Path, response_path: Path) -> int:
             from .variable_readable import export_variable
             export_variable(args["source"], args["dataset"], output, report,
                             published_output=request["published_output"])
+        elif route == "alternative_reader":
+            from .alternative_reader import export_alternative
+            export_alternative(args["source"], args["dataset"], output, report,
+                budget=budget, published_output=request["published_output"])
         elif route == "large_structural":
             from .large_streaming import LargeBudget
             from .large_structural import recover_large_structural

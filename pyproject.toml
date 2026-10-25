@@ -33,6 +33,7 @@ Issues = "https://github.com/xShadyy/H5Reclaim/issues"
 
 [project.optional-dependencies]
 filters = ["hdf5plugin>=5"]
+readers = ["pyfive>=1.1.2,<2"]
 applications = ["hdf5storage>=0.2", "netCDF4>=1.7", "pynwb>=3"]
 
 [project.scripts]
