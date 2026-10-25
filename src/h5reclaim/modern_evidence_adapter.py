@@ -121,8 +121,7 @@ def _build(
     )
     source = SourceRecord(source_id, reader.size, source_sha256)
     repair_by_offset: dict[int, dict[str, object]] = {}
-    if len(index.reconstructed_links) > 1:
-        raise ModernEvidenceError("more than one reconstructed modern index link")
+    repaired_parents: set[int] = set()
     for repair in index.reconstructed_links:
         parent_address = repair.get("source_address")
         child_address = repair.get("target_address")
@@ -133,7 +132,7 @@ def _build(
         if (not all(isinstance(v, int) for v in
                     (parent_address, child_address, offset, checksum_offset))
                 or not isinstance(parent_kind, str) or not isinstance(child_kind, str)
-                or offset in repair_by_offset):
+                or offset in repair_by_offset or parent_address in repaired_parents):
             raise ModernEvidenceError("invalid reconstructed index link evidence")
         parent_start = reader.absolute(parent_address)
         child_start = reader.absolute(child_address)
@@ -153,6 +152,7 @@ def _build(
                 or lookup3(patched[:-4]) != wanted):
             raise ModernEvidenceError("one index link does not restore original parent checksum")
         repair_by_offset[offset] = repair
+        repaired_parents.add(parent_address)
 
     def checked_repair(offset: int, target: int, parent: int) -> bool:
         repair = repair_by_offset.get(offset)

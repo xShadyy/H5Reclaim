@@ -1,4 +1,4 @@
-"""Bounded enumeration of possible children for a *single* broken checked link.
+"""Bounded enumeration of candidate children for checked broken links.
 
 Scanning supplies candidates, never ownership. Callers must prove that replacing
 only the parent pointer restores its original checksum, that the child has the
@@ -77,13 +77,17 @@ def _scan_extents(reader: ModernH5File) -> Iterator[tuple[int, int]]:
 
 
 def candidate_addresses(reader: ModernH5File, signature: bytes) -> Iterator[int]:
-    """Yield relative addresses of matching signatures within a fixed scan cap."""
+    """Yield candidate addresses under cumulative reader scan byte/time quotas."""
     if len(signature) != 4:
         raise ValueError("candidate signature must be four bytes")
     large_scan = bool(getattr(reader, "large_sparse_scan", False))
     if reader.size > MAX_REPAIR_SCAN_BYTES and not large_scan:
         raise UnsupportedFormat("modern index link reconstruction scan exceeds 512 MiB limit")
-    deadline = time.monotonic() + getattr(reader, "repair_scan_seconds", MAX_LARGE_SCAN_SECONDS)
+    deadline = getattr(reader, "_repair_scan_deadline", None)
+    if deadline is None:
+        deadline = time.monotonic() + getattr(reader, "repair_scan_seconds", MAX_LARGE_SCAN_SECONDS)
+        reader._repair_scan_deadline = deadline
+    byte_limit = getattr(reader, "repair_scan_bytes", MAX_REPAIR_SCAN_BYTES)
     candidates = 0
     extents = (_scan_extents(reader) if large_scan else
                ((0, min(reader.size, reader.superblock.eof_address)),))
@@ -92,7 +96,12 @@ def candidate_addresses(reader: ModernH5File, signature: bytes) -> Iterator[int]
         for start in range(extent_start, extent_end, REPAIR_SCAN_BLOCK):
             if time.monotonic() > deadline:
                 raise UnsupportedFormat("checked-link signature scan exceeded 180 seconds")
-            data = reader._read_absolute(start, min(REPAIR_SCAN_BLOCK, extent_end - start))
+            length = min(REPAIR_SCAN_BLOCK, extent_end - start)
+            spent = getattr(reader, "_repair_scan_cumulative_bytes", 0)
+            if length > byte_limit - spent:
+                raise UnsupportedFormat("checked-link scans exceed the cumulative byte budget")
+            reader._repair_scan_cumulative_bytes = spent + length
+            data = reader._read_absolute(start, length)
             window = previous + data
             base = start - len(previous)
             at = window.find(signature)

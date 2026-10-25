@@ -6,10 +6,11 @@ BTIN, or BTLF signature never establishes ownership. Each returned record is
 supported by a checked header, a chain of checked child pointers and counts,
 its exact record slot, and a coordinate consistent with the selected layout.
 
-One BTHD root or BTIN child pointer can be reconstructed when substituting
-only that pointer restores the original parent checksum and a unique checked
-node completes the tree consistently. It refuses an inconsistent tree as a
-whole. It does not decode filters or interpret scientific datatypes.
+Multiple distinct metadata parents can each have one pointer reconstructed
+when substituting that pointer restores its original parent checksum and a
+unique checked child completes the tree consistently. It refuses an
+inconsistent tree as a whole. It does not decode filters or interpret
+scientific datatypes.
 
 HDF5 specification, III.A.2, B-tree types 10/11:
 https://support.hdfgroup.org/documentation/hdf5/latest/_f_m_t4.html
@@ -156,8 +157,8 @@ def read_v2_btree_chunks(
     filters = tuple(filters)
     if layout_version not in (4, 5):
         raise UnsupportedFormat("v2 B-tree chunk index requires layout version 4 or 5")
-    if len(shape) not in (1, 2, 3, 4) or len(chunk_shape) != len(shape):
-        raise UnsupportedFormat("v2 B-tree chunk index requires rank 1 through 4")
+    if not 1 <= len(shape) <= 32 or len(chunk_shape) != len(shape):
+        raise UnsupportedFormat("v2 B-tree chunk index requires rank 1 through 32")
     if any(not isinstance(x, int) or x < 0 for x in shape):
         raise FormatError("invalid dataset dimensions")
     if any(not isinstance(x, int) or x <= 0 for x in (*chunk_shape, element_size)):
@@ -362,7 +363,7 @@ def read_v2_btree_chunks(
             raise FormatError("v2 B-tree node records cross node boundary")
         observed_checksum = _uint(node[checksum_start:checksum_start + 4])
         if lookup3(node[:checksum_start]) != observed_checksum:
-            if not level or reconstructed_links:
+            if not level:
                 raise FormatError("v2 B-tree node checksum mismatch")
             child_nrec_width = _width(max_records[level - 1])
             child_total_width = _width(max_subtree[level - 1]) if level > 1 else 0
