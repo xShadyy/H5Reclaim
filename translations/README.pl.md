@@ -5,7 +5,7 @@
 <p align="center">
   <a href="../pyproject.toml"><img alt="Python 3.10+" src="https://img.shields.io/badge/Python-3.10%2B-3559F0?style=flat-square&amp;logo=python&amp;logoColor=white"></a>
   <a href="../LICENSE"><img alt="Licencja: Apache 2.0" src="https://img.shields.io/badge/License-Apache%202.0-263557?style=flat-square"></a>
-  <a href="https://github.com/xShadyy/H5Reclaim/blob/main/benchmarks/results/v100rc1-release-coverage.json"><img alt="Kontrolowany test: 95.4% użytecznych odzysków" src="https://img.shields.io/badge/Controlled%20benchmark-95.4%25-3559F0?style=flat-square"></a>
+  <a href="https://github.com/xShadyy/H5Reclaim/blob/main/benchmarks/results/v130-release-coverage.json"><img alt="Kontrolowany test: 95.4% użytecznych odzysków" src="https://img.shields.io/badge/Controlled%20benchmark-95.4%25-3559F0?style=flat-square"></a>
 </p>
 
 <p align="center">
@@ -18,7 +18,7 @@ H5Reclaim odzyskuje dane naukowe z uszkodzonych plików HDF5. Przenosi zachowane
 
 **Jedno polecenie wykrywa zbiory danych, dobiera metody odzyskiwania i tworzy nowy plik HDF5 wraz z przejrzystym raportem JSON.** Oryginał pozostaje nietknięty. H5Reclaim zachowuje odczytywalne pomiary z częściowo uszkodzonych zbiorów danych i kontynuuje odzyskiwanie pozostałej części pliku.
 
-W 109 kontrolowanych próbach z uszkodzonymi plikami wersja 1.2.0 dała 104 użyteczne wyniki: 77 w pełni zgodnych i 27 częściowych. Pięć prób zakończyło się odmową, a żadna błędna wartość nie została zaakceptowana. Wynik jest taki sam jak w zestawie prób wersji 1.0.0. [Wyniki wersji 1.2.0](../benchmarks/results/v120-release-coverage.json).
+W 109 kontrolowanych próbach z uszkodzonymi plikami wersja 1.3.0 dała 104 użyteczne wyniki: 77 w pełni zgodnych i 27 częściowych. Pięć prób zakończyło się odmową, a żadna błędna wartość nie została zaakceptowana. Wynik jest taki sam jak w zestawie prób wersji 1.0.0. [Wyniki wersji 1.3.0](../benchmarks/results/v130-release-coverage.json).
 
 Wersja 1.3.0 naprawia dwa uszkodzone łącza w tym samym węźle indeksu, przenosi wybrane wartości o zmiennej długości i referencje, obejmuje więcej struktur wolnej przestrzeni oraz zachowuje potwierdzone aliasy odłączonych grup. W [dziesięciu kontrolowanych przypadkach skompresowanych danych](../benchmarks/results/v130-streaming-recovery.json), w tym z dwoma łączami w jednym węźle, nie zaakceptowano błędnych wartości.
 

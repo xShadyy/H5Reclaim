@@ -5,7 +5,7 @@
 <p align="center">
   <a href="../pyproject.toml"><img alt="Python 3.10+" src="https://img.shields.io/badge/Python-3.10%2B-3559F0?style=flat-square&amp;logo=python&amp;logoColor=white"></a>
   <a href="../LICENSE"><img alt="Licencia: Apache 2.0" src="https://img.shields.io/badge/License-Apache%202.0-263557?style=flat-square"></a>
-  <a href="https://github.com/xShadyy/H5Reclaim/blob/main/benchmarks/results/v100rc1-release-coverage.json"><img alt="Evaluación controlada: 95,4 % de recuperaciones útiles" src="https://img.shields.io/badge/Controlled%20benchmark-95.4%25-3559F0?style=flat-square"></a>
+  <a href="https://github.com/xShadyy/H5Reclaim/blob/main/benchmarks/results/v130-release-coverage.json"><img alt="Evaluación controlada: 95,4 % de recuperaciones útiles" src="https://img.shields.io/badge/Controlled%20benchmark-95.4%25-3559F0?style=flat-square"></a>
 </p>
 
 <p align="center">
@@ -18,7 +18,7 @@ H5Reclaim recupera datos científicos de archivos HDF5 dañados. Reúne las medi
 
 **Un solo comando descubre los conjuntos de datos, selecciona los métodos de recuperación y crea un archivo HDF5 nuevo con un informe JSON claro.** El archivo original permanece intacto. H5Reclaim conserva las mediciones legibles de conjuntos de datos parcialmente dañados y sigue recuperando el resto del archivo.
 
-En 109 pruebas controladas con archivos dañados, la versión 1.2.0 produjo 104 resultados útiles: 77 recuperaciones completamente exactas y 27 parciales. Rechazó cinco casos y no aceptó ningún valor incorrecto. Es el mismo resultado que en la prueba anterior de la versión 1.0.0. [Resultados de 1.2.0](../benchmarks/results/v120-release-coverage.json).
+En 109 pruebas controladas con archivos dañados, la versión 1.3.0 produjo 104 resultados útiles: 77 recuperaciones completamente exactas y 27 parciales. Rechazó cinco casos y no aceptó ningún valor incorrecto. Es el mismo resultado que en la prueba anterior de la versión 1.0.0. [Resultados de 1.3.0](../benchmarks/results/v130-release-coverage.json).
 
 La versión 1.3.0 repara dos enlaces dañados en un mismo nodo de índice comprobado, traslada ciertos valores de longitud variable y referencias, cubre más estructuras de espacio libre y conserva alias comprobados de grupos desconectados. La [prueba independiente de diez casos comprimidos](../benchmarks/results/v130-streaming-recovery.json), incluidos fallos en el mismo nodo, no aceptó valores incorrectos.
 

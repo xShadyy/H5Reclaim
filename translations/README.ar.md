@@ -5,7 +5,7 @@
 <p align="center">
   <a href="../pyproject.toml"><img alt="Python 3.10+" src="https://img.shields.io/badge/Python-3.10%2B-3559F0?style=flat-square&amp;logo=python&amp;logoColor=white"></a>
   <a href="../LICENSE"><img alt="الترخيص: Apache 2.0" src="https://img.shields.io/badge/License-Apache%202.0-263557?style=flat-square"></a>
-  <a href="https://github.com/xShadyy/H5Reclaim/blob/main/benchmarks/results/v100rc1-release-coverage.json"><img alt="اختبار مضبوط: استعادة مفيدة بنسبة 95.4%" src="https://img.shields.io/badge/Controlled%20benchmark-95.4%25-3559F0?style=flat-square"></a>
+  <a href="https://github.com/xShadyy/H5Reclaim/blob/main/benchmarks/results/v130-release-coverage.json"><img alt="اختبار مضبوط: استعادة مفيدة بنسبة 95.4%" src="https://img.shields.io/badge/Controlled%20benchmark-95.4%25-3559F0?style=flat-square"></a>
 </p>
 
 <p align="center">
@@ -18,7 +18,7 @@
 
 **بأمر واحد، يكتشف مجموعات البيانات، ويختار طرائق الاستعادة، وينشئ ملف HDF5 جديدًا مع تقرير JSON واضح.** يبقى الملف الأصلي دون تغيير. ويحتفظ H5Reclaim بالقياسات القابلة للقراءة من مجموعات البيانات المتضررة جزئيًا، ثم يواصل استعادة بقية الملف.
 
-في 109 تجارب مضبوطة على ملفات تالفة، قدّم الإصدار 1.2.0 نتائج مفيدة في 104 حالات: 77 استعادة دقيقة بالكامل و27 استعادة جزئية. رُفضت خمس حالات ولم تُقبل أي قيمة خاطئة. هذه هي نتيجة المجموعة نفسها في الاختبار السابق للإصدار 1.0.0. [نتائج 1.2.0](../benchmarks/results/v120-release-coverage.json).
+في 109 تجارب مضبوطة على ملفات تالفة، قدّم الإصدار 1.3.0 نتائج مفيدة في 104 حالات: 77 استعادة دقيقة بالكامل و27 استعادة جزئية. رُفضت خمس حالات ولم تُقبل أي قيمة خاطئة. هذه هي نتيجة المجموعة نفسها في الاختبار السابق للإصدار 1.0.0. [نتائج 1.3.0](../benchmarks/results/v130-release-coverage.json).
 
 يدعم الإصدار 1.3.0 إصلاح رابطين تالفين داخل عقدة فهرس واحدة جرى التحقق منها، ونقل أنواع محددة من القيم متغيرة الطول والمراجع عبر HDF5، وتغطية مزيد من بُنى المساحة الحرة والحفاظ على روابط المجموعات المنفصلة التي ثبتت صحتها. في [اختبار منفصل لعشر حالات بيانات مضغوطة](../benchmarks/results/v130-streaming-recovery.json)، بينها تلف رابطين في العقدة نفسها، لم تُقبل أي قيمة خاطئة.
 

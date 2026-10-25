@@ -5,7 +5,7 @@
 <p align="center">
   <a href="../pyproject.toml"><img alt="Python 3.10+" src="https://img.shields.io/badge/Python-3.10%2B-3559F0?style=flat-square&amp;logo=python&amp;logoColor=white"></a>
   <a href="../LICENSE"><img alt="ライセンス：Apache 2.0" src="https://img.shields.io/badge/License-Apache%202.0-263557?style=flat-square"></a>
-  <a href="https://github.com/xShadyy/H5Reclaim/blob/main/benchmarks/results/v100rc1-release-coverage.json"><img alt="条件を制御したベンチマーク：95.4% で有用な復旧" src="https://img.shields.io/badge/Controlled%20benchmark-95.4%25-3559F0?style=flat-square"></a>
+  <a href="https://github.com/xShadyy/H5Reclaim/blob/main/benchmarks/results/v130-release-coverage.json"><img alt="条件を制御したベンチマーク：95.4% で有用な復旧" src="https://img.shields.io/badge/Controlled%20benchmark-95.4%25-3559F0?style=flat-square"></a>
 </p>
 
 <p align="center">
@@ -18,7 +18,7 @@ H5Reclaim は、破損した HDF5 ファイルから科学データを復旧し�
 
 **1 つのコマンドでデータセットを検出し、復旧方法を選択して、明確な JSON レポートとともに新しい HDF5 ファイルを作成します。** 元のファイルは変更しません。H5Reclaim は一部が破損したデータセットから読み取り可能な測定値を保持し、ファイルの残りの部分も復旧し続けます。
 
-破損ファイルを用いた管理された試験 109 件で、バージョン 1.2.0 は有用な結果を 104 件得ました。完全に正確な復旧は 77 件、部分的な復旧は 27 件で、5 件は復旧を見送り、誤った値は採用しませんでした。この結果は従来の 1.0.0 の同じ試験と同一です。[1.2.0 の結果](../benchmarks/results/v120-release-coverage.json)。
+破損ファイルを用いた管理された試験 109 件で、バージョン 1.3.0 は有用な結果を 104 件得ました。完全に正確な復旧は 77 件、部分的な復旧は 27 件で、5 件は復旧を見送り、誤った値は採用しませんでした。この結果は従来の 1.0.0 の同じ試験と同一です。[1.3.0 の結果](../benchmarks/results/v130-release-coverage.json)。
 
 バージョン 1.3.0 は、同じ検証済み索引ノード内の破損リンク 2 本を修復し、一部の可変長データと参照を HDF5 で移し替え、より多くの空き領域構造と検証済みの孤立グループの別名を扱います。同じノード内の障害を含む[別の圧縮データ試験 10 件](../benchmarks/results/v130-streaming-recovery.json)では、誤った値は採用されませんでした。
 

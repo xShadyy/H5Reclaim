@@ -5,7 +5,7 @@
 <p align="center">
   <a href="../pyproject.toml"><img alt="Python 3.10+" src="https://img.shields.io/badge/Python-3.10%2B-3559F0?style=flat-square&amp;logo=python&amp;logoColor=white"></a>
   <a href="../LICENSE"><img alt="Licence : Apache 2.0" src="https://img.shields.io/badge/License-Apache%202.0-263557?style=flat-square"></a>
-  <a href="https://github.com/xShadyy/H5Reclaim/blob/main/benchmarks/results/v100rc1-release-coverage.json"><img alt="Évaluation contrôlée : 95,4 % de récupérations utiles" src="https://img.shields.io/badge/Controlled%20benchmark-95.4%25-3559F0?style=flat-square"></a>
+  <a href="https://github.com/xShadyy/H5Reclaim/blob/main/benchmarks/results/v130-release-coverage.json"><img alt="Évaluation contrôlée : 95,4 % de récupérations utiles" src="https://img.shields.io/badge/Controlled%20benchmark-95.4%25-3559F0?style=flat-square"></a>
 </p>
 
 <p align="center">
@@ -18,7 +18,7 @@ H5Reclaim récupère les données scientifiques de fichiers HDF5 endommagés. Il
 
 **Une seule commande découvre vos jeux de données, choisit les méthodes de récupération et crée un nouveau fichier HDF5 accompagné d'un rapport JSON clair.** Le fichier d'origine reste intact. H5Reclaim conserve les mesures lisibles des jeux de données partiellement endommagés et poursuit la récupération du reste du fichier.
 
-Sur 109 essais contrôlés avec des fichiers endommagés, la version 1.2.0 a produit 104 résultats utiles : 77 récupérations entièrement exactes et 27 partielles. Cinq cas ont été refusés et aucune valeur erronée n’a été acceptée. Ce résultat est identique à celui du précédent essai de la version 1.0.0. [Résultats de 1.2.0](../benchmarks/results/v120-release-coverage.json).
+Sur 109 essais contrôlés avec des fichiers endommagés, la version 1.3.0 a produit 104 résultats utiles : 77 récupérations entièrement exactes et 27 partielles. Cinq cas ont été refusés et aucune valeur erronée n’a été acceptée. Ce résultat est identique à celui du précédent essai de la version 1.0.0. [Résultats de 1.3.0](../benchmarks/results/v130-release-coverage.json).
 
 La version 1.3.0 répare deux liens endommagés dans un même nœud d’index vérifié, reloge certaines valeurs de longueur variable et références, couvre davantage de structures d’espace libre et préserve les alias vérifiés de groupes détachés. Le [test distinct de dix cas compressés](../benchmarks/results/v130-streaming-recovery.json), dont des dommages dans un même nœud, n’a accepté aucune valeur erronée.
 
