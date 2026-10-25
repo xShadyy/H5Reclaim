@@ -370,12 +370,13 @@ def _analyze_snapshot(
                         # bounded path and a key interval consistent with it.
                         subtree = reader.walk_tree(
                             node.address, rank=rank, element_size=element_size,
-                            max_nodes=MAX_NODES - len(walk.nodes),
+                            max_nodes=MAX_NODES - len(walk.nodes) - len(graft_nodes),
                         )
                         if subtree.broken_links:
                             raise UnsupportedCase("bridged v1 internal subtree has another broken child link")
                         added = {child.address for child in subtree.nodes}
-                        if len(added) != len(subtree.nodes) or added.intersection(nodes):
+                        if (len(added) != len(subtree.nodes) or added.intersection(nodes)
+                                or added.intersection(child.address for child in graft_nodes)):
                             raise FormatError("bridged subtree repeats an already rooted B-tree node")
                         graft_nodes.extend(subtree.nodes)
                         selected_nodes = subtree.nodes
