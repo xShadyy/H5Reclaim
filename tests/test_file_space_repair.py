@@ -3,12 +3,16 @@
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 import h5py
 import numpy as np
 
-from h5reclaim.file_space_repair import inspect_file_space, repair_file_space
+from h5reclaim.file_space_repair import (
+    _information_addresses, inspect_file_space, repair_file_space,
+)
 from h5reclaim.format import FormatError
+from h5reclaim.modern_indexes import lookup3
 from h5reclaim.repair_plan import plan_repair, apply_repair
 from h5reclaim.preflight import inspect_metadata_local
 
@@ -120,6 +124,105 @@ class FileSpaceRepairTests(unittest.TestCase):
         with h5py.File(basic, "w", libver="latest") as handle:
             handle.create_dataset("data", data=np.arange(8))
         self.assertEqual(inspect_file_space(basic)["managers"], [])
+
+    def test_version_zero_six_manager_layout_and_narrow_offsets(self):
+        sb = SimpleNamespace(offset_size=4, length_size=4, undefined_address=(1 << 32) - 1)
+        addresses = (0x100, sb.undefined_address, 0x400, sb.undefined_address,
+                     sb.undefined_address, sb.undefined_address)
+        message = bytes([0, 1]) + (1).to_bytes(4, "little")
+        message += b"".join(address.to_bytes(4, "little") for address in addresses)
+        roots, version, page_size = _information_addresses(message, 0, sb)
+        self.assertEqual((roots, version, page_size),
+                         ([0x100, 0x400], "v0_file_space_info_and_v0_file_manager", 0))
+        with self.assertRaisesRegex(FormatError, "duplicate"):
+            _information_addresses(message[:-4] + (0x100).to_bytes(4, "little"), 0, sb)
+        with self.assertRaisesRegex(FormatError, "length"):
+            _information_addresses(message + b"\x00", 0, sb)
+        for strategy in (2, 3, 4):
+            roots, _, _ = _information_addresses(bytes([0, strategy]) + (1).to_bytes(4, "little"), 0, sb)
+            self.assertEqual(roots, [])
+
+    def test_paged_managers_accept_small_and_large_section_types(self):
+        paged = self.root / "paged.h5"
+        with h5py.File(paged, "w", libver="latest", fs_strategy="page", fs_persist=True) as handle:
+            for name in "abc":
+                handle.create_dataset(name, data=np.arange(100000, dtype="u1"))
+            del handle["b"]
+        inventory = inspect_file_space(paged)
+        self.assertEqual(inventory["version"], "v1_file_space_info_and_v0_file_manager")
+        types = {typ for manager in inventory["managers"]
+                 for typ in manager["serialized_section_types"]}
+        self.assertEqual(types, {1, 2})
+        self.assertEqual(inspect_metadata_local(paged)["decision"], "accept")
+        with h5py.File(paged, "r") as handle:
+            np.testing.assert_array_equal(handle["a"][:], np.arange(100000, dtype="u1"))
+
+    def test_paged_section_repair_requires_original_checksum_or_explicit_reseal(self):
+        paged = self.root / "paged-repair.h5"
+        with h5py.File(paged, "w", libver="latest", fs_strategy="page", fs_persist=True) as handle:
+            handle.create_dataset("kept", data=np.arange(32))
+            handle.create_dataset("deleted", data=np.arange(256), chunks=(16,))
+            del handle["deleted"]
+        manager = next(m for m in inspect_file_space(paged)["managers"]
+                       if m["section_list_used_bytes"])
+        end = manager["section_list_address"] + manager["section_list_used_bytes"]
+        with paged.open("r+b") as stream:
+            stream.seek(end - 1)
+            current = stream.read(1)
+            stream.seek(end - 1)
+            stream.write(bytes([current[0] ^ 0x40]))
+        self.assertFalse(plan_repair(paged)["executable"])
+        plan_path, output, audit = (self.root / name for name in ("paged.json", "paged-out.h5", "paged-audit.jsonl"))
+        planned = plan_repair(paged, plan_path, allow_reseal=True)
+        self.assertTrue(planned["executable"], planned)
+        self.assertTrue(any("reseal_file_space_section_list" in action["repairs"]
+                            for action in planned["actions"]))
+        apply_repair(paged, plan_path, output, audit)
+        self.assertEqual(inspect_metadata_local(output)["decision"], "accept")
+        with h5py.File(output, "r") as handle:
+            np.testing.assert_array_equal(handle["kept"][:], np.arange(32))
+
+    def test_large_structurally_valid_section_list_can_be_explicitly_resealed(self):
+        large = self.root / "many-sections.h5"
+        with h5py.File(large, "w", libver="latest", fs_strategy="fsm", fs_persist=True) as handle:
+            for index in range(400):
+                handle.create_dataset(f"x{index:04d}", data=np.arange(100, dtype="u1"), chunks=(20,))
+            for index in range(0, 400, 2):
+                del handle[f"x{index:04d}"]
+        manager = next(m for m in inspect_file_space(large)["managers"]
+                       if m["section_list_used_bytes"] > 1024)
+        end = manager["section_list_address"] + manager["section_list_used_bytes"]
+        with large.open("r+b") as stream:
+            stream.seek(end - 1)
+            value = stream.read(1)
+            stream.seek(end - 1)
+            stream.write(bytes([value[0] ^ 0x40]))
+        self.assertFalse(plan_repair(large)["executable"])
+        planned = plan_repair(large, allow_reseal=True)
+        self.assertTrue(planned["executable"], planned)
+        self.assertTrue(any("reseal_file_space_section_list" in action["repairs"]
+                            for action in planned["actions"]))
+
+    def test_unknown_paged_section_type_rejected_even_with_reseal(self):
+        paged = self.root / "invalid-paged-type.h5"
+        with h5py.File(paged, "w", libver="latest", fs_strategy="page", fs_persist=True) as handle:
+            handle.create_dataset("deleted", data=np.arange(256), chunks=(16,))
+            del handle["deleted"]
+        manager = next(m for m in inspect_file_space(paged)["managers"]
+                       if 1 in m["serialized_section_types"])
+        address = manager["section_list_address"]
+        size = manager["section_list_used_bytes"]
+        with paged.open("r+b") as stream:
+            stream.seek(address)
+            raw = bytearray(stream.read(size))
+            # This fixture has one section set with 1-byte count and 8-byte size/address fields.
+            raw[5 + 8 + 1 + 8 + 8] = 3
+            raw[-4:] = lookup3(raw[:-4]).to_bytes(4, "little")
+            stream.seek(address)
+            stream.write(raw)
+        with self.assertRaisesRegex(FormatError, "invalid type"):
+            inspect_file_space(paged)
+        self.assertFalse(plan_repair(paged, allow_reseal=True)["executable"])
 
 
 if __name__ == "__main__":
