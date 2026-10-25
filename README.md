@@ -19,7 +19,7 @@ H5Reclaim recovers scientific data from damaged HDF5 files. It brings surviving 
 
 Across **109 controlled damaged-file trials**, the 1.2.0 build produced 104 useful outputs: 77 fully exact and 27 partial recoveries, with five refusals and zero wrong accepted values. This is the same result as the earlier 1.0.0 panel. [Explore the 1.2.0 results](benchmarks/results/v120-release-coverage.json).
 
-Version 1.2.0 also adds multiple independently checked broken-link repairs and larger fixed-record index coverage. Its [separate eight-case compressed streaming panel](benchmarks/results/v120-streaming-recovery.json) includes two-link faults and found zero wrong accepted values.
+Version 1.3.0 adds checked repairs for two broken links in one index parent, native relocation of selected heap-backed values and references, broader file-space repair, and checked detached group aliases. Its [separate ten-case compressed streaming panel](benchmarks/results/v130-streaming-recovery.json) includes same-parent faults and found zero wrong accepted values.
 
 See the [usage guide](USAGE.md) for the recovery workbench, supported formats, verification, and batch workflows.
 

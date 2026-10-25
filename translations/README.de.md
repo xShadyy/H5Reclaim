@@ -20,7 +20,7 @@ H5Reclaim stellt wissenschaftliche Daten aus beschädigten HDF5-Dateien wieder h
 
 In 109 kontrollierten Versuchen mit beschädigten Dateien lieferte Version 1.2.0 104 brauchbare Ergebnisse: 77 vollständig exakte und 27 teilweise Wiederherstellungen. Fünf Fälle wurden abgelehnt; kein falscher Wert wurde akzeptiert. Das entspricht dem Ergebnis des früheren Tests für Version 1.0.0. [Ergebnisse für 1.2.0](../benchmarks/results/v120-release-coverage.json).
 
-Version 1.2.0 kann außerdem mehrere unabhängig belegte defekte Indexverbindungen und größere Indizes mit Datensätzen fester Länge bearbeiten. Im [separaten Test mit acht komprimierten Fällen](../benchmarks/results/v120-streaming-recovery.json) mit zwei beschädigten Verbindungen wurden keine falschen Werte akzeptiert.
+Version 1.3.0 repariert zwei beschädigte Verbindungen im selben geprüften Indexknoten, überträgt ausgewählte Daten variabler Länge und Referenzen, deckt weitere Freispeicherstrukturen ab und erhält geprüfte Aliasse abgetrennter Gruppen. Im [separaten Test mit zehn komprimierten Fällen](../benchmarks/results/v130-streaming-recovery.json), darunter Schäden in einem gemeinsamen Knoten, wurden keine falschen Werte akzeptiert.
 
 Der [Benutzerleitfaden](../USAGE.md) beschreibt die Inspektions- und Reparaturwerkzeuge, unterstützte Formate, die Überprüfung und die Stapelverarbeitung.
 

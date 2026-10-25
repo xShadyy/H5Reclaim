@@ -20,7 +20,7 @@ H5Reclaim récupère les données scientifiques de fichiers HDF5 endommagés. Il
 
 Sur 109 essais contrôlés avec des fichiers endommagés, la version 1.2.0 a produit 104 résultats utiles : 77 récupérations entièrement exactes et 27 partielles. Cinq cas ont été refusés et aucune valeur erronée n’a été acceptée. Ce résultat est identique à celui du précédent essai de la version 1.0.0. [Résultats de 1.2.0](../benchmarks/results/v120-release-coverage.json).
 
-La version 1.2.0 prend aussi en charge plusieurs liens d’index endommagés, chacun justifié indépendamment, ainsi que des index plus grands pour des enregistrements de taille fixe. Le [test distinct de huit cas compressés](../benchmarks/results/v120-streaming-recovery.json), dont deux à plusieurs liens endommagés, n’a accepté aucune valeur erronée.
+La version 1.3.0 répare deux liens endommagés dans un même nœud d’index vérifié, reloge certaines valeurs de longueur variable et références, couvre davantage de structures d’espace libre et préserve les alias vérifiés de groupes détachés. Le [test distinct de dix cas compressés](../benchmarks/results/v130-streaming-recovery.json), dont des dommages dans un même nœud, n’a accepté aucune valeur erronée.
 
 Le [guide d’utilisation](../USAGE.md) présente les outils d’inspection et de réparation, les formats pris en charge, la vérification et le traitement par lots.
 
