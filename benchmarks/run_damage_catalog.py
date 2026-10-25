@@ -75,7 +75,7 @@ def _mutated_copy(source: Path, destination: Path, changes: list[tuple[int, byte
 
 
 def _pointer_changes(source: Path, details: dict[str, Any]) -> tuple[list[tuple[int, bytes, bytes]], int]:
-    """One interior link, and one edge link to form an unrecoverable pair."""
+    """One interior link and one edge link whose lost allocations stay unknown."""
     width = details["pointer_size"]
     interior = details["pointer_offset"]
     with H5File(source) as reader:
@@ -96,6 +96,34 @@ def _pointer_changes(source: Path, details: dict[str, Any]) -> tuple[list[tuple[
         (interior, details["pointer_value"].to_bytes(width, "little"), undefined),
         (edge_offset, edge_value.to_bytes(width, "little"), undefined),
     ], edge_offset
+
+
+def _missing_child_indices(source: Path, details: dict[str, Any],
+                           changes: list[tuple[int, bytes, bytes]]) -> set[int]:
+    """Derive disconnected chunk coordinates from the unchanged original tree."""
+    index: set[int] = set()
+    width = details["chunk_shape"][0]
+    with H5File(source) as reader:
+        root = reader.read_tree(details["btree_root_address"], rank=1, element_size=8)
+        by_pointer = {entry.pointer_offset: entry for entry in root.entries}
+        for position, before, replacement in changes:
+            entry = by_pointer.get(position)
+            if (entry is None or entry.address is None or
+                    before != entry.address.to_bytes(reader.superblock.offset_size, "little") or
+                    replacement != b"\xff" * len(before)):
+                raise CatalogError("lost root link differs from original checked pointer")
+            leaf = reader.read_tree(entry.address, rank=1, element_size=8)
+            if leaf.level != 0:
+                raise CatalogError("lost root link does not identify a checked leaf")
+            for child in leaf.entries:
+                coordinate, element_offset = child.key.offsets
+                if element_offset or coordinate % width:
+                    raise CatalogError("lost leaf chunk coordinate is misaligned")
+                chunk_index = coordinate // width
+                if chunk_index in index or not 0 <= chunk_index < details["chunk_count"]:
+                    raise CatalogError("lost leaf chunk overlaps another root link")
+                index.add(chunk_index)
+    return index
 
 
 def _payload_change(source: Path, coordinate: int) -> tuple[int, bytes, bytes]:
@@ -144,7 +172,7 @@ def _call_recovery(source: Path, dataset: str, case_dir: Path, python: str) -> t
 
 def _evaluate_output(
     source: Path, damaged: Path, output: Path, report_path: Path, *,
-    rejected: set[int], detached: set[int], expected_reconstructed: int,
+    rejected: set[int], unknown: set[int], detached: set[int], expected_reconstructed: int,
 ) -> dict[str, Any]:
     """Treat every status claim as a promise, including a claimed omission."""
     report = json.loads(report_path.read_text(encoding="utf-8"))
@@ -192,10 +220,12 @@ def _evaluate_output(
             ):
                 raise CatalogError(f"scientific attribute {name!r} differs or was omitted")
         actual_rejected = {i for i, code in enumerate(validity) if int(code) != 1}
-        if actual_rejected != rejected:
-            raise CatalogError(f"status omissions {sorted(actual_rejected)} differ from expected {sorted(rejected)}")
+        if actual_rejected != rejected | unknown or rejected & unknown:
+            raise CatalogError(f"status omissions {sorted(actual_rejected)} differ from expected damaged allocations")
         if any(int(validity[i]) != 6 for i in rejected):
             raise CatalogError("corrupt chunk was not marked decode_failed")
+        if any(int(validity[i]) != 2 for i in unknown):
+            raise CatalogError("disconnected chunk was not marked allocation_unknown")
         wrong: list[int] = []
         for i, code in enumerate(validity):
             if int(code) != 1:
@@ -208,7 +238,7 @@ def _evaluate_output(
         if wrong:
             raise CatalogError(f"claimed recovered chunks have wrong bits at {wrong[:8]}")
     mapped = report.get("mappings")
-    if not isinstance(mapped, list) or len(mapped) != count - len(rejected):
+    if not isinstance(mapped, list) or len(mapped) != count - len(rejected) - len(unknown):
         raise CatalogError("per-chunk mappings do not match claimed output")
     seen: set[int] = set()
     reconstructed = 0
@@ -217,7 +247,7 @@ def _evaluate_output(
         if (
             not isinstance(index, list) or len(index) != 1
             or type(index[0]) is not int or index[0] < 0 or index[0] >= count
-            or index[0] in seen or index[0] in rejected
+            or index[0] in seen or index[0] in rejected | unknown
             or mapping.get("coordinate") != [index[0] * chunk_len]
             or mapping.get("integrity") != "fletcher32_verified"
             or mapping.get("route") != (
@@ -235,7 +265,7 @@ def _evaluate_output(
     actual_counts = {name: int(np.count_nonzero(validity == code)) for code, name in STATUS_NAMES.items()}
     if any(counts.get(name, 0) != number for name, number in actual_counts.items()):
         raise CatalogError("report and embedded status map counts disagree")
-    complete = not rejected
+    complete = not rejected and not unknown
     if report.get("complete") is not complete or report.get("outcome") != ("complete" if complete else "partial"):
         raise CatalogError("partial or complete outcome contradicts the status map")
     failed = report.get("failed_chunks", [])
@@ -250,6 +280,8 @@ def _evaluate_output(
         "decision": "complete" if complete else "partial",
         "exact_verified_chunks": len(mapped),
         "rejected_corrupt_chunks": len(rejected),
+        "unresolved_index_chunks": len(unknown),
+        "unresolved_index_chunk_indices": sorted(unknown),
         "reconstructed_link_chunks": reconstructed,
         "wrong_claimed_chunks": 0,
         "status_counts": actual_counts,
@@ -262,7 +294,8 @@ def _one_case(
     *, case: str, category: str, scientific_source: Path, dataset: str,
     source_sha256: str, changes: list[tuple[int, bytes, bytes]], directory: Path,
     python: str, expect_refusal: bool, rejected: set[int] | None = None,
-    detached: set[int] | None = None, reconstructed: int = 0, reason: str,
+    unknown: set[int] | None = None, detached: set[int] | None = None,
+    reconstructed: int = 0, reason: str,
 ) -> dict[str, Any]:
     directory.mkdir()
     damaged = directory / "input.h5"
@@ -285,7 +318,8 @@ def _one_case(
             raise CatalogError(f"{case} unexpectedly failed: {result.stderr[-1200:]}")
         observed = _evaluate_output(
             scientific_source, damaged, output, report, rejected=rejected or set(),
-            detached=detached or set(), expected_reconstructed=reconstructed,
+            unknown=unknown or set(), detached=detached or set(),
+            expected_reconstructed=reconstructed,
         )
     return {
         "case": case, "damage_class": category, "source_id": scientific_source.name,
@@ -323,6 +357,9 @@ def run_catalog(work_dir: Path, *, python: str = sys.executable) -> dict[str, An
         raise CatalogError("mixed case targeted the same chunk twice")
     expected_chunks = details["chunk_count"]
     detached = {coordinate // details["chunk_shape"][0] for coordinate in details["affected_offsets"]}
+    disconnected = _missing_child_indices(healthy, details, pointer_changes)
+    if len(disconnected) <= len(detached) or not detached <= disconnected:
+        raise CatalogError("two lost root links have no distinct independently known allocations")
     damaged_detached_index = details["affected_offsets"][0] // details["chunk_shape"][0]
     cases: list[dict[str, Any]] = []
     scenarios = (
@@ -334,8 +371,8 @@ def run_catalog(work_dir: Path, *, python: str = sys.executable) -> dict[str, An
          [pointer_changes[0], payload_detached], False,
          {damaged_detached_index}, detached,
          detached_count - 1, "partial recovery with the compromised detached payload marked failed"),
-        ("two_index_links", "two lost root child pointers", pointer_changes, True, set(), set(), 0,
-         "refusal with two missing index links and no claim of reconstructed measurements"),
+        ("two_index_links", "two adjacent lost root child pointers", pointer_changes, False, set(), set(), 0,
+         "partial export of only the still-rooted leaf, with both disconnected leaves unknown"),
         ("selected_object_header", "selected dataset header byte changed", [_header_change(healthy, details)],
          True, set(), set(), 0, "refusal when the selected dataset metadata cannot be trusted"),
     )
@@ -345,7 +382,7 @@ def run_catalog(work_dir: Path, *, python: str = sys.executable) -> dict[str, An
             dataset=DATASET, source_sha256=indexed[id_16khz]["sha256"],
             changes=changes, directory=work_dir / name, python=python,
             expect_refusal=refuse, rejected=rejected, detached=detached_expected,
-            reconstructed=reconstructed,
+            reconstructed=reconstructed, unknown=disconnected if name == "two_index_links" else set(),
             reason=reason,
         ))
 
