@@ -340,6 +340,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
     commands = parser.add_subparsers(dest="command", required=True, metavar="COMMAND", title="commands")
+    plan_cmd = commands.add_parser("plan-repair", help="create an exact metadata repair plan without changing the source")
+    plan_cmd.add_argument("source", type=Path)
+    plan_cmd.add_argument("--output", required=True, type=Path)
+    plan_cmd.add_argument("--allow-reseal", action="store_true",
+                          help="also consider structurally validated checksum resealing; historical bytes remain unknown")
+    plan_cmd.add_argument("--streaming-budget", type=Path)
+    apply_cmd = commands.add_parser("apply-repair", help="regenerate a saved repair plan and apply it to a new verified copy")
+    apply_cmd.add_argument("source", type=Path)
+    apply_cmd.add_argument("plan", type=Path)
+    apply_cmd.add_argument("--output", required=True, type=Path)
+    apply_cmd.add_argument("--audit", required=True, type=Path)
+    explain_plan_cmd = commands.add_parser("explain-plan", help="show a saved repair plan and its exact before/after bytes")
+    explain_plan_cmd.add_argument("plan", type=Path)
     for name, description in (("check", "preflight reachable metadata without native HDF5 reads"),
                               ("markers", "scan bounded metadata signature candidates without assigning ownership"),
                               ("explain", "show reachable object messages or a bounded byte range")):
@@ -562,6 +575,25 @@ def main(argv: list[str] | None = None) -> int:
                  or Path(arguments[0]).suffix.lower() in (".h5", ".hdf5", ".he5"))):
         arguments.insert(0, "rescue")
     args = parser.parse_args(arguments)
+
+    if args.command in ("plan-repair", "apply-repair", "explain-plan"):
+        try:
+            from .repair_plan import plan_repair, apply_repair, load_plan
+            from .large_streaming import LargeBudget
+            if args.command == "plan-repair":
+                options = json.loads(args.streaming_budget.read_text()) if args.streaming_budget else {}
+                result = plan_repair(args.source, args.output, budget=LargeBudget(**options), allow_reseal=args.allow_reseal)
+                print(json.dumps(result, indent=2, sort_keys=True))
+                return 0 if result["executable"] else 1
+            if args.command == "apply-repair":
+                result = apply_repair(args.source, args.plan, args.output, args.audit)
+            else:
+                result = load_plan(args.plan)
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 0
+        except (OSError, ValueError, RuntimeError, TypeError, KeyError) as exc:
+            print(f"h5reclaim: metadata repair failed: {_display_path(exc, 300)}", file=sys.stderr)
+            return 2
 
     if args.command in ("check", "markers", "explain"):
         try:

@@ -198,6 +198,23 @@ def inspect_metadata_local(path, *, budget=None, profile="forensic"):
                                     raise UnsupportedFormat("aggregate legacy allocation budget exceeded")
                     elif layout_class not in (0, 1, 2, 3):
                         raise UnsupportedFormat("unknown storage layout class")
+                    elif raw_layout[0] in (3, 4) and layout_class == 1:
+                        offset_size, length_size = reader.superblock.offset_size, reader.superblock.length_size
+                        if len(raw_layout) < 2 + offset_size + length_size:
+                            raise FormatError("contiguous layout is truncated")
+                        allocation = int.from_bytes(raw_layout[2:2 + offset_size], "little")
+                        length = int.from_bytes(raw_layout[2 + offset_size:2 + offset_size + length_size], "little")
+                        if length != descriptor["logical_bytes"]:
+                            raise FormatError("contiguous allocation length contradicts dataspace and datatype")
+                        if allocation != reader.superblock.undefined_address and length:
+                            start = reader.absolute(allocation)
+                            if start + length > min(reader.size, reader.superblock.eof_address):
+                                raise FormatError("contiguous allocation crosses the file boundary")
+                            payloads.append((start, start + length, selected_path))
+                    elif raw_layout[0] in (3, 4) and layout_class == 0:
+                        if (len(raw_layout) < 4 or int.from_bytes(raw_layout[2:4], "little") != descriptor["logical_bytes"]
+                                or len(raw_layout) < 4 + descriptor["logical_bytes"]):
+                            raise FormatError("compact layout length contradicts schema")
             except UnsupportedFormat as exc:
                 complete = False
                 finding("UNSUPPORTED_METADATA", exc, object_path=selected_path, address=address, severity="unsupported")
