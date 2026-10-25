@@ -56,6 +56,18 @@ class FileSpaceRepairTests(unittest.TestCase):
         self.assertEqual(self.source.read_bytes(), pristine)
         self.assertEqual(touches[0][2:], ("restore_file_space_header_field", "original checksum restored"))
 
+    def test_two_damaged_fixed_header_bytes_restore_original_checksum(self):
+        manager = inspect_file_space(self.source)["managers"][0]
+        pristine = self.source.read_bytes()
+        self.damage(manager["address"])
+        self.damage(manager["address"] + 1)
+        with self.assertRaises(FormatError):
+            inspect_file_space(self.source)
+        touches = []
+        repair_file_space(self.source, touches)
+        self.assertEqual(self.source.read_bytes(), pristine)
+        self.assertIn("restore_file_space_header_prefix", [item[2] for item in touches])
+
     def test_checked_header_repair_is_planned_and_applied_to_new_copy(self):
         manager = inspect_file_space(self.source)["managers"][0]
         self.damage(manager["address"] + 6)
@@ -161,6 +173,19 @@ class FileSpaceRepairTests(unittest.TestCase):
         apply_repair(self.source, plan_path, output, audit)
         self.assertEqual(output.read_bytes(), pristine)
 
+    def test_two_damaged_reciprocal_owner_bytes_restore_original_checksum(self):
+        manager = inspect_file_space(self.source)["managers"][0]
+        pristine = self.source.read_bytes()
+        section = manager["section_list_address"]
+        self.damage(section + 5)
+        self.damage(section + 6)
+        with self.assertRaises(FormatError):
+            inspect_file_space(self.source)
+        touches = []
+        repair_file_space(self.source, touches)
+        self.assertEqual(self.source.read_bytes(), pristine)
+        self.assertIn("restore_file_space_section_prefix", [item[2] for item in touches])
+
     def test_section_checksum_reseal_requires_opt_in(self):
         manager = inspect_file_space(self.source)["managers"][0]
         section_end = manager["metadata_ranges"][1][1]
@@ -174,8 +199,10 @@ class FileSpaceRepairTests(unittest.TestCase):
     def test_bad_section_list_cannot_be_published_by_resealing_header(self):
         manager = inspect_file_space(self.source)["managers"][0]
         start = manager["metadata_ranges"][1][0]
-        self.damage(start)
-        self.damage(start + 1)
+        # Count and size are variable historical values, unlike the fixed
+        # signature and reciprocal owner, so neither can be invented.
+        self.damage(start + 13)
+        self.damage(start + 14)
         with self.assertRaises(FormatError):
             inspect_file_space(self.source)
         with self.assertRaises(FormatError):

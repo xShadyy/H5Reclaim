@@ -20,6 +20,20 @@ def _uint(raw):
     return int.from_bytes(raw, "little")
 
 
+def _fixed_prefix_restoration(raw, known_prefix, stored_checksum):
+    """Restore independently known format and reciprocal-owner bytes.
+
+    Only a candidate matching the unchanged original checksum is returned.
+    This handles several corrupt bytes within a field whose entire historical
+    value is fixed by the format and a rooted FSHD address, without guessing
+    any variable field or accepting a recomputed checksum.
+    """
+    if raw.startswith(known_prefix):
+        return None
+    candidate = known_prefix + raw[len(known_prefix):]
+    return candidate if lookup3(candidate[:-4]) == stored_checksum else None
+
+
 def _version(path):
     with path.open("rb") as source:
         size, position = path.stat().st_size, 0
@@ -233,20 +247,27 @@ def repair_file_space(path, touches, *, budget=None, allow_reseal=False):
                                   check_sections=False, page_size=page_size)
             else:
                 mode = "original checksum restored"
-                try:
-                    offset, value = _unique_one_byte(raw, range(0, size - 4), original)
-                    candidate = bytearray(raw)
-                    candidate[offset] = value
+                fixed = _fixed_prefix_restoration(raw, b"FSHD\x00\x01", original)
+                if fixed is not None:
+                    candidate = fixed
                     header = _manager(reader, address, budget, deadline,
-                                      override=bytes(candidate), check_sections=False, page_size=page_size)
-                    kind = "restore_file_space_header_field"
-                except FormatError as exc:
-                    if not allow_reseal or "no unique original-checksum correction" not in str(exc):
-                        raise
-                    header = _manager(reader, address, budget, deadline,
-                                      check_checksum=False, check_sections=False, page_size=page_size)
-                    candidate = bytearray(raw[:-4] + lookup3(raw[:-4]).to_bytes(4, "little"))
-                    kind, mode = "reseal_file_space_header", "current structural coherence; checksum recomputed"
+                                      override=candidate, check_sections=False, page_size=page_size)
+                    kind = "restore_file_space_header_prefix"
+                else:
+                    try:
+                        offset, value = _unique_one_byte(raw, range(0, size - 4), original)
+                        candidate = bytearray(raw)
+                        candidate[offset] = value
+                        header = _manager(reader, address, budget, deadline,
+                                          override=bytes(candidate), check_sections=False, page_size=page_size)
+                        kind = "restore_file_space_header_field"
+                    except FormatError as exc:
+                        if not allow_reseal or "no unique original-checksum correction" not in str(exc):
+                            raise
+                        header = _manager(reader, address, budget, deadline,
+                                          check_checksum=False, check_sections=False, page_size=page_size)
+                        candidate = bytearray(raw[:-4] + lookup3(raw[:-4]).to_bytes(4, "little"))
+                        kind, mode = "reseal_file_space_header", "current structural coherence; checksum recomputed"
                 physical = reader.absolute(address)
                 with path.open("r+b") as output:
                     output.seek(physical)
@@ -269,28 +290,37 @@ def repair_file_space(path, touches, *, budget=None, allow_reseal=False):
                                            count, maximum, bits, budget, deadline, page_size=page_size)
             else:
                 mode = "original checksum restored"
-                try:
-                    if used > 1024:
-                        raise FormatError("section list exceeds one-byte original-checksum trial budget")
-                    position, value = _unique_one_byte(raw_list, range(0, used - 4), stored)
-                    candidate = bytearray(raw_list)
-                    candidate[position] = value
+                fixed = _fixed_prefix_restoration(
+                    raw_list, b"FSSE\x00" + address.to_bytes(reader.superblock.offset_size, "little"), stored)
+                if fixed is not None:
+                    candidate = fixed
                     entries, _ = _section_list(reader, address, section_address, used, allocated,
                         count, maximum, bits, budget, deadline, page_size=page_size,
-                        override=bytes(candidate))
-                    kind = "restore_file_space_section_field"
-                except FormatError as exc:
-                    bounded_trial_missed = (
-                        "no unique original-checksum correction" in str(exc)
-                        or "exceeds one-byte original-checksum trial budget" in str(exc)
-                    )
-                    if not allow_reseal or not bounded_trial_missed:
-                        raise
-                    entries, _ = _section_list(reader, address, section_address, used, allocated,
-                        count, maximum, bits, budget, deadline, page_size=page_size,
-                        check_checksum=False)
-                    candidate = bytearray(raw_list[:-4] + lookup3(raw_list[:-4]).to_bytes(4, "little"))
-                    kind, mode = "reseal_file_space_section_list", "rooted section structure and current coherence; checksum recomputed"
+                        override=candidate)
+                    kind = "restore_file_space_section_prefix"
+                else:
+                    try:
+                        if used > 1024:
+                            raise FormatError("section list exceeds one-byte original-checksum trial budget")
+                        position, value = _unique_one_byte(raw_list, range(0, used - 4), stored)
+                        candidate = bytearray(raw_list)
+                        candidate[position] = value
+                        entries, _ = _section_list(reader, address, section_address, used, allocated,
+                            count, maximum, bits, budget, deadline, page_size=page_size,
+                            override=bytes(candidate))
+                        kind = "restore_file_space_section_field"
+                    except FormatError as exc:
+                        bounded_trial_missed = (
+                            "no unique original-checksum correction" in str(exc)
+                            or "exceeds one-byte original-checksum trial budget" in str(exc)
+                        )
+                        if not allow_reseal or not bounded_trial_missed:
+                            raise
+                        entries, _ = _section_list(reader, address, section_address, used, allocated,
+                            count, maximum, bits, budget, deadline, page_size=page_size,
+                            check_checksum=False)
+                        candidate = bytearray(raw_list[:-4] + lookup3(raw_list[:-4]).to_bytes(4, "little"))
+                        kind, mode = "reseal_file_space_section_list", "rooted section structure and current coherence; checksum recomputed"
                 section_physical = reader.absolute(section_address)
                 with path.open("r+b") as output:
                     output.seek(section_physical)
