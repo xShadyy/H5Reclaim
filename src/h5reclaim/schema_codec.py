@@ -414,8 +414,10 @@ def decode_chunk(raw: bytes, spec: object, filter_mask: int, *,
     extra = {filter_.id for position, filter_ in enumerate(pipeline)
              if not filter_mask & (1 << position) and filter_.id not in KNOWN_FILTERS}
     if extra:
-        from .filter_registry import register_optional
-        registered = register_optional()
+        registered = {}
+        if extra - NATIVE_BUILTIN_FILTERS:
+            from .filter_registry import register_optional
+            registered = register_optional()
         native = {identifier for identifier in extra & NATIVE_BUILTIN_FILTERS
                   if h5py.h5z.filter_avail(identifier) and
                   h5py.h5z.get_filter_info(identifier) & h5py.h5z.FILTER_CONFIG_DECODE_ENABLED}
@@ -455,7 +457,7 @@ def decode_chunk(raw: bytes, spec: object, filter_mask: int, *,
 
 
 def _decode_packaged_chunk(raw, spec, mask, pipeline, chunk_bytes):
-    """Decode an independently attributed raw chunk through packaged codecs.
+    """Decode a source-attributed chunk through native or packaged codecs.
 
     A single-chunk, in-memory HDF5 dataset supplies the validated type and
     pipeline. It never opens the damaged file or tries to repair its index.
