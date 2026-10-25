@@ -356,6 +356,7 @@ def _rebase(value: Any, replacements: dict[str, str], prefix: str, unit_metadata
 def _augment_detached_inventory(image, inventory, error=None):
     """Retain known names and add surviving headers whose names were lost."""
     from .object_discovery import scan_local, _validate_candidates
+    from .detached_reconstruction import detached_hierarchies
     from .large_streaming import LargeBudget
     from .source_session import reused_image
     shared = reused_image(image)
@@ -367,12 +368,19 @@ def _augment_detached_inventory(image, inventory, error=None):
             "issues": [{"path": "/", "reason": "original namespace unreadable: " + str(error)[:300]}],
             "complete": False, "inspection_view": "detached checksummed dataset headers"}
     known = {item.get("address") for item in inventory["datasets"]}
+    reconstructed = detached_hierarchies(discovery,
+        {item.get("address") for item in inventory["groups"]}, known,
+        max_objects=budget.max_objects, max_links=budget.max_links,
+        blocked_paths={item["path"] for kind in ("groups", "datasets", "named_types")
+                       for item in inventory.get(kind, ())})
+    inventory["groups"].extend(reconstructed["groups"])
     added = []
     for item in discovery["datasets"]:
         if item["address"] in known:
             continue
         # These names describe physical objects, never asserted original paths.
-        path = f"/recovered/object_{item['address']:x}"
+        path = reconstructed["dataset_paths"].get(item["address"],
+            f"/recovered/object_{item['address']:x}")
         if any(entry["path"] == path for entry in inventory["datasets"]):
             path = f"/recovered/detached_{item['address']:x}"
         entry = {"path": path, "address": item["address"], "detached": True,
@@ -382,7 +390,9 @@ def _augment_detached_inventory(image, inventory, error=None):
         added.append(path)
     if added and not any(item["path"] == "/recovered" for item in inventory["groups"]):
         inventory["groups"].append({"path": "/recovered", "attributes": [], "attributes_omitted": []})
-    inventory["detached_discovery"] = {"objects_added": added, "complete_namespace": False}
+    inventory["detached_discovery"] = {"objects_added": added,
+        "groups_reconstructed": [item["path"] for item in reconstructed["groups"]],
+        "group_path_scope": reconstructed["scope"], "complete_namespace": False}
     return inventory
 
 
