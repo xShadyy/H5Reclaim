@@ -1,4 +1,4 @@
-# Updating H5Reclaim to 1.1.0
+# Updating H5Reclaim to 1.2.0
 
 This upgrade is supplied as a complete project ZIP with incremental Git
 history. It has not been pushed to GitHub. The upgrade commits use:
@@ -18,7 +18,7 @@ you can import the changes into your existing clone without replacing `.git`.
 | --- | --- |
 | `H5Reclaim/` | Complete source checkout, tests, documentation and Git history |
 | `H5Reclaim-update.bundle` | Portable history for importing into an existing clone |
-| `packages/` | Validated 1.1.0 wheel, source distribution and SHA256SUMS |
+| `packages/` | Validated 1.2.0 wheel, source distribution and SHA256SUMS |
 | `UPDATE_INSTRUCTIONS.md` | These instructions |
 | `CHANGE_SUMMARY.md` | Features, validation results, limits and next priorities |
 
@@ -33,8 +33,8 @@ git status
 git config user.name "Tymoteusz Netter"
 git config user.email "tymoteusz.netter@gmail.com"
 git fetch origin
-git fetch "/absolute/path/to/H5Reclaim-update.bundle" refs/heads/feat/recovery-workbench:refs/heads/h5reclaim-v1.1.0
-git switch h5reclaim-v1.1.0
+git fetch "/absolute/path/to/H5Reclaim-update.bundle" refs/heads/feat/recovery-workbench:refs/heads/h5reclaim-v1.2.0
+git switch h5reclaim-v1.2.0
 git merge origin/main
 ```
 
@@ -42,10 +42,10 @@ If main has changed, review any merge changes and resolve conflicts before
 continuing. Run the checks below, then publish the upgrade branch:
 
 ```sh
-git push -u origin h5reclaim-v1.1.0
+git push -u origin h5reclaim-v1.2.0
 ```
 
-Open a pull request from `h5reclaim-v1.1.0` to `main` at
+Open a pull request from `h5reclaim-v1.2.0` to `main` at
 <https://github.com/xShadyy/H5Reclaim>, review the diff and wait for CI. Merge
 after those checks pass. No force push or replacement of the repository's
 history is needed.
@@ -55,7 +55,7 @@ If you prefer updating main directly, after validating the upgrade branch:
 ```sh
 git switch main
 git pull --ff-only origin main
-git merge --ff-only h5reclaim-v1.1.0
+git merge --ff-only h5reclaim-v1.2.0
 git push origin main
 ```
 
@@ -114,7 +114,7 @@ To install the included wheel instead of a source checkout, from the
 extracted ZIP's top directory:
 
 ```sh
-python -m pip install packages/h5reclaim-1.1.0-py3-none-any.whl
+python -m pip install packages/h5reclaim-1.2.0-py3-none-any.whl
 ```
 
 pip still needs the declared Python dependencies. `packages/SHA256SUMS`
@@ -142,8 +142,8 @@ the release:
 ```sh
 git switch main
 git pull --ff-only origin main
-git tag -a v1.1.0 -m "H5Reclaim 1.1.0"
-git push origin v1.1.0
+git tag -a v1.2.0 -m "H5Reclaim 1.2.0"
+git push origin v1.2.0
 ```
 
 The updated workflow validates and attaches the wheel, source distribution
@@ -153,11 +153,11 @@ workflow does not upload to PyPI.
 
 ## Further priorities
 
-1. Recover multiple independently justified broken index links per dataset,
-   with explicit ambiguity refusal and adversarial ownership tests.
-2. Extend severe metadata recovery to more legacy structures, detached
-   objects and free-space damage. Keep unassigned bytes separate from
-   accepted measurements.
+1. Expand checked repairs to additional index families and more severe
+   combinations of damaged links, retaining explicit ambiguity refusal.
+2. Expand free-space and detached-object coverage beyond the structures
+   repaired in this release. Keep unassigned bytes separate from accepted
+   measurements.
 3. Profile dense 100 GB and larger datasets, reduce physical scan costs and
    expand index and quota coverage. The current sparse 4 GiB test is not a
    dense throughput benchmark.
