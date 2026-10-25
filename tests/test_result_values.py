@@ -41,6 +41,12 @@ class ResultValueTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "report bytes differ"):
             verify_fingerprint(self.output, self.report, manifest)
 
+    def test_non_object_fingerprint_is_a_normal_input_error(self):
+        manifest = self.root / "fingerprint.json"
+        manifest.write_text("[]")
+        with self.assertRaises(ValueError):
+            verify_fingerprint(self.output, self.report, manifest)
+
 
 if __name__ == "__main__":
     unittest.main()

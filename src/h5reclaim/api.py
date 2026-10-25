@@ -16,8 +16,10 @@ def rescue(source, *, dataset=None, output=None, report=None, budget=None,
     source = Path(source)
     output = Path(output) if output is not None else source.with_name(source.stem + ".recovered.h5")
     report = Path(report) if report is not None else output.with_name(output.stem + ".report.json")
-    options = asdict(budget) if isinstance(budget, LargeBudget) else budget or {}
-    LargeBudget(**options)
+    options = asdict(budget) if isinstance(budget, LargeBudget) else budget
+    LargeBudget(**(options or {}))
+    if html_report is not None and (Path(html_report).exists() or Path(html_report).is_symlink()):
+        raise FileExistsError("HTML destination already exists")
     if dataset is None:
         from .whole_file import rescue_all
         result = rescue_all(source, output, report, streaming_budget=options, resume_dir=resume_dir)

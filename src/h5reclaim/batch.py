@@ -48,6 +48,10 @@ def batch_rescue(sources, output_dir, summary_path, *, jobs=1, resume=False,
             raise ValueError("expected a version-1 batch summary")
         if record.get("options") != options:
             raise ValueError("batch belongs to a different tool version or recovery budget")
+        if (not isinstance(record.get("results"), list) or len(record["results"]) > 1000
+                or any(not isinstance(r, dict) or not isinstance(r.get("source"), str)
+                       for r in record["results"])):
+            raise ValueError("saved batch results have an invalid schema")
     else:
         record = {"schema_version": 1, "tool": "h5reclaim", "kind": "batch_recovery", "options": options, "results": []}
     previous = {r["source"]: r for r in record["results"]}
