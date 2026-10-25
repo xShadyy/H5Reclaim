@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.0
+
+- Extend checked structural recovery to multiple independently justified
+  index-link repairs, retaining explicit refusal for ambiguous ownership.
+- Extend structural metadata repair and trusted prior-metadata restoration
+  to additional evidence-backed damage classes.
+- Increase the supported streaming index and rank budgets where the format,
+  decoder and configured resource quotas permit.
+
 ## 1.1.0
 
 - Stream compressed multidimensional fixed-record datasets through checked
