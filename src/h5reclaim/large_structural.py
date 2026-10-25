@@ -32,13 +32,23 @@ from .schema_codec import (ChunkDecodeError, MissingFilterDecoder, decode_chunk,
                            validate_stored_size, fletcher32_applied)
 
 
-MAX_LARGE_INDEX_CHUNKS = 65536
 # Compatibility names. Actual dataset and decoder limits come from LargeBudget.
 MAX_LARGE_ELEMENT_COUNT = 1_048_576
 MAX_LARGE_CHUNK_BYTES = 64 << 20
 MAX_LARGE_REPORT_BYTES = 1 << 20
 DISK_RESERVE_BYTES = 64 << 20
 STATUS_CODES = {"unknown": 0, "recovered": 1, "decode_failed": 2, "decoder_unavailable": 3}
+
+
+def _repair_dependencies(index, record, repairs):
+    """List repaired pointers traversed by the selected chunk's checked path."""
+    if index.index_type == "fixed_array":
+        offsets = {index.data_block_pointer_offset}
+    elif index.index_type == "extensible_array":
+        offsets = {step.get("pointer_offset") for step in record.evidence.get("index_chain", ())}
+    else:
+        offsets = {step.get("pointer_offset") for step in record.evidence.get("link_path", ())}
+    return [repair for repair in repairs if repair["pointer_offset"] in offsets]
 
 
 def recover_large_fixed_array(source, dataset_path, output, report_path, *,
@@ -55,10 +65,9 @@ def recover_large_structural(source: str | Path, dataset_path: str, output: str 
                              require_fixed_array: bool = False) -> dict[str, object]:
     """Recover a broken fixed-array, extensible-array or v2 B-tree chunk index.
 
-    Supports checked rank 1..5 fixed-record schemas (rank 5 uses fixed arrays),
-    filtered or unfiltered chunks, partial edges, and allocated grids up to
-    65,536 slots. gzip, shuffle, Fletcher32, LZF and installed packaged codecs
-    use the shared bounded decoder. At most one index link may need repair.
+    Supports checked chunk indexes, filtered or unfiltered chunks, partial
+    edges, and grids constrained by caller quotas and worker memory. Each
+    damaged metadata parent may contribute one uniquely checked index link.
     No native read of the damaged dataset's measurements is used.
     """
     source, output, report_path = Path(source), Path(output), Path(report_path)
@@ -69,21 +78,28 @@ def recover_large_structural(source: str | Path, dataset_path: str, output: str 
     stored_limit = min(128 << 20, max(decoded_limit * 2, 2 << 20))
     with sparse_snapshot(source, budget=budget) as (image, digest, identity, size, copied):
         spec = read_dataset_spec(image, dataset_path, max_elements=budget.max_logical_bytes,
-                                 max_chunk_bytes=decoded_limit, max_rank=5)
+                                 max_chunk_bytes=decoded_limit, max_rank=32,
+                                 max_type_depth=budget.max_type_depth,
+                                 max_type_members=min(budget.max_type_members, 65536),
+                                 max_array_rank=32,
+                                 max_type_encoding_bytes=min(budget.max_metadata_bytes, 1 << 20))
         element_size = np.dtype(spec.dtype).itemsize
         total, grid = prod(spec.shape), spec.chunk_grid
         grid_count = prod(grid)
         if total * element_size > budget.max_logical_bytes:
             raise UnsupportedCase("structural dataset exceeds the logical byte budget")
-        if grid_count > min(MAX_LARGE_INDEX_CHUNKS, budget.max_chunks, budget.max_grid):
+        per_slot_reserve = 512 if spec.maxshape == spec.shape else 8192
+        max_index_chunks = min(budget.max_chunks, budget.max_grid,
+                               max(1, budget.worker_memory_bytes // per_slot_reserve))
+        if grid_count > max_index_chunks:
             raise UnsupportedCase("large structural chunk grid exceeds the configured quota")
-        with ModernH5File(image, large_sparse_scan=True, max_chunks=min(MAX_LARGE_INDEX_CHUNKS, budget.max_chunks),
+        with ModernH5File(image, large_sparse_scan=True, max_chunks=max_index_chunks,
                           max_chunk_bytes=stored_limit,
                           repair_scan_bytes=min(budget.max_scan_bytes, budget.max_source_bytes),
                           repair_scan_seconds=min(budget.max_seconds, 86400)) as reader:
             index = reader.read_index(spec.object_address, spec.shape, spec.chunks, element_size,
                                       maxshape=spec.maxshape, filters=spec.filters,
-                                      max_chunks=min(MAX_LARGE_INDEX_CHUNKS, budget.max_chunks))
+                                      max_chunks=max_index_chunks)
             repairs = list(index.reconstructed_links)
             if index.reconstructed_data_block_pointer:
                 repairs.append({"kind": "fahd_to_fadb", "source_address": index.base_address,
@@ -93,8 +109,8 @@ def recover_large_structural(source: str | Path, dataset_path: str, output: str 
                 raise UnsupportedCase("large structural route requires one damaged checked FAHD pointer")
             if not repairs:
                 raise UnsupportedCase("large structural route requires a uniquely checked damaged index link")
-            if len(repairs) != 1:
-                raise FormatError("only one damaged modern index link can be justified per export")
+            if len({repair["source_address"] for repair in repairs}) != len(repairs):
+                raise FormatError("multiple index repairs must have distinct metadata parents")
             if not index.chunks or len(index.chunks) > budget.max_chunks:
                 raise UnsupportedCase("allocated chunks are absent or exceed the configured budget")
             coordinates, ranges = set(), []
@@ -133,7 +149,8 @@ def recover_large_structural(source: str | Path, dataset_path: str, output: str 
                 ("origin", "<u8") if rank == 1 else ("origin", "<u8", (rank,)),
                 ("source_offset", "<u8"), ("stored_bytes", "<u8"), ("filter_mask", "<u4"),
                 ("raw_sha256", "S64"), ("decoded_sha256", "S64"), ("status", "u1"),
-                ("parent_pointer_offset", "<u8"), ("parent_address", "<u8"), ("child_address", "<u8")])
+                ("repair_link_count", "<u4"), ("parent_pointer_offset", "<u8"),
+                ("parent_address", "<u8"), ("child_address", "<u8")])
             records = sorted(index.chunks, key=lambda item: item.coordinate)
             with tempfile.TemporaryDirectory(prefix=".h5reclaim-structural-", dir=output.parent) as out_dir, \
                  tempfile.TemporaryDirectory(prefix=".h5reclaim-structural-", dir=report_path.parent) as rep_dir:
@@ -160,7 +177,6 @@ def recover_large_structural(source: str | Path, dataset_path: str, output: str 
                     validity.attrs["codes_json"] = json.dumps(STATUS_CODES, sort_keys=True)
                     evidence = meta.create_dataset("physical_evidence", shape=(len(records),),
                         dtype=evidence_dtype, chunks=(min(len(records), 1024),))
-                    repair = repairs[0]
                     for row, record in enumerate(records):
                         if time.monotonic() > deadline:
                             raise UnsupportedCase("large structural recovery exceeded the time quota")
@@ -194,11 +210,13 @@ def recover_large_structural(source: str | Path, dataset_path: str, output: str 
                             failures.append({"coordinate": list(coordinate), "status": code, "reason": reason[:500]})
                         validity[cell] = code
                         counts[next(name for name, value in STATUS_CODES.items() if value == code)] += 1
+                        dependencies = _repair_dependencies(index, record, repairs)
+                        sole_repair = dependencies[0] if len(dependencies) == 1 else {}
                         evidence[row] = (coordinate[0] if rank == 1 else coordinate,
                             reader.absolute(record.address), record.size, record.filter_mask,
                             hashlib.sha256(raw).hexdigest(), decoded_digest, code,
-                            repair.get("pointer_offset", 0), repair.get("source_address", 0),
-                            repair.get("target_address", 0))
+                            len(dependencies), sole_repair.get("pointer_offset", 0),
+                            sole_repair.get("source_address", 0), sole_repair.get("target_address", 0))
                         if (staged_output.stat().st_size > budget.max_output_bytes
                                 or shutil.disk_usage(staged_output.parent).free < budget.disk_reserve_bytes):
                             raise UnsupportedCase("large structural output exceeds the disk quota")
@@ -220,21 +238,22 @@ def recover_large_structural(source: str | Path, dataset_path: str, output: str 
                         "index": {"type": index.index_type, "repairs": repairs,
                             "fahd_address": index.base_address if index.index_type == "fixed_array" else None,
                             "fadb_address": index.data_block_address,
-                            "damaged_pointer_absolute_offset": repair.get("pointer_offset"),
-                            "justification": "unique original-parent-checksum restoration, independently checked child/index and rooted schema"},
+                            "damaged_pointer_absolute_offset": repairs[0].get("pointer_offset") if len(repairs) == 1 else None,
+                            "justification": "one uniquely restoring link in each distinct metadata parent, independently checked children/index and rooted schema"},
                         "allocated_chunks_checked": len(records), "chunk_grid_count": grid_count,
                         "accepted_elements": accepted, "unknown_elements": total - accepted,
                         "counts": counts, "validity_codes": STATUS_CODES,
                         "validity": {"dataset": metadata_group + "/validity", "granularity": "chunk", "codes": STATUS_CODES},
                         "metadata_group": metadata_group, "validity_map": metadata_group + "/validity",
                         "physical_evidence": metadata_group + "/physical_evidence",
-                        "physical_evidence_schema": "chunk_origin_and_decoded_sha256_v1",
+                        "physical_evidence_schema": "chunk_origin_decoded_sha256_repair_dependency_count_v2",
+                        "repair_dependency_scope": "Each row counts repaired pointer links traversed on its rooted index path. Parent address fields identify the repair only when the count is one; all repairs are listed in index.repairs.",
                         "failed_chunks_sample": failures, "checksummed_accepted_chunks": checksummed,
                         "selected_annotation_collisions": collisions, "ownership_inventory": inventory.report(),
                         "output_values_sha256": value_hash.hexdigest(),
                         "output_values_sha256_scope": "accepted chunks in lexicographic coordinate order, cropped to dataset edges",
                         "output_path": str(published_output or output),
-                        "limits": "One uniquely checked modern index-link repair; fixed records, bounded chunk grid and scan. Missing or undecodable chunks remain nonaccepted. Current bytes do not establish historical authenticity."}
+                        "limits": "One uniquely checked pointer per damaged metadata parent; bounded chunk grid and scan. Missing or undecodable chunks remain nonaccepted. Current bytes do not establish historical authenticity."}
                     serialized = json.dumps(report, indent=2, sort_keys=True) + "\n"
                     if len(serialized.encode()) > MAX_LARGE_REPORT_BYTES:
                         raise UnsupportedCase("large structural report exceeds the size quota")
