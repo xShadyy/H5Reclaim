@@ -11,6 +11,7 @@ import h5py
 import numpy as np
 
 from h5reclaim.__main__ import main
+from h5reclaim.file_space_repair import inspect_file_space
 from h5reclaim.metadata_snapshot import capture_metadata_snapshot, restore_metadata_snapshot
 from h5reclaim.preflight import inspect_metadata_local
 from h5reclaim.recovery import RecoveryError
@@ -120,6 +121,45 @@ class MetadataSnapshotTests(unittest.TestCase):
         self.assertEqual(output.read_bytes(), healthy.read_bytes())
         with h5py.File(output, "r") as handle:
             np.testing.assert_array_equal(handle["reading"][:], np.arange(64))
+
+    def test_persistent_file_space_section_list_is_included_when_checked(self):
+        healthy = self.root / "persistent.h5"
+        damaged = self.root / "persistent-damaged.h5"
+        snapshot = self.root / "persistent-metadata.zip"
+        output = self.root / "persistent-result.h5"
+        report_path = self.root / "persistent-report.json"
+        with h5py.File(healthy, "w", libver="latest", fs_strategy="fsm", fs_persist=True) as handle:
+            handle.create_dataset("deleted", data=np.arange(5000), chunks=(50,), compression="gzip")
+            handle["kept"] = np.arange(50)
+            del handle["deleted"]
+        space = inspect_file_space(healthy)
+        section_list_start = space["managers"][0]["metadata_ranges"][1][0]
+        capture = capture_metadata_snapshot(healthy, snapshot)
+        self.assertTrue(any(start <= section_list_start < end
+                            for start, end, _ in capture["metadata_ranges"]))
+        shutil.copyfile(healthy, damaged)
+        with damaged.open("r+b") as stream:
+            stream.seek(section_list_start + 15)
+            previous = stream.read(1)
+            stream.seek(section_list_start + 15)
+            stream.write(bytes([previous[0] ^ 0x40]))
+        self.assertEqual(inspect_metadata_local(damaged)["decision"], "reject_corrupt")
+        restore_metadata_snapshot(damaged, snapshot, capture["archive_sha256"], output, report_path)
+        self.assertEqual(output.read_bytes(), healthy.read_bytes())
+        self.assertGreater(len(inspect_file_space(output)["managers"]), 0)
+
+    def test_symlink_to_snapshot_is_rejected(self):
+        link = self.root / "alias.zip"
+        try:
+            link.symlink_to(self.snapshot)
+        except (OSError, NotImplementedError):
+            self.skipTest("symbolic links are unavailable")
+        self.corrupt_message("/science/values", 3)
+        with self.assertRaisesRegex(RecoveryError, "snapshot is absent"):
+            restore_metadata_snapshot(self.damaged, link, self.capture["archive_sha256"],
+                                      self.output, self.report)
+        self.assertFalse(self.output.exists())
+        self.assertFalse(self.report.exists())
 
 
 if __name__ == "__main__":
