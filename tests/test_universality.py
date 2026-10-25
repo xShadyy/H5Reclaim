@@ -33,16 +33,22 @@ class UniversalityTests(unittest.TestCase):
         self.base = Path(self.temp.name)
         self.source, self.output, self.report = (self.base / name for name in ("input.h5", "output.h5", "report.json"))
 
-    def test_scaleoffset_automatic_fallback_recovers_values(self):
+    def test_scaleoffset_automatic_route_recovers_values(self):
         values = np.arange(32, dtype="i4")
         with h5py.File(self.source, "w") as handle:
             handle.create_dataset("data", data=values, chunks=(8,), scaleoffset=0)
         before = sha256_file(self.source)
         report = auto_rescue(self.source, "/data", self.output, self.report, audit_science_context=False)
         self.assertEqual(report["outcome"], "complete")
-        self.assertGreater(len(report["automatic_routing"]["attempted"]), 1)
+        routing = report["automatic_routing"]
+        self.assertGreaterEqual(len(routing["attempted"]), 1)
+        self.assertEqual(routing["attempted"][0], "structural")
+        self.assertIn(routing["selected"], routing["attempted"])
+        self.assertEqual(report["counts"]["recovered"], 4)
         with h5py.File(self.output) as handle:
             np.testing.assert_array_equal(handle["data"][:], values)
+            np.testing.assert_array_equal(handle[report["validity"]["dataset"]][:],
+                                          np.ones((4,), dtype="u1"))
         self.assertEqual(sha256_file(self.source), before)
         self.assertEqual(report["output_path"], str(self.output))
 
