@@ -4,16 +4,17 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import h5py
 import numpy as np
 
 from h5reclaim.file_space_repair import (
-    _information_addresses, inspect_file_space, repair_file_space,
+    _information_addresses, _rooted_addresses, inspect_file_space, repair_file_space,
 )
 from h5reclaim.format import FormatError
 from h5reclaim.modern_indexes import ModernH5File, lookup3
-from h5reclaim.metadata_fallback import _messages
+from h5reclaim.metadata_fallback import HeaderMessage, _messages
 from h5reclaim.repair_plan import plan_repair, apply_repair
 from h5reclaim.preflight import inspect_metadata_local
 
@@ -231,6 +232,26 @@ class FileSpaceRepairTests(unittest.TestCase):
         for strategy in (2, 3, 4):
             roots, _, _ = _information_addresses(bytes([0, strategy]) + (1).to_bytes(4, "little"), 0, sb)
             self.assertEqual(roots, [])
+
+    def test_historical_type_eighteen_is_distinguished_from_cache_image(self):
+        sb = SimpleNamespace(offset_size=4, length_size=4, undefined_address=(1 << 32) - 1,
+                             signature_offset=0)
+        superblock = bytearray(16 + 4 * sb.offset_size)
+        superblock[12 + sb.offset_size:12 + 2 * sb.offset_size] = (0x200).to_bytes(4, "little")
+        reader = SimpleNamespace(superblock=sb, _read_absolute=lambda *args: bytes(superblock),
+                                 metadata_ranges=[(0, 32, "superblock"), (0x200, 0x230, "extension")])
+        address_table = [0x100, sb.undefined_address, 0x400,
+                         sb.undefined_address, sb.undefined_address, sb.undefined_address]
+        old = bytes([0, 1]) + (1).to_bytes(4, "little")
+        old += b"".join(value.to_bytes(4, "little") for value in address_table)
+        with patch("h5reclaim.file_space_repair._messages", return_value=(HeaderMessage(0x18, 0, old, 0),)):
+            roots, _, label, page = _rooted_addresses(reader)
+        self.assertEqual((roots, page), ([0x100, 0x400], 0))
+        self.assertIn("legacy_type_0x18", label)
+        cache = bytes([0]) + (0x400).to_bytes(4, "little") + (200).to_bytes(4, "little")
+        with patch("h5reclaim.file_space_repair._messages", return_value=(HeaderMessage(0x18, 0, cache, 0),)):
+            roots, _, label, page = _rooted_addresses(reader)
+        self.assertEqual((roots, label, page), ([], "no_file_space_info", 0))
 
     def test_paged_managers_accept_small_and_large_section_types(self):
         paged = self.root / "paged.h5"

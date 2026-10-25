@@ -99,8 +99,20 @@ def _rooted_addresses(reader):
     messages = _messages(reader, extension)
     information = _unique(messages, 0x17)
     if information is None:
-        return [], list(reader.metadata_ranges[1:]), "no_file_space_info", 0
+        # The older 1.10.0 specification assigned 0x18 to file-space info;
+        # newer versions assign it to a metadata-cache image instead. Their
+        # fixed lengths differ for all supported superblock address widths.
+        # Only the exact six-manager declaration layout is interpreted here.
+        older = _unique(messages, 0x18)
+        if older is None or len(older.data) not in (
+                2 + sb.length_size, 2 + sb.length_size + 6 * offsize):
+            return [], list(reader.metadata_ranges[1:]), "no_file_space_info", 0
+        if not older.data or older.data[0] != 0:
+            raise FormatError("historical file-space declaration version is invalid")
+        information = older
     addresses, label, page_size = _information_addresses(information.data, information.flags, sb)
+    if information.kind == 0x18:
+        label = "v0_legacy_type_0x18_file_space_info_and_v0_file_manager"
     return addresses, list(reader.metadata_ranges[1:]), label, page_size
 
 
