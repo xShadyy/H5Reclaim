@@ -160,7 +160,13 @@ def _selected_local_dataset(handle: h5py.File, path: str) -> h5py.Dataset:
     return current
 
 
-def read_dataset_spec(source: Path, dataset_path: str) -> DatasetSpec:
+def read_dataset_spec(source: Path, dataset_path: str, *, max_elements: int = 1_048_576,
+                      max_chunk_bytes: int = 1_048_576, max_rank: int = 4) -> DatasetSpec:
+    """Read local fixed-record metadata under explicit caller-owned quotas."""
+    if (type(max_elements) is not int or not 0 < max_elements < 1 << 63
+            or type(max_chunk_bytes) is not int or not 0 < max_chunk_bytes <= 64 << 20
+            or type(max_rank) is not int or not 1 <= max_rank <= 5):
+        raise ValueError("invalid structural metadata limits")
     try:
         with h5py.File(source, "r") as handle:
             selected = _selected_local_dataset(handle, dataset_path)
@@ -169,12 +175,12 @@ def read_dataset_spec(source: Path, dataset_path: str) -> DatasetSpec:
 
             shape = selected.shape
             chunks = selected.chunks
-            if len(shape) not in (1, 2, 3, 4) or chunks is None or len(chunks) != len(shape):
-                raise UnsupportedCase("expected a rank-one through rank-four chunked dataset")
+            if shape is None or not 1 <= len(shape) <= max_rank or chunks is None or len(chunks) != len(shape):
+                raise UnsupportedCase(f"expected a rank-one through rank-{max_rank} chunked dataset")
             if any(length <= 0 or chunk <= 0 for length, chunk in zip(shape, chunks)):
                 raise UnsupportedCase("dimensions and chunk extents must be positive")
-            if prod(shape) > 1_048_576:
-                raise UnsupportedCase("dataset exceeds the current 1,048,576-element limit")
+            if prod(shape) > max_elements:
+                raise UnsupportedCase(f"dataset exceeds the {max_elements:,}-element limit")
 
             datatype = selected.id.get_type()
             try:
@@ -187,8 +193,8 @@ def read_dataset_spec(source: Path, dataset_path: str) -> DatasetSpec:
             except SchemaError as exc:
                 raise UnsupportedCase(str(exc)) from exc
 
-            if prod(chunks) * np.dtype(dtype).itemsize > 1_048_576:
-                raise UnsupportedCase("chunk exceeds the current 1 MiB limit")
+            if prod(chunks) * np.dtype(dtype).itemsize > max_chunk_bytes:
+                raise UnsupportedCase(f"chunk exceeds the {max_chunk_bytes}-byte limit")
 
             creation = selected.id.get_create_plist()
             try:

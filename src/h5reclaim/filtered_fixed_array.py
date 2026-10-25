@@ -115,7 +115,7 @@ def read_fixed_array_variants(
             or count != len(coordinates)):
         raise UnsupportedFormat("fixed-array chunk capacity exceeds parser limit or coordinate grid")
     if (not isinstance(chunk_bytes, int) or chunk_bytes != prod(chunks) * element_size
-            or chunk_bytes < 1 or chunk_bytes > MAX_CHUNK_BYTES):
+            or chunk_bytes < 1 or chunk_bytes > reader.max_chunk_bytes):
         raise FormatError("fixed-array chunk byte size contradicts observed shape and datatype")
     if len(shape) != len(chunks) or any(not isinstance(value, int) or value <= 0
                                         for value in (*shape, *chunks, element_size)):
@@ -240,7 +240,7 @@ def read_fixed_array_variants(
                 continue
             size = _uint(page_raw[slot+offsize:slot+offsize+size_width]) if filtered else chunk_bytes
             mask = _uint(page_raw[slot+offsize+size_width:slot+entry_size]) if filtered else 0
-            if size < 1 or size > MAX_CHUNK_BYTES or mask >> len(filters):
+            if size < 1 or size > reader.max_chunk_bytes or mask >> len(filters):
                 raise FormatError("fixed-array stored size or filter mask is invalid")
             absolute = reader.absolute(address)
             if size > sb.eof_address - absolute:

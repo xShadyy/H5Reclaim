@@ -302,7 +302,7 @@ def read_extensible_array(
     if any(not isinstance(v, int) or v < current for i, (v, current) in
            enumerate(zip(maxshape, shape)) if i != unlim):
         raise FormatError("fixed maximum dimension is smaller than current dataset extent")
-    if max_chunks < 1 or max_chunks > MAX_CHUNKS:
+    if max_chunks < 1 or max_chunks > reader.max_chunks:
         raise UnsupportedFormat("extensible-array chunk budget is invalid")
     grid = _ceil_grid(shape, chunks)
     fixed_max_grid = tuple((maxshape[i] + chunks[i] - 1) // chunks[i]
@@ -311,7 +311,7 @@ def read_extensible_array(
     if count > max_chunks:
         raise UnsupportedFormat("extensible-array chunk count exceeds bounded parser limit")
     chunk_bytes = prod(chunks) * element_size
-    if chunk_bytes < 1 or chunk_bytes > MAX_CHUNK_BYTES:
+    if chunk_bytes < 1 or chunk_bytes > reader.max_chunk_bytes:
         raise UnsupportedFormat("extensible-array unfiltered chunk size exceeds limit")
     max_bits, index_elems, min_ptrs, min_elems, page_bits = layout_params
     if (not 1 <= max_bits <= 48 or not 1 <= index_elems <= 255
@@ -599,7 +599,7 @@ def read_extensible_array(
         mask = _uint(entry[-4:]) if filtered else 0
         if filtered and mask >> len(filters):
             raise FormatError("extensible-array chunk filter mask exceeds selected pipeline")
-        if size < 1 or size > MAX_CHUNK_BYTES:
+        if size < 1 or size > reader.max_chunk_bytes:
             raise UnsupportedFormat("extensible-array stored chunk size exceeds limit")
         absolute = reader.absolute(payload_address)
         if size > reader.superblock.eof_address - absolute:

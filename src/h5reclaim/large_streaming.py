@@ -75,13 +75,15 @@ class LargeBudget:
     max_type_depth: int = 64
     max_type_members: int = 65536
     worker_memory_bytes: int = 3 * GIB
+    max_scan_bytes: int = 8 * GIB
 
     def __post_init__(self) -> None:
         integer_fields = (self.max_source_bytes, self.max_copied_bytes, self.max_logical_bytes,
                           self.max_output_bytes, self.max_chunks, self.max_grid,
                           self.block_bytes, self.disk_reserve_bytes, self.max_metadata_bytes,
                           self.max_objects, self.max_links, self.max_chunk_bytes,
-                          self.logical_batch_records, self.max_type_depth, self.max_type_members, self.worker_memory_bytes)
+                          self.logical_batch_records, self.max_type_depth, self.max_type_members, self.worker_memory_bytes,
+                          self.max_scan_bytes)
         if (any(type(value) is not int for value in integer_fields)
                 or type(self.max_seconds) not in (int, float) or not isfinite(self.max_seconds)):
             raise ValueError("large export budget requires integer counts and a finite duration")
@@ -103,6 +105,8 @@ class LargeBudget:
                 or not 0 < self.max_type_members < 1 << 63
                 or not 0 < self.worker_memory_bytes < 1 << 63):
             raise ValueError("invalid large export resource budget")
+        if not 0 < self.max_scan_bytes < 1 << 63:
+            raise ValueError("scan byte budget must be a positive bounded integer")
 
 
 def _deadline(deadline: float) -> None:

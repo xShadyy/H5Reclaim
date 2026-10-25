@@ -118,14 +118,25 @@ class ModernH5File:
     """A read-only, file-size and declared-EOF bounded modern-format reader."""
 
     def __init__(self, path: str | Path, *, large_sparse_scan: bool = False,
-                 max_chunks: int = MAX_CHUNKS):
+                 max_chunks: int = MAX_CHUNKS, max_chunk_bytes: int = MAX_CHUNK_BYTES,
+                 repair_scan_bytes: int = 512 << 20, repair_scan_seconds: float = 180):
         if not 1 <= max_chunks <= 65536:
             raise ValueError("modern parser chunk bound must be in 1..65536")
         if max_chunks > MAX_CHUNKS and not large_sparse_scan:
             raise ValueError("increased modern parser chunk bound requires explicit large mode")
+        if (type(max_chunk_bytes) is not int or not 0 < max_chunk_bytes <= 128 << 20
+                or type(repair_scan_bytes) is not int or not 0 < repair_scan_bytes < 1 << 63
+                or not 0 < repair_scan_seconds <= 86400):
+            raise ValueError("invalid modern chunk or repair scan budget")
+        if not large_sparse_scan and (max_chunk_bytes > MAX_CHUNK_BYTES or repair_scan_bytes > 512 << 20):
+            raise ValueError("increased parser budgets require explicit large mode")
         self.path = Path(path)
         self.large_sparse_scan = large_sparse_scan
         self.max_chunks = max_chunks
+        self.max_chunk_bytes = max_chunk_bytes
+        self.max_read_bytes = max(MAX_READ_BYTES, max_chunk_bytes)
+        self.repair_scan_bytes = repair_scan_bytes
+        self.repair_scan_seconds = repair_scan_seconds
         self._file: BinaryIO = self.path.open("rb")
         try:
             self.size = self._file.seek(0, 2)
@@ -151,7 +162,7 @@ class ModernH5File:
     def _read_absolute(self, offset: int, length: int) -> bytes:
         if self._file.closed:
             raise ValueError("source file is closed")
-        if length < 0 or length > MAX_READ_BYTES:
+        if length < 0 or length > self.max_read_bytes:
             raise UnsupportedFormat("modern metadata or raw single-read limit exceeded")
         if offset < 0 or offset > self.size or length > self.size - offset:
             raise FormatError("read outside source file")
@@ -315,7 +326,7 @@ class ModernH5File:
         if max_chunks < 1 or max_chunks > self.max_chunks or count > max_chunks:
             raise UnsupportedFormat("modern index chunk count exceeds limit")
         chunk_bytes = prod(chunks) * element_size
-        if chunk_bytes > MAX_CHUNK_BYTES:
+        if chunk_bytes > self.max_chunk_bytes:
             raise UnsupportedFormat("modern index chunk size exceeds limit")
         data, layout_offset = self._parse_object_layout(object_address)
         if len(data) < 6 or data[0] not in (4, 5) or data[1] != 2:
@@ -389,7 +400,7 @@ class ModernH5File:
             # The caller publishes the grid as unknown with no assignments.
             return ModernIndex(name, version, object_address, base,
                                layout_offset + offset, chunks, element_size, ())
-        if size < 1 or size > MAX_CHUNK_BYTES:
+        if size < 1 or size > self.max_chunk_bytes:
             raise UnsupportedFormat("modern stored chunk size exceeds limit")
         coordinates = tuple(tuple(i * c for i, c in zip(index, chunks))
                             for index in product(*(range(length) for length in grid)))

@@ -170,12 +170,12 @@ def read_v2_btree_chunks(
             raise FormatError("v2 B-tree maximum extents contradict current dimensions")
         if sum(bound is None for bound in maxshape) < 2:
             raise FormatError("v2 B-tree chunk index requires multiple unlimited dimensions")
-    if max_chunks < 1 or max_chunks > MAX_CHUNKS:
+    if max_chunks < 1 or max_chunks > reader.max_chunks:
         raise UnsupportedFormat("v2 B-tree record limit is out of range")
     if len(filters) > 32:
         raise UnsupportedFormat("v2 B-tree filter mask supports at most 32 filters")
     chunk_bytes = prod(chunk_shape) * element_size
-    if chunk_bytes > MAX_CHUNK_BYTES:
+    if chunk_bytes > reader.max_chunk_bytes:
         raise UnsupportedFormat("v2 B-tree unfiltered chunk exceeds byte limit")
     grid = tuple((s + c - 1) // c for s, c in zip(shape, chunk_shape))
     if prod(grid) > (1 << 63):
@@ -314,7 +314,7 @@ def read_v2_btree_chunks(
                        for i in range(cursor, len(rec), 8))
         if len(scaled) != len(shape) or any(s >= g for s, g in zip(scaled, grid)):
             raise FormatError("v2 B-tree record has a coordinate outside selected dataset")
-        if size < 1 or size > MAX_CHUNK_BYTES:
+        if size < 1 or size > reader.max_chunk_bytes:
             raise UnsupportedFormat("v2 B-tree stored chunk exceeds byte limit")
         physical = reader.absolute(address)
         if size > sb.eof_address - physical:

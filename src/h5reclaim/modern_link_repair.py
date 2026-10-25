@@ -68,8 +68,10 @@ def _scan_extents(reader: ModernH5File) -> Iterator[tuple[int, int]]:
             if not start < end <= limit:
                 raise UnsupportedFormat("sparse scan returned an invalid hole extent")
             used += end - start
-            if used > MAX_REPAIR_SCAN_BYTES:
-                raise UnsupportedFormat("large checked-link scan exceeds 512 MiB allocated data budget")
+            scan_limit = getattr(reader, "repair_scan_bytes", MAX_REPAIR_SCAN_BYTES)
+            if used > scan_limit:
+                label = "512 MiB" if scan_limit == MAX_REPAIR_SCAN_BYTES else f"{scan_limit} bytes"
+                raise UnsupportedFormat(f"large checked-link scan exceeds {label} allocated data budget")
             yield (start, end)
             cursor = end
 
@@ -81,7 +83,7 @@ def candidate_addresses(reader: ModernH5File, signature: bytes) -> Iterator[int]
     large_scan = bool(getattr(reader, "large_sparse_scan", False))
     if reader.size > MAX_REPAIR_SCAN_BYTES and not large_scan:
         raise UnsupportedFormat("modern index link reconstruction scan exceeds 512 MiB limit")
-    deadline = time.monotonic() + MAX_LARGE_SCAN_SECONDS
+    deadline = time.monotonic() + getattr(reader, "repair_scan_seconds", MAX_LARGE_SCAN_SECONDS)
     candidates = 0
     extents = (_scan_extents(reader) if large_scan else
                ((0, min(reader.size, reader.superblock.eof_address)),))
