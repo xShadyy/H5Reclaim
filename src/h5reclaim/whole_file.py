@@ -374,6 +374,9 @@ def _augment_detached_inventory(image, inventory, error=None):
         blocked_paths={item["path"] for kind in ("groups", "datasets", "named_types")
                        for item in inventory.get(kind, ())})
     inventory["groups"].extend(reconstructed["groups"])
+    inventory["group_aliases"].extend(reconstructed["group_aliases"])
+    for entry in inventory["datasets"]:
+        entry["aliases"].extend(reconstructed["dataset_aliases"].get(entry.get("address"), ()))
     added = []
     for item in discovery["datasets"]:
         if item["address"] in known:
@@ -384,7 +387,8 @@ def _augment_detached_inventory(image, inventory, error=None):
         if any(entry["path"] == path for entry in inventory["datasets"]):
             path = f"/recovered/detached_{item['address']:x}"
         entry = {"path": path, "address": item["address"], "detached": True,
-                 "aliases": [], "attributes": [], "attributes_omitted": [],
+                 "aliases": reconstructed["dataset_aliases"].get(item["address"], []),
+                 "attributes": [], "attributes_omitted": [],
                  "is_scale": False, "dimensions": []}
         inventory["datasets"].append(entry)
         added.append(path)
@@ -392,7 +396,10 @@ def _augment_detached_inventory(image, inventory, error=None):
         inventory["groups"].append({"path": "/recovered", "attributes": [], "attributes_omitted": []})
     inventory["detached_discovery"] = {"objects_added": added,
         "groups_reconstructed": [item["path"] for item in reconstructed["groups"]],
-        "group_path_scope": reconstructed["scope"], "complete_namespace": False}
+        "group_path_scope": reconstructed["scope"],
+        "group_aliases": reconstructed["group_aliases"],
+        "dataset_aliases": reconstructed["dataset_aliases"],
+        "omitted_links": reconstructed["omitted_links"], "complete_namespace": False}
     return inventory
 
 
@@ -727,6 +734,8 @@ def rescue_all(source: str | Path, output: str | Path, report_path: str | Path, 
                                              "granularity": "completed datasets and native selections"},
                               "inventory": {key: inventory[key] for key in ("complete", "issues", "skipped", "inspection_view")},
                               "historical_integrity": {"status": "unknown", "comparison": "no prior capture supplied"}}
+                    if "detached_discovery" in inventory:
+                        result["inventory"]["detached_discovery"] = inventory["detached_discovery"]
                     serialized = json.dumps(result, sort_keys=True, indent=2) + "\n"
                     for item in records:
                         meta = merged[item["report"]["whole_file_metadata_group"]]
