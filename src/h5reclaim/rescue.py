@@ -142,7 +142,7 @@ def _auto_image(source, dataset, output, report, *, budget, strict_history,
         elif condition["end_of_address"].get("relation") == "past_physical_eof":
             routes = ["truncated_chunks", "nonchunked"]
         else:
-            routes = (["native_stream"] if dataset.split('/')[1] == '_h5reclaim' or resume_dir is not None or root_trial else []) + ["structural", "large_structural", "nonchunked"] + ([] if prefer_streaming else ["readable"]) + ["native_stream"]
+            routes = (["native_stream"] if dataset.split('/')[1] == '_h5reclaim' or resume_dir is not None or root_trial else []) + ["structural", "large_structural", "relocated_native", "nonchunked"] + ([] if prefer_streaming else ["readable"]) + ["native_stream"]
         chosen = None
         for route in routes:
             try:

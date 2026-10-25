@@ -22,7 +22,7 @@ MAX_REPORT = 32 * 1024 * 1024
 ROUTES = frozenset({
     "family", "split", "vds", "external_raw", "external_link", "nonchunked",
     "replicas", "parity", "erasure", "status", "metadata_trial", "capsule",
-    "truncated_chunks", "large_readable", "large_structural", "structural", "element_baseline", "chunk_baseline", "readable", "protection",
+    "truncated_chunks", "large_readable", "large_structural", "relocated_native", "structural", "element_baseline", "chunk_baseline", "readable", "protection",
     "variable_readable",
     "native_stream",
     "object", "native_family", "native_split", "alternative_reader",
@@ -201,6 +201,12 @@ def _child(request_path: Path, response_path: Path) -> int:
             recover_large_structural(args["source"], args["dataset"], output, report,
                                       published_output=Path(request["published_output"]),
                                       budget=LargeBudget(**json.loads(args.get("streaming_budget", "{}"))))
+        elif route == "relocated_native":
+            from .large_streaming import LargeBudget
+            from .repaired_native import recover_relocated_index
+            recover_relocated_index(args["source"], args["dataset"], output, report,
+                published_output=Path(request["published_output"]),
+                budget=LargeBudget(**json.loads(args.get("streaming_budget", "{}"))))
         elif route == "structural":
             from .recovery import recover
             if args.get("hints"):
