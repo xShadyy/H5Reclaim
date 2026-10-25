@@ -100,6 +100,27 @@ class MetadataSnapshotTests(unittest.TestCase):
                                "--report", str(self.report)]), 0)
         self.assertEqual(hashlib.sha256(self.output.read_bytes()).hexdigest(), self.expected)
 
+    def test_legacy_userblock_is_preserved_while_its_header_is_repaired(self):
+        healthy = self.root / "legacy.h5"
+        damaged = self.root / "legacy-damaged.h5"
+        snapshot = self.root / "legacy-metadata.zip"
+        output = self.root / "legacy-result.h5"
+        report_path = self.root / "legacy-report.json"
+        with h5py.File(healthy, "w", libver="earliest", userblock_size=512) as handle:
+            handle["reading"] = np.arange(64, dtype="<i8")
+        with healthy.open("r+b") as stream:
+            stream.write(b"retained user block\n")
+        record = capture_metadata_snapshot(healthy, snapshot)
+        self.assertEqual(record["metadata_ranges"][0][0], 512)
+        shutil.copyfile(healthy, damaged)
+        with damaged.open("r+b") as stream:
+            stream.seek(512)
+            stream.write(bytes(8))
+        restore_metadata_snapshot(damaged, snapshot, record["archive_sha256"], output, report_path)
+        self.assertEqual(output.read_bytes(), healthy.read_bytes())
+        with h5py.File(output, "r") as handle:
+            np.testing.assert_array_equal(handle["reading"][:], np.arange(64))
+
 
 if __name__ == "__main__":
     unittest.main()
