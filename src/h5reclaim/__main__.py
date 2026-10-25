@@ -341,6 +341,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
     commands = parser.add_subparsers(dest="command", required=True, metavar="COMMAND", title="commands")
+    commands.add_parser("capabilities", help="show supported operations, repair classes and default resource limits")
     alternative_cmd = commands.add_parser("export-alternative", help="export through optional Pyfive with explicit cross-reader or candidate statuses")
     alternative_cmd.add_argument("source", type=Path)
     alternative_cmd.add_argument("--dataset", required=True, type=_dataset_path)
@@ -605,6 +606,11 @@ def main(argv: list[str] | None = None) -> int:
                  or Path(arguments[0]).suffix.lower() in (".h5", ".hdf5", ".he5"))):
         arguments.insert(0, "rescue")
     args = parser.parse_args(arguments)
+
+    if args.command == "capabilities":
+        from .capabilities import capabilities
+        print(json.dumps(capabilities(), indent=2, sort_keys=True))
+        return 0
 
     if args.command == "export-alternative":
         try:
