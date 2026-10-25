@@ -41,6 +41,8 @@ def _rooted_addresses(reader):
     messages = _messages(reader, extension)
     information = _unique(messages, 0x17)
     if information is None:
+        if any(message.kind == 0x18 for message in messages):
+            raise UnsupportedFormat("older file-space info message requires a separate checked parser")
         return [], list(reader.metadata_ranges[1:])
     data = information.data
     if (information.flags & 2 or len(data) != 29 + 12 * offsize or data[:3] != b"\x01\x00\x01"):
