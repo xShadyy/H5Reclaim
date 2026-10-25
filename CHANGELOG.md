@@ -2,12 +2,24 @@
 
 ## 1.2.0
 
-- Extend checked structural recovery to multiple independently justified
-  index-link repairs, retaining explicit refusal for ambiguous ownership.
-- Extend structural metadata repair and trusted prior-metadata restoration
-  to additional evidence-backed damage classes.
-- Increase the supported streaming index and rank budgets where the format,
-  decoder and configured resource quotas permit.
+- Recover multiple damaged modern index links in distinct metadata parents,
+  each uniquely justified by restoring its own original checksum. Attribute
+  repaired links on each recovered chunk's checked path and share one physical
+  search budget across all link repairs.
+- Raise the structural rank ceiling to the HDF5 format's rank 32 and support
+  million-slot sparse fixed-array indexes with caller-selected chunk, grid,
+  metadata and worker-memory quotas. Expand bounded fixed compound and array
+  records while continuing to reject file-bound heap pointers and references.
+- Inspect rooted persistent file-space manager headers and section lists.
+  Plan checksum-constrained FSHD/FSSE repairs and optionally reseal them only
+  when the surviving structure can be checked independently.
+- Restore a missing compact group link to a checked detached dataset header
+  when the original parent checksum uniquely proves its address.
+- Capture independently checked full-file metadata before damage and restore
+  the captured bytes to a new copy if all uncaptured bytes match; independently
+  pin the archive digest and recheck the complete original file hash.
+- Extend the independent compressed streaming panel with two-link EA and
+  B-tree faults scored against separate NumPy truth.
 
 ## 1.1.0
 

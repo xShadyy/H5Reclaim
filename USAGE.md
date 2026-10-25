@@ -144,6 +144,14 @@ with `executable: false`; they cannot be applied. Arbitrary missing metadata,
 other free-space encodings and unconstrained checksum rewriting are outside
 the implemented catalog. Use `capabilities` for the exact list.
 
+The file-space repair case covers a rooted version-1 file-space declaration
+and version-0 file-client FSHD/FSSE structures. It checks header and section
+checksums, their reciprocal owner, counts and allocation bounds. The repair
+uses the original checksum where a unique correction exists. The optional
+reseal mode requires checked surviving structure; it does not recover the
+historical free-space list if its content is missing. Other manager encodings
+remain outside this repair case.
+
 ## Restore captured metadata after later damage
 
 Capture checked metadata while the file is still healthy. Save the returned
@@ -161,6 +169,22 @@ captured ranges to remain identical. The restored file must match the complete
 earlier file hash and pass strict covered-metadata preflight. It cannot infer
 uncaptured or later-changed metadata. The archive can contain inline dataset
 values and attributes; retain it as private scientific data.
+
+## Rebuild a checked detached group under a synthetic path
+
+```sh
+h5reclaim discover damaged.h5 --json
+h5reclaim rescue damaged.h5 --output rebuilt.h5 --report rebuilt.json
+```
+
+Whole-file rescue can export a detached modern group whose own checked header
+still contains unambiguous local links to independently validated child
+groups and datasets. It places the group under
+`/recovered/group_<address>` and preserves checked names inside that group.
+The lost parent name is not inferred. Cyclic, dangling, shared or conflicting
+trees are not assigned a group path; checked datasets may still be exported
+individually by object address. Detached group attributes are reported as
+omitted.
 
 ## Verify results and use accepted measurements
 
