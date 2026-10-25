@@ -340,6 +340,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
     commands = parser.add_subparsers(dest="command", required=True, metavar="COMMAND", title="commands")
+    for name, description in (("check", "preflight reachable metadata without native HDF5 reads"),
+                              ("markers", "scan bounded metadata signature candidates without assigning ownership"),
+                              ("explain", "show reachable object messages or a bounded byte range")):
+        command = commands.add_parser(name, help=description)
+        command.add_argument("source", type=Path)
+        command.add_argument("--streaming-budget", type=Path)
+        command.add_argument("--json", action="store_true")
+        if name != "markers":
+            command.add_argument("--profile", choices=("forensic", "strict"), default="forensic")
+        if name == "explain":
+            command.add_argument("--path", default="/")
+            command.add_argument("--offset", type=lambda s: int(s, 0))
+            command.add_argument("--length", type=int, default=64)
     report_cmd = commands.add_parser("report", help="summarize an existing evidence JSON report and its status-map paths")
     report_cmd.add_argument("report", type=Path, help="evidence JSON produced by rescue, recover or export-readable")
     result_cmd = commands.add_parser(
@@ -549,6 +562,35 @@ def main(argv: list[str] | None = None) -> int:
                  or Path(arguments[0]).suffix.lower() in (".h5", ".hdf5", ".he5"))):
         arguments.insert(0, "rescue")
     args = parser.parse_args(arguments)
+
+    if args.command in ("check", "markers", "explain"):
+        try:
+            from .preflight import preflight, scan_markers
+            from .large_streaming import LargeBudget
+            options = json.loads(args.streaming_budget.read_text()) if args.streaming_budget else {}
+            if args.command == "markers":
+                result = scan_markers(args.source, budget=LargeBudget(**options))
+            else:
+                result = preflight(args.source, budget=LargeBudget(**options), profile=args.profile)
+                if args.command == "explain":
+                    result["objects"] = [r for r in result["objects"] if r["path"] == args.path]
+                    if args.offset is not None:
+                        if not 0 <= args.offset < args.source.stat().st_size or not 1 <= args.length <= 4096:
+                            raise ValueError("byte inspection needs an in-file offset and length in 1..4096")
+                        with args.source.open("rb") as stream:
+                            stream.seek(args.offset)
+                            result["byte_range"] = {"offset": args.offset, "hex": stream.read(args.length).hex()}
+            if args.json or args.command != "check":
+                print(json.dumps(result, indent=2, sort_keys=True))
+            else:
+                print(f"H5Reclaim metadata preflight | {result['decision']}")
+                print(f"Objects checked: {len(result['objects'])}; findings: {len(result['findings'])}")
+                for finding in result["findings"][:20]:
+                    print(_display_path(f"{finding['code']}: {finding['message']}", 300))
+            return 1 if result.get("decision", "accept") not in ("accept", "accept_with_warnings") else 0
+        except (OSError, ValueError, RuntimeError, TypeError) as exc:
+            print(f"h5reclaim: inspection failed: {_display_path(exc, 300)}", file=sys.stderr)
+            return 2
 
     if args.command in ("fingerprint-result", "verify-fingerprint"):
         from .result_integrity import fingerprint_result, verify_fingerprint
