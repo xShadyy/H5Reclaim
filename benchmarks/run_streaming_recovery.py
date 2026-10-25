@@ -121,7 +121,7 @@ def run(root, include_large_sparse=True):
     root.mkdir(parents=True, exist_ok=True)
     if any(root.iterdir()):
         raise ValueError("benchmark work directory must be empty")
-    cases = [run_case(root, case) for case in CASES if include_large_sparse or not case[-1]]
+    cases = [run_case(root, case) for case in CASES if include_large_sparse or not case[6]]
     return {"schema_version": 1, "tool_version": VERSION,
         "category": "controlled compressed multidimensional index-link recovery through the public CLI",
         "environment": {"python": platform.python_version(), "h5py": h5py.__version__,
