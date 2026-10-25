@@ -72,6 +72,18 @@ class CliUsabilityTests(unittest.TestCase):
         self.assertEqual(displayed, path[:21] + "...")
         self.assertEqual(len(displayed), 24)
 
+    def test_html_report_option_is_unavailable(self) -> None:
+        report = self.base / "recovery.json"
+        removed = command("report", str(report), "--html", str(self.base / "recovery.html"))
+        self.assertEqual(removed.returncode, 2)
+        self.assertIn("unrecognized arguments: --html", removed.stderr)
+        self.assertFalse((self.base / "recovery.html").exists())
+
+        batch = command("batch-rescue", str(self.source), "--output-dir", str(self.base / "outputs"),
+                        "--summary", str(self.base / "summary.json"), "--html")
+        self.assertEqual(batch.returncode, 2)
+        self.assertIn("unrecognized arguments: --html", batch.stderr)
+
     def test_whole_file_defaults_publish_new_sibling_files_and_summary(self) -> None:
         before = hashlib.sha256(self.source.read_bytes()).hexdigest()
         result = command("rescue", str(self.source))

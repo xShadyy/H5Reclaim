@@ -12,16 +12,16 @@ from h5reclaim.capabilities import capabilities
 
 
 class ApiTests(unittest.TestCase):
-    def test_selected_recovery_and_optional_html(self):
+    def test_selected_recovery_and_json_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "source.h5"
             with h5py.File(source, "w") as handle:
                 handle.create_dataset("data", data=np.arange(12), chunks=(4,))
-            result = rescue(source, dataset="/data", html_report=root / "report.html")
+            result = rescue(source, dataset="/data")
             self.assertEqual(result["outcome"], "complete")
             self.assertTrue((root / "source.recovered.h5").is_file())
-            self.assertTrue((root / "report.html").is_file())
+            self.assertTrue((root / "source.recovered.report.json").is_file())
             self.assertEqual(capabilities()["large_structural"]["maximum_index_repairs_per_parent"], 2)
             self.assertTrue(capabilities()["large_structural"]["multiple_index_repairs_per_dataset"])
 
