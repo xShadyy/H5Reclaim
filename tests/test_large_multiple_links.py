@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import tempfile
+import subprocess
+import sys
+import json
 import unittest
 from pathlib import Path
 
@@ -67,6 +70,16 @@ class MultipleLinkTests(unittest.TestCase):
             self.assertTrue(np.any(evidence["repair_link_count"] == 1))
             self.assertTrue(np.all(evidence["parent_pointer_offset"][
                 evidence["repair_link_count"] == 2] == 0))
+        cli_output, cli_report = self.folder / "cli.h5", self.folder / "cli.json"
+        completed = subprocess.run([sys.executable, "-m", "h5reclaim", "rescue",
+                                    str(self.source), "--dataset", "/data",
+                                    "--output", str(cli_output), "--report", str(cli_report)],
+                                   capture_output=True, text=True, timeout=45)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        cli = json.loads(cli_report.read_text())
+        self.assertEqual(len(cli.get("unresolved_links", cli.get("index", {}).get("repairs", []))), 2)
+        with h5py.File(cli_output) as saved:
+            np.testing.assert_array_equal(saved["data"][:], truth)
 
     def test_two_btree_internal_parents_repair_independently(self):
         truth = np.arange(180 * 180, dtype="<u4").reshape((180, 180))
