@@ -485,6 +485,7 @@ def export_dependency_stream(source, dataset_path, manifest, output, report_path
                 shape, tuple(h5py.h5s.UNLIMITED if width is None else width for width in selected.maxshape))
             result = h5py.Dataset(h5py.h5d.create(group.id, name.encode(), typ.copy(), space, dcpl=creation))
             meta = target.require_group(metadata_group_for_path(dataset_path))
+            meta.attrs['source_sha256'] = resolver.main['digest']
             status = meta.create_dataset('element_status', shape=shape or (), dtype='u1', fillvalue=2, chunks=True if shape else None) if shape is not None else None
             pending = meta.create_dataset('deferred_references', shape=(0,), maxshape=(None,), chunks=(128,), dtype=h5py.string_dtype())
             buffer_coordinates, buffer_values = [], []
@@ -560,11 +561,14 @@ def export_dependency_stream(source, dataset_path, manifest, output, report_path
                            'size_bytes': resolver.main['size']}, 'output_path': str(published_output or output),
                 'dataset': {'path': dataset_path, 'shape': list(shape) if shape is not None else None, 'dtype': type_label(typ),
                             'maxshape': list(selected.maxshape) if selected.maxshape is not None else None,
-                            'chunks': None, 'file_type_encoding_hex': typ.encode().hex(),
+                            'chunks': list(result.chunks) if result.chunks is not None else None,
+                            'file_type_encoding_hex': typ.encode().hex(),
                             'attributes_copied': [item['name'] for item in attrs if item['name'] not in omitted],
                             'attributes_omitted': omitted},
                 'accepted_elements': accepted, 'unknown_elements': elements - accepted,
                 'validity_map': status.name if status is not None else None, 'element_status': status.name if status is not None else None,
+                'validity_codes': {'1': 'decoded and read back equal', '2': 'unallocated, unreadable or unknown',
+                                   '4': 'reference needs a recovered target'},
                 'deferred_references': pending.name if len(pending) else None,
                 'deferred_reference_elements': deferred_count, 'decoded_value_bytes': value_bytes,
                 'failed_reads': failures, 'native_value_sha256': value_hash.hexdigest(),

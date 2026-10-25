@@ -6,6 +6,7 @@ import base64
 import json
 import hashlib
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -760,6 +761,14 @@ def rescue_all(source: str | Path, output: str | Path, report_path: str | Path, 
                 related_stack.close()
                 _verify_source(source, identity, digest)
                 _validate_paths(source, output, report_path)
+                # Reports, restored context and HDF5 close can grow the file
+                # after the last dataset check, including group-only exports.
+                if staged_output.stat().st_size > budget.max_output_bytes:
+                    raise UnsupportedCase("whole-file output exceeds its configured byte budget")
+                if any(shutil.disk_usage(parent).free < budget.disk_reserve_bytes
+                       for parent in {staged_output.parent, staged_report.parent}):
+                    raise UnsupportedCase("whole-file publication exceeds its free-disk reserve")
+                _deadline(deadline)
                 os.link(staged_report, report_path)
                 try:
                     os.link(staged_output, output)

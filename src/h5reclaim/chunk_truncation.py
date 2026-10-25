@@ -356,7 +356,6 @@ def recover_truncated(source: Path, dataset_path: str, output: Path,
         name for name, _value in analysis.spec.attributes
     })
     analysis.report["selected_annotation_collisions"] = annotation_collisions
-    report_text = json.dumps(analysis.report, indent=2, sort_keys=True) + "\n"
     with tempfile.TemporaryDirectory(prefix=".h5reclaim-", dir=output.parent) as out_dir:
         with tempfile.TemporaryDirectory(prefix=".h5reclaim-", dir=report_path.parent) as rep_dir:
             output_temp = Path(out_dir) / "output.h5"
@@ -366,6 +365,8 @@ def recover_truncated(source: Path, dataset_path: str, output: Path,
                 with h5py.File(output_temp, "x") as handle:
                     spec = analysis.spec
                     data = _create_recovered_dataset(handle, spec)
+                    analysis.report["dataset"]["file_type_encoding_hex"] = data.id.get_type().encode().hex()
+                    report_text = json.dumps(analysis.report, indent=2, sort_keys=True) + "\n"
                     for record in analysis.records:
                         data.id.write_direct_chunk(record.coordinate, record.payload, filter_mask=0)
                     for name, value in spec.attributes:

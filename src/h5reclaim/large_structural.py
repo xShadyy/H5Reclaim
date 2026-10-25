@@ -233,6 +233,7 @@ def recover_large_structural(source: str | Path, dataset_path: str, output: str 
                         "source": {"path": str(source), "size_bytes": size, "sha256_before": digest,
                                    "sha256_after": digest, "snapshot_physical_data_bytes_copied": copied},
                         "dataset": {"path": spec.path, "shape": list(spec.shape), "dtype": np.dtype(spec.dtype).str,
+                            "file_type_encoding_hex": target.id.get_type().encode().hex(),
                             "chunks": list(spec.chunks), "maxshape": list(spec.maxshape),
                             "filters_in_order": list(spec.filters), "output_filters": [],
                             "attributes_copied": [name for name, _ in spec.attributes],

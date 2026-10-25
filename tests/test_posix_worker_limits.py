@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from h5reclaim.worker_limits import _run_monitored_posix, memory_budget_record
+from h5reclaim.worker_limits import _run_monitored_posix, memory_budget_record, run_worker
 
 
 @unittest.skipIf(os.name == "nt", "POSIX process-group monitor tests")
@@ -115,6 +115,43 @@ print(json.dumps([applied, list(before), list(resource.getrlimit(resource.RLIMIT
         self.assertIsNone(report["address_space_cap_bytes"])
         self.assertEqual(report["resident_memory_limit_bytes"], 536870912)
         self.assertEqual(report["memory_enforcement"], "process_group_resident_monitor")
+
+
+@unittest.skipUnless(sys.platform.startswith("linux"), "Linux public worker dispatch")
+class LinuxWorkerLifetimeTests(unittest.TestCase):
+    def test_worker_timeout_and_exit_stop_real_descendants(self):
+        import signal
+
+        for exit_code in (None, 0, 7):
+            with self.subTest(exit_code=exit_code), tempfile.TemporaryDirectory() as directory:
+                marker, heartbeat = (Path(directory) / name for name in ("child.pid", "heartbeat"))
+                child = ("import os,time; from pathlib import Path; "
+                         f"Path({str(marker)!r}).write_text(str(os.getpid()))\n"
+                         f"heartbeat=Path({str(heartbeat)!r})\n"
+                         "while True:\n heartbeat.write_text(str(time.time_ns()))\n time.sleep(0.02)\n")
+                parent = ("import subprocess,sys,time; from pathlib import Path; "
+                          f"subprocess.Popen([sys.executable,'-c',{child!r}])\n"
+                          f"while not Path({str(heartbeat)!r}).exists(): time.sleep(0.01)\n"
+                          + ("time.sleep(30)" if exit_code is None else f"sys.exit({exit_code})"))
+                try:
+                    if exit_code is None:
+                        with self.assertRaises(subprocess.TimeoutExpired):
+                            run_worker([sys.executable, "-c", parent], env=os.environ,
+                                       timeout_seconds=2, memory_bytes=256 * 1024**2)
+                    else:
+                        result = run_worker([sys.executable, "-c", parent], env=os.environ,
+                                            timeout_seconds=10, memory_bytes=256 * 1024**2)
+                        self.assertEqual(result.returncode, exit_code)
+                    self.assertTrue(marker.is_file(), "the worker must start a real descendant")
+                    before = heartbeat.read_bytes()
+                    time.sleep(0.2)
+                    self.assertEqual(heartbeat.read_bytes(), before, "descendant kept running after its worker returned")
+                finally:
+                    if marker.exists():
+                        try:
+                            os.kill(int(marker.read_text()), signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
 
 
 if __name__ == "__main__":

@@ -20,6 +20,8 @@ from h5reclaim.native_stream import export_native_stream
 from h5reclaim.recovery import RecoveryError, sha256_file
 from h5reclaim.related_manifest import build_related_manifest
 from h5reclaim.rescue import auto_rescue
+from h5reclaim.result_verification import verify_result
+from h5reclaim.route_worker import run_route
 from h5reclaim.whole_file import rescue_all
 
 
@@ -45,11 +47,39 @@ class StreamingCompletionTests(unittest.TestCase):
         layout[:] = h5py.VirtualSource('leaf.h5', 'data', expected.shape)
         with h5py.File(self.source, 'w', libver='latest') as handle:
             handle.create_virtual_dataset('data', layout)
-        report = export_dependency_stream(self.source, '/data', self.pin([('leaf.h5', leaf)]), self.output, self.report)
+        manifest = self.pin([('leaf.h5', leaf)])
+        report = run_route('vds', self.output, self.report, source=str(self.source),
+                           dataset='/data', manifest=str(manifest))
+        self.assertEqual(report['mode'], 'dependency_stream_export')
         self.assertEqual(report['accepted_elements'], len(expected))
         with h5py.File(self.output, 'r') as handle:
             np.testing.assert_array_equal(handle['data'][:], expected)
             self.assertTrue(np.all(handle[report['validity_map']][:] == 1))
+            self.assertEqual(report['dataset']['chunks'], list(handle['data'].chunks))
+        checked = verify_result(self.output, self.report, source_path=self.source)
+        self.assertEqual(checked['status'], 'passed')
+        self.assertEqual(checked['datasets'][0]['accepted_elements'], len(expected))
+
+    def test_external_string_route_and_whole_file_outputs_pass_verification(self):
+        leaf = self.root / 'leaf.h5'
+        expected = ['alpha', 'βeta', '']
+        with h5py.File(leaf, 'w') as handle:
+            handle.create_dataset('strings', data=expected, dtype=h5py.string_dtype())
+        with h5py.File(self.source, 'w') as handle:
+            handle['strings'] = h5py.ExternalLink('leaf.h5', '/strings')
+        manifest = self.pin([('leaf.h5', leaf)])
+        report = run_route('external_link', self.output, self.report,
+                           source=str(self.source), dataset='/strings', manifest=str(manifest))
+        self.assertEqual(report['mode'], 'dependency_stream_export')
+        self.assertEqual(report['outcome'], 'complete')
+        with h5py.File(self.output, 'r') as handle:
+            self.assertEqual(handle['strings'].asstr()[:].tolist(), expected)
+            self.assertEqual(report['dataset']['chunks'], list(handle['strings'].chunks))
+        self.assertEqual(verify_result(self.output, self.report)['status'], 'passed')
+        self.output.unlink()
+        self.report.unlink()
+        rescue_all(self.source, self.output, self.report, related_files=manifest)
+        self.assertEqual(verify_result(self.output, self.report)['status'], 'passed')
 
     def pattern_file(self, axis=0, missing=()):
         shape = (0,) if axis == 0 else (2, 0)

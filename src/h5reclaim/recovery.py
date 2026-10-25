@@ -733,7 +733,6 @@ def recover(
         record = by_coordinate[tuple(mapping["coordinate"])]
         mapping["decoded_chunk_sha256"] = hashlib.sha256(record.payload).hexdigest()
     analysis.report["payload_digest_scope"] = "nominal unfiltered output chunk bytes, including edge padding"
-    report_text = json.dumps(analysis.report, indent=2, sort_keys=True) + "\n"
     # Private temporary directories keep HDF5's pathname reopen away from
     # other users of a shared output directory. The context managers clean up
     # the first directory even if creation of the second one fails.
@@ -746,6 +745,8 @@ def recover(
                 with h5py.File(output_temp, "x") as handle:
                     spec = analysis.spec
                     data = _create_recovered_dataset(handle, spec)
+                    analysis.report["dataset"]["file_type_encoding_hex"] = data.id.get_type().encode().hex()
+                    report_text = json.dumps(analysis.report, indent=2, sort_keys=True) + "\n"
                     for record in analysis.records:
                         # Direct nominal chunk bytes retain edge padding,
                         # float NaN payloads, and signed zero. The derived

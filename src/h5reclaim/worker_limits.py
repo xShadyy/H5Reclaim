@@ -1,5 +1,6 @@
 """Launch native HDF5 workers with an OS resource boundary.
 
+POSIX worker process groups are terminated before returning to the caller.
 Linux workers apply RLIMIT_AS in their own process. macOS workers have their
 process group's resident memory monitored by the parent. On Windows, the parent
 creates the worker suspended, attaches it to a Job Object, and only then
@@ -27,10 +28,26 @@ def run_worker(command: Sequence[str], *, env: Mapping[str, str],
     if sys.platform == "darwin":
         return _run_monitored_posix(command, env, timeout_seconds, memory_bytes)
     if os.name != "nt":
-        return subprocess.run(command, env=dict(env), stdin=subprocess.DEVNULL,
-                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                              check=False, timeout=timeout_seconds)
+        return _run_posix(command, env, timeout_seconds)
     return _run_windows_job(command, env, timeout_seconds, memory_bytes)
+
+
+def _run_posix(command: Sequence[str], env: Mapping[str, str],
+               timeout_seconds: float) -> subprocess.CompletedProcess[bytes]:
+    """Own the worker's process group, including children of native tools."""
+    import signal
+
+    process = subprocess.Popen(command, env=dict(env), stdin=subprocess.DEVNULL,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               start_new_session=True)
+    try:
+        return subprocess.CompletedProcess(command, process.wait(timeout=timeout_seconds))
+    finally:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait(timeout=5)
 
 
 _MEMORY_SAMPLE_SECONDS = 0.1

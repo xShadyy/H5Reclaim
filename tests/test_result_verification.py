@@ -34,7 +34,8 @@ class ResultVerificationTests(unittest.TestCase):
         digest = hashlib.sha256(self.source.read_bytes()).hexdigest()
         report = {"tool": "h5reclaim", "schema_version": 1, "outcome": "partial",
                   "source": {"sha256_before": digest, "sha256_after": digest},
-                  "dataset": {"path": "/values", "shape": [6], "chunks": [2]},
+                  "dataset": {"path": "/values", "shape": [6], "chunks": [2],
+                              "file_type_encoding_hex": h5py.h5t.STD_I32LE.encode().hex()},
                   "metadata_group": "/_h5reclaim", "accepted_elements": 4,
                   "unknown_elements": 2,
                   "validity": {"dataset": "/_h5reclaim/chunk_status", "granularity": "chunk",
@@ -157,6 +158,84 @@ class ResultVerificationTests(unittest.TestCase):
         result = verify_result(self.output, self.report)
         self.assertEqual((result["datasets"][0]["accepted_elements"],
                           result["datasets"][0]["unknown_elements"]), (5, 4))
+
+    def _save_descriptor(self, descriptor):
+        report = json.loads(self.report.read_text(encoding="utf-8"))
+        report["dataset"] = descriptor
+        serialized = json.dumps(report)
+        self.report.write_text(serialized, encoding="utf-8")
+        with h5py.File(self.output, "r+") as handle:
+            handle["/_h5reclaim/report_json"][()] = serialized
+
+    def test_exact_datatype_evidence_preserves_hdf5_semantics(self):
+        enums = [h5py.h5t.enum_create(h5py.h5t.STD_I32LE) for _ in range(2)]
+        for typ, value in zip(enums, (1, 2)):
+            typ.enum_insert(b"measurement", value)
+        compounds = [h5py.h5t.create(h5py.h5t.COMPOUND, 8) for _ in range(2)]
+        for typ, offsets in zip(compounds, ((0, 4), (4, 0))):
+            for name, offset in zip((b"a", b"b"), offsets):
+                typ.insert(name, offset, h5py.h5t.STD_I32LE)
+        strings = [h5py.h5t.C_S1.copy() for _ in range(2)]
+        for typ, padding in zip(strings, (h5py.h5t.STR_NULLPAD, h5py.h5t.STR_SPACEPAD)):
+            typ.set_size(4)
+            typ.set_strpad(padding)
+        narrow = h5py.h5t.STD_I32LE.copy()
+        narrow.set_precision(24)
+        for original, changed in ((h5py.h5t.STD_I32LE, h5py.h5t.STD_I32BE),
+                                  (h5py.h5t.STD_I32LE, narrow),
+                                  tuple(enums), tuple(compounds), tuple(strings)):
+            with self.subTest(datatype=original.get_class()):
+                self._selected_partial()
+                descriptor = json.loads(self.report.read_text())["dataset"]
+                descriptor["file_type_encoding_hex"] = original.encode().hex()
+                self._save_descriptor(descriptor)
+                for typ, should_match in ((original, True), (changed, False)):
+                    with h5py.File(self.output, "r+") as handle:
+                        del handle["values"]
+                        creation = h5py.h5p.create(h5py.h5p.DATASET_CREATE)
+                        creation.set_chunk((2,))
+                        dataset = h5py.h5d.create(handle.id, b"values", typ,
+                                                h5py.h5s.create_simple((6,)), dcpl=creation)
+                        dataset.close()
+                    if should_match:
+                        self.assertEqual(verify_result(self.output, self.report)["status"], "passed")
+                    else:
+                        with self.assertRaisesRegex(ResultMismatch, "datatype"):
+                            verify_result(self.output, self.report)
+
+    def test_legacy_report_without_exact_datatype_evidence_is_unsupported(self):
+        self._selected_partial()
+        descriptor = json.loads(self.report.read_text())["dataset"]
+        del descriptor["file_type_encoding_hex"]
+        descriptor["dtype"] = "<i4"
+        self._save_descriptor(descriptor)
+        with self.assertRaisesRegex(ResultUnsupported, "exact datatype evidence"):
+            verify_result(self.output, self.report)
+
+    def test_datatype_digest_alone_is_sufficient_and_checked(self):
+        self._selected_partial()
+        descriptor = json.loads(self.report.read_text())["dataset"]
+        encoding = bytes.fromhex(descriptor.pop("file_type_encoding_hex"))
+        descriptor["exact_file_datatype_sha256"] = hashlib.sha256(encoding).hexdigest()
+        self._save_descriptor(descriptor)
+        self.assertEqual(verify_result(self.output, self.report)["status"], "passed")
+        with h5py.File(self.output, "r+") as handle:
+            del handle['values']
+            handle.create_dataset('values', data=np.arange(6, dtype='<f4'), chunks=(2,))
+        with self.assertRaisesRegex(ResultMismatch, "datatype"):
+            verify_result(self.output, self.report)
+
+    def test_invalid_or_conflicting_datatype_evidence_is_rejected(self):
+        for evidence in ({"file_type_encoding_hex": "not hex"},
+                         {"exact_file_datatype_sha256": "invalid"},
+                         {"exact_file_datatype_sha256": "0" * 64}):
+            with self.subTest(evidence=evidence):
+                self._selected_partial()
+                descriptor = json.loads(self.report.read_text())["dataset"]
+                descriptor.update(evidence)
+                self._save_descriptor(descriptor)
+                with self.assertRaisesRegex(ResultMismatch, "datatype"):
+                    verify_result(self.output, self.report)
 
 
 if __name__ == "__main__":

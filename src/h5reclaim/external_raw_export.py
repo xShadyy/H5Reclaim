@@ -398,6 +398,7 @@ def export_external_raw(
                                    "sha256_after": source_hash, "size_bytes": source_size},
                         "dataset": {"path": dataset_path, "shape": list(shape),
                                     "dtype": dtype.descr if dtype.fields else dtype.str,
+                                    "file_type_encoding_hex": selected.id.get_type().encode().hex(),
                                     "maxshape": list(selected.maxshape), "logical_bytes": logical_bytes,
                                     "source_object_header_address": int(h5py.h5o.get_info(selected.id).addr),
                                     "source_layout": "external_contiguous",

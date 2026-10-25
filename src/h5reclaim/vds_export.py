@@ -347,6 +347,7 @@ def export_vds(source: str | Path, dataset_path: str, output: str | Path,
                     "mode": "vds_materialized_export", "outcome": "complete" if accepted == prod(shape) else "partial",
                     "source": {"path": str(source), "sha256_before": digest, "sha256_after": digest},
                     "dataset": {"path": dataset_path, "shape": list(shape), "dtype": dtype.str,
+                                "file_type_encoding_hex": selected.id.get_type().encode().hex(),
                                 "layout": "virtual", "output_layout": "materialized"},
                     "mappings": evidence, "related_files": [
                         {key: value for key, value in ({"declared_name": name} | item).items()

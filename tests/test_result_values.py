@@ -31,6 +31,24 @@ class ResultValueTests(unittest.TestCase):
         with self.assertRaises(ResultMismatch):
             verify_result(self.output, self.report, check_values=True)
 
+    def test_identical_chunk_bytes_cannot_be_reinterpreted_as_another_datatype(self):
+        self.assertEqual(verify_result(self.output, self.report, check_values=True)["status"], "passed")
+        with h5py.File(self.output, "r+") as handle:
+            original = handle["data"]
+            shape, chunks = original.shape, original.chunks
+            payloads = [(original.id.get_chunk_info(index).chunk_offset,
+                         original.id.read_direct_chunk(original.id.get_chunk_info(index).chunk_offset))
+                        for index in range(original.id.get_num_chunks())]
+            del handle["data"]
+            changed = handle.create_dataset("data", shape=shape, chunks=chunks, dtype="<f4")
+            for origin, (mask, payload) in payloads:
+                changed.id.write_direct_chunk(origin, payload, filter_mask=mask)
+                self.assertEqual(changed.id.read_direct_chunk(origin), (mask, payload))
+        for check_values in (False, True):
+            with self.subTest(check_values=check_values):
+                with self.assertRaisesRegex(ResultMismatch, "datatype"):
+                    verify_result(self.output, self.report, check_values=check_values)
+
     def test_fingerprint_checks_both_artifacts_and_refuses_overwrite(self):
         manifest = self.root / "fingerprint.json"
         fingerprint_result(self.output, self.report, manifest)

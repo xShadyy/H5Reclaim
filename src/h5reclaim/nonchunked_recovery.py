@@ -735,7 +735,6 @@ def export_nonchunked(
             }
         if sha256_file(snapshot) != source_hash:
             raise RecoveryError("private source snapshot changed during analysis")
-        report_text = json.dumps(analysis.report, indent=2, sort_keys=True) + "\n"
         with tempfile.TemporaryDirectory(prefix=".h5reclaim-", dir=output.parent) as out_dir:
             with tempfile.TemporaryDirectory(prefix=".h5reclaim-", dir=report_path.parent) as rep_dir:
                 output_temp = Path(out_dir) / "output.h5"
@@ -745,6 +744,8 @@ def export_nonchunked(
                     with h5py.File(output_temp, "x") as handle:
                         spec = analysis.spec
                         dataset = _create_nonchunked_dataset(handle, spec)
+                        analysis.report["dataset"]["file_type_encoding_hex"] = dataset.id.get_type().encode().hex()
+                        report_text = json.dumps(analysis.report, indent=2, sort_keys=True) + "\n"
                         _write_nonchunked_bytes(dataset, spec, analysis.recovered_bytes)
                         from .output_annotations import metadata_group_for_path
                         meta = handle.require_group(metadata_group_for_path(dataset_path))

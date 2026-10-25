@@ -285,6 +285,30 @@ def _scan_map(status: Any, shape: tuple[int, ...], chunks: tuple[int, ...] | Non
     return histogram, accepted_elements, unit, count
 
 
+def _verify_datatype(data: Any, descriptor: dict[str, Any], path: str) -> None:
+    """Require exact file-type evidence before trusting maps or record hashes."""
+    encoding = descriptor.get("file_type_encoding_hex")
+    digest = descriptor.get("exact_file_datatype_sha256")
+    if encoding is None and digest is None:
+        raise ResultUnsupported(f"report publishes no exact datatype evidence for {path}")
+    actual = data.id.get_type().encode()
+    if encoding is not None:
+        if not isinstance(encoding, str) or not encoding:
+            raise ResultMismatch(f"reported datatype encoding is invalid for {path}")
+        try:
+            expected = bytes.fromhex(encoding)
+        except ValueError as exc:
+            raise ResultMismatch(f"reported datatype encoding is invalid for {path}") from exc
+        if actual != expected:
+            raise ResultMismatch(f"output datatype differs from the report for {path}")
+    if digest is not None:
+        if (not isinstance(digest, str) or len(digest) != 64
+                or any(char not in "0123456789abcdef" for char in digest)):
+            raise ResultMismatch(f"reported datatype SHA-256 is invalid for {path}")
+        if hashlib.sha256(actual).hexdigest() != digest:
+            raise ResultMismatch(f"output datatype differs from the report for {path}")
+
+
 def _verify_dataset(handle: Any, report: dict[str, Any], max_report_bytes: int,
                     map_remaining: int, embedded_remaining: list[int]) -> tuple[dict[str, Any], int]:
     import h5py
@@ -322,6 +346,7 @@ def _verify_dataset(handle: Any, report: dict[str, Any], max_report_bytes: int,
             raise ResultMismatch(f"output chunk dimensions differ from the report for {path}")
     total = int(np.prod(shape, dtype=object)) if shape else 1
     definitions = _map_definitions(report)
+    _verify_datatype(data, descriptor, path)
     primary = None
     chunk_result = None
     scanned = 0

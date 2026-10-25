@@ -10,6 +10,7 @@ import h5py
 import numpy as np
 
 from h5reclaim.native_stream import export_native_stream
+from h5reclaim.metadata import UnsupportedCase
 from h5reclaim.object_discovery import discover
 from h5reclaim.recovery import RecoveryError
 from h5reclaim.rescue import auto_rescue
@@ -39,6 +40,55 @@ class CompletionTests(unittest.TestCase):
         for item in report['datasets']:
             self.assertEqual(item['report']['dataset']['path'], item['path'])
             self.assertEqual(item['report']['metadata_group'], item['report']['whole_file_metadata_group'])
+
+    def _check_final_output_budget(self, *, with_dataset):
+        with h5py.File(self.source, 'w') as handle:
+            handle.create_group('experiment').attrs['description'] = 'run notes'
+            if with_dataset:
+                handle.create_dataset('data', data=np.arange(8, dtype='i4'), chunks=(4,))
+        rescue_all(self.source, self.output, self.report)
+        final_size = self.output.stat().st_size
+        self.output.unlink()
+        self.report.unlink()
+        with self.assertRaisesRegex(UnsupportedCase, 'whole-file output exceeds'):
+            rescue_all(self.source, self.output, self.report,
+                       streaming_budget={'max_output_bytes': final_size - 1})
+        self.assertFalse(self.output.exists())
+        self.assertFalse(self.report.exists())
+
+    def test_final_report_and_close_must_fit_the_whole_file_output_budget(self):
+        self._check_final_output_budget(with_dataset=True)
+
+    def test_group_only_output_must_fit_the_whole_file_output_budget(self):
+        self._check_final_output_budget(with_dataset=False)
+
+    def test_final_publication_enforces_deadline_and_free_disk_reserve(self):
+        from collections import namedtuple
+        from h5reclaim.recovery import _validate_paths
+
+        with h5py.File(self.source, 'w') as handle:
+            handle.create_group('experiment')
+        disk_usage = namedtuple('DiskUsage', 'total used free')
+        for exhausted, message in (('time', 'elapsed-time quota'), ('disk', 'free-disk')):
+            with self.subTest(exhausted=exhausted):
+                finalizing = False
+                calls = 0
+
+                def validate(*args):
+                    nonlocal finalizing, calls
+                    _validate_paths(*args)
+                    calls += 1
+                    if calls == 2:
+                        finalizing = True
+
+                with patch('h5reclaim.recovery._validate_paths', side_effect=validate), \
+                        patch('time.monotonic', side_effect=lambda: 10000 if finalizing and exhausted == 'time' else 100), \
+                        patch('shutil.disk_usage', side_effect=lambda path: disk_usage(1 << 40, 0,
+                              0 if finalizing and exhausted == 'disk' else 1 << 40)):
+                    with self.assertRaisesRegex(UnsupportedCase, message):
+                        rescue_all(self.source, self.output, self.report)
+                self.assertFalse(self.output.exists())
+                self.assertFalse(self.report.exists())
 
     def test_many_large_and_null_attributes_survive(self):
         with h5py.File(self.source, 'w', track_order=True) as handle:
