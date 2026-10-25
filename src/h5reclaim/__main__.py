@@ -345,7 +345,7 @@ def main(argv: list[str] | None = None) -> int:
     result_cmd = commands.add_parser(
         "verify-result", help="check a saved recovery report against its output and validity maps",
         description=("Check report, schema and validity-map consistency in a bounded HDF5 worker. "
-                     "Recovered values are not read or hashed. This cannot prove historical values "
+                     "Use --values to rehash accepted chunks against publication digests. This cannot prove historical values "
                      "or authenticate jointly modified files. "
                      "Exit status: 0 passed, 1 inconsistent, 2 unsupported or an error."),
     )
@@ -359,6 +359,18 @@ def main(argv: list[str] | None = None) -> int:
     result_cmd.add_argument("--worker-memory-bytes", type=int, default=1536 * 1024 * 1024)
     result_cmd.add_argument("--timeout-seconds", type=int, default=45)
     result_cmd.add_argument("--json", action="store_true", help="print a machine-readable result")
+    result_cmd.add_argument("--values", action="store_true", help="also verify saved accepted-chunk payload digests")
+    result_cmd.add_argument("--max-value-bytes", type=int, default=16 << 30)
+    for name, description in (("fingerprint-result", "capture SHA-256 fingerprints of a recovered file and report"),
+                              ("verify-fingerprint", "verify exact artifact bytes against a separately retained fingerprint")):
+        command = commands.add_parser(name, help=description)
+        command.add_argument("output", type=Path, help="recovered HDF5 artifact")
+        command.add_argument("report", type=Path, help="saved JSON evidence report")
+        if name == "fingerprint-result":
+            command.add_argument("--output", dest="fingerprint", required=True, type=Path, help="new fingerprint JSON")
+        else:
+            command.add_argument("fingerprint", type=Path)
+        command.add_argument("--max-bytes", type=int, default=64 << 30)
     manifest_cmd = commands.add_parser("related-manifest", help="find and hash declared companion files in a supplied directory")
     manifest_cmd.add_argument("source", type=Path)
     manifest_cmd.add_argument("--directory", required=True, type=Path)
@@ -538,6 +550,17 @@ def main(argv: list[str] | None = None) -> int:
         arguments.insert(0, "rescue")
     args = parser.parse_args(arguments)
 
+    if args.command in ("fingerprint-result", "verify-fingerprint"):
+        from .result_integrity import fingerprint_result, verify_fingerprint
+        try:
+            function = fingerprint_result if args.command == "fingerprint-result" else verify_fingerprint
+            result = function(args.output, args.report, args.fingerprint, max_bytes=args.max_bytes)
+            print(json.dumps(result, sort_keys=True))
+            return 0
+        except (OSError, ValueError, TypeError) as exc:
+            print(f"h5reclaim: artifact fingerprint failed: {_display_path(exc, 300)}", file=sys.stderr)
+            return 2
+
     if args.command == "verify-result":
         from .result_verification import ResultMismatch, ResultUnsupported, verify_result
         try:
@@ -546,7 +569,8 @@ def main(argv: list[str] | None = None) -> int:
                                    max_map_bytes=args.max_map_bytes,
                                    max_source_bytes=args.max_source_bytes,
                                    memory_bytes=args.worker_memory_bytes,
-                                   timeout_seconds=args.timeout_seconds)
+                                   timeout_seconds=args.timeout_seconds, check_values=args.values,
+                                   max_value_bytes=args.max_value_bytes)
             if args.json:
                 print(json.dumps(result, sort_keys=True))
             else:
@@ -556,8 +580,7 @@ def main(argv: list[str] | None = None) -> int:
                           f"{item['unknown_elements']} unknown elements")
                 if len(result["datasets"]) > MAX_DISPLAY_DATASETS:
                     print(f"... {len(result['datasets']) - MAX_DISPLAY_DATASETS} more in --json")
-                print("Report/map/schema consistency only. Recovered values are not read or hashed; "
-                      "historical values and jointly modified files are not authenticated.")
+                print(result["scope"])
             return 0
         except (ResultMismatch, ResultUnsupported, OSError, ValueError, RuntimeError, TypeError) as exc:
             status = "inconsistent" if isinstance(exc, ResultMismatch) else "unsupported" if isinstance(exc, ResultUnsupported) else "error"

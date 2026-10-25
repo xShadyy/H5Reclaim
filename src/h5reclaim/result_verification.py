@@ -1,9 +1,8 @@
 """Bounded consistency checks for a published H5Reclaim output and report.
 
-This checks the *current* artifact's report, source annotation and validity
-maps. It does not read or hash recovered values, authenticate jointly modified
-artifacts, or prove historical measurement values. The CLI runs the HDF5
-reader in a limited child process.
+Checks report, source annotation and validity maps. Optional value checks
+rehash accepted fixed-record chunks against saved publication digests. This
+does not authenticate jointly modified artifacts or prove historical values.
 """
 
 from __future__ import annotations
@@ -388,8 +387,102 @@ def _verify_dataset(handle: Any, report: dict[str, Any], max_report_bytes: int,
             "primary_map_granularity": unit, "maps_checked": len(definitions)}, scanned
 
 
+def _verify_values(handle, report, accepted, remaining):
+    """Require one stored digest for every accepted fixed-record chunk."""
+    import numpy as np
+    import h5py
+    from math import prod
+    from .native_io import read_fixed_block
+    from .logical_types import contains_pointers
+
+    data = _local_object(handle, report["dataset"]["path"], "payload dataset")
+    _local_storage(data, "payload dataset")
+    if data.chunks is None or contains_pointers(data.id.get_type()):
+        raise ResultUnsupported("value verification needs fixed-record chunk digests; use a result fingerprint for other routes")
+    definitions = _map_definitions(report)
+    grid = tuple((n + c - 1) // c for n, c in zip(data.shape, data.chunks))
+    chunk_maps = []
+    for path, unit, _ in definitions:
+        obj = _local_object(handle, path, "validity map")
+        if obj.shape == grid and unit in ("chunk", "auto"):
+            chunk_maps.append(obj)
+    if len(chunk_maps) != 1:
+        raise ResultUnsupported("value digests need one unambiguous chunk validity map")
+    status = chunk_maps[0]
+    ledger_path = report.get("physical_evidence")
+    nominal = False
+    if ledger_path:
+        root = report.get("metadata_group", "/_h5reclaim")
+        if not ledger_path.startswith(root + "/"):
+            raise ResultMismatch("payload ledger is outside the selected metadata group")
+        ledger = _local_object(handle, ledger_path, "payload ledger")
+        _local_storage(ledger, "payload ledger")
+        if (not isinstance(ledger, h5py.Dataset) or ledger.ndim != 1 or len(ledger) > 1_048_576
+                or not {"origin", "decoded_sha256"}.issubset(ledger.dtype.names or ())
+                or ledger.dtype.hasobject or ledger.dtype.itemsize > 4096):
+            raise ResultUnsupported("payload ledger lacks bounded fixed-record digests")
+        records = ({"coordinate": tuple(np.atleast_1d(row["origin"]).tolist()),
+                    "digest": bytes(row["decoded_sha256"]).decode("ascii")}
+                   for row in ledger)
+    else:
+        mappings = report.get("mappings")
+        if not isinstance(mappings, list) or len(mappings) > 1_048_576:
+            raise ResultUnsupported("this route did not publish per-chunk value digests")
+        records = ({"coordinate": item.get("coordinate"), "digest": item.get("decoded_chunk_sha256")}
+                   for item in mappings)
+        nominal = True
+    seen, checked, units, consumed = set(), 0, 0, 0
+    nominal_bytes = prod(data.chunks) * data.id.get_type().get_size()
+    if nominal_bytes > min(64 << 20, remaining):
+        raise ResultUnsupported("payload chunk exceeds the value verification byte budget")
+    for record in records:
+        coordinate = record["coordinate"]
+        if (not isinstance(coordinate, (list, tuple)) or len(coordinate) != data.ndim
+                or any(type(n) is not int or n < 0 or n >= extent or n % width
+                       for n, extent, width in zip(coordinate, data.shape, data.chunks))):
+            raise ResultMismatch("payload digest has an invalid chunk coordinate")
+        coordinate = tuple(coordinate)
+        if coordinate in seen:
+            raise ResultMismatch("payload digest repeats a chunk coordinate")
+        seen.add(coordinate)
+        cell = tuple(n // c for n, c in zip(coordinate, data.chunks))
+        if status[cell] != 1:
+            if record["digest"]:
+                raise ResultMismatch("nonaccepted chunk has a published accepted-value digest")
+            continue
+        expected = record["digest"]
+        if (not isinstance(expected, str) or len(expected) != 64
+                or any(c not in "0123456789abcdef" for c in expected)):
+            raise ResultUnsupported("accepted chunk has no valid publication digest")
+        extent = tuple(min(c, n - start) for c, n, start in zip(data.chunks, data.shape, coordinate))
+        logical_bytes = (nominal_bytes if nominal else prod(extent) * data.id.get_type().get_size())
+        if logical_bytes > remaining - consumed:
+            raise ResultUnsupported("accepted payloads exceed the value verification byte budget")
+        if nominal:
+            if data.id.get_create_plist().get_nfilters():
+                raise ResultUnsupported("nominal chunk digests require unfiltered recovered storage")
+            allocation = data.id.get_chunk_info_by_coord(coordinate)
+            if allocation.size != nominal_bytes:
+                raise ResultMismatch("nominal recovered chunk has an unexpected stored length")
+            mask, value = data.id.read_direct_chunk(coordinate)
+            if mask:
+                raise ResultMismatch("unfiltered output chunk has a nonzero filter mask")
+        else:
+            selection = tuple(slice(start, start + n) for start, n in zip(coordinate, extent))
+            value = read_fixed_block(data, selection).tobytes()
+        if hashlib.sha256(value).hexdigest() != expected:
+            raise ResultMismatch(f"recovered measurement bytes differ from their publication digest at {coordinate}")
+        checked += prod(extent)
+        consumed += logical_bytes
+        units += 1
+    if checked != accepted:
+        raise ResultUnsupported("publication digests do not cover every accepted measurement")
+    return {"chunks_checked": units, "bytes_hashed": consumed, "accepted_elements_checked": checked}
+
+
 def _verify_local(output_path: Path, report_path: Path, *, source_path: Path | None,
-                  max_report_bytes: int, max_map_bytes: int, max_source_bytes: int) -> dict[str, Any]:
+                  max_report_bytes: int, max_map_bytes: int, max_source_bytes: int,
+                  check_values: bool = False, max_value_bytes: int = 16 << 30) -> dict[str, Any]:
     import h5py
 
     report = _read_json(report_path, max_report_bytes)
@@ -428,15 +521,21 @@ def _verify_local(output_path: Path, report_path: Path, *, source_path: Path | N
             if "datasets" in report:
                 raise ResultUnsupported("unknown report mode with nested datasets")
             reports = [report]
-        checked, consumed = [], 0
+        checked, consumed, value_bytes = [], 0, 0
         for selected in reports:
             result, used = _verify_dataset(output, selected, max_report_bytes,
                                            max_map_bytes - consumed, embedded_remaining)
             consumed += used
+            if check_values:
+                result["values"] = _verify_values(output, selected, result["accepted_elements"],
+                                                   max_value_bytes - value_bytes)
+                value_bytes += result["values"]["bytes_hashed"]
             checked.append(result)
     return {"status": "passed", "datasets_checked": len(checked), "datasets": checked,
             "status_bytes_scanned": consumed, "explicit_source_sha256_checked": source_path is not None,
-            "scope": "report/map/schema consistency only; recovered values are not read or hashed; no proof of historical measurements or independent authenticity"}
+            "values_checked": check_values, "value_bytes_hashed": value_bytes,
+            "scope": ("report/map/schema consistency and accepted fixed-record publication digests; no proof of historical measurements or independent authenticity" if check_values else
+                      "report/map/schema consistency only; recovered values are not read or hashed; no proof of historical measurements or independent authenticity")}
 
 
 def verify_result(output_path: str | Path, report_path: str | Path, *,
@@ -445,7 +544,8 @@ def verify_result(output_path: str | Path, report_path: str | Path, *,
                   max_map_bytes: int = DEFAULT_MAP_BYTES,
                   max_source_bytes: int = DEFAULT_SOURCE_BYTES,
                   memory_bytes: int = DEFAULT_MEMORY_BYTES,
-                  timeout_seconds: int = 45) -> dict[str, Any]:
+                  timeout_seconds: int = 45, check_values: bool = False,
+                  max_value_bytes: int = 16 << 30) -> dict[str, Any]:
     """Check a published artifact in a memory and time limited HDF5 worker.
 
     Raises ResultMismatch on inconsistency, ResultUnsupported when a route
@@ -456,12 +556,13 @@ def verify_result(output_path: str | Path, report_path: str | Path, *,
 
     for name, value in (("max_report_bytes", max_report_bytes), ("max_map_bytes", max_map_bytes),
                         ("max_source_bytes", max_source_bytes), ("memory_bytes", memory_bytes),
-                        ("timeout_seconds", timeout_seconds)):
+                        ("timeout_seconds", timeout_seconds), ("max_value_bytes", max_value_bytes)):
         _positive(value, name)
     request = {"output": str(Path(output_path).absolute()), "report": str(Path(report_path).absolute()),
                "source": str(Path(source_path).absolute()) if source_path is not None else None,
                "max_report_bytes": max_report_bytes, "max_map_bytes": max_map_bytes,
-               "max_source_bytes": max_source_bytes, "memory_bytes": memory_bytes}
+               "max_source_bytes": max_source_bytes, "memory_bytes": memory_bytes,
+               "check_values": check_values, "max_value_bytes": max_value_bytes}
     with tempfile.TemporaryDirectory(prefix=".h5reclaim-verify-") as directory:
         input_path = Path(directory) / "request.json"
         result_path = Path(directory) / "result.json"
@@ -504,7 +605,9 @@ def _worker_main() -> int:
                                source_path=Path(request["source"]) if request["source"] else None,
                                max_report_bytes=request["max_report_bytes"],
                                max_map_bytes=request["max_map_bytes"],
-                               max_source_bytes=request["max_source_bytes"])
+                               max_source_bytes=request["max_source_bytes"],
+                               check_values=request.get("check_values", False),
+                               max_value_bytes=request.get("max_value_bytes", 16 << 30))
         exit_code = 0
     except ResultMismatch as exc:
         result, exit_code = {"status": "mismatch", "reason": str(exc)[:1000]}, 1
