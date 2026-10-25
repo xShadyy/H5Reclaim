@@ -132,6 +132,37 @@ class DetachedHierarchyTests(unittest.TestCase):
                                               np.arange(18, dtype="<i2"))
             self.assertEqual(report["datasets_exported"], 1)
 
+    def test_detached_group_cycle_retains_checked_graph_and_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            source = folder / "group-cycle.h5"
+            with h5py.File(source, "w", libver="latest") as handle:
+                first = handle.create_group("lost")
+                second = first.create_group("child")
+                second["back"] = first
+                second.create_dataset("signal", data=np.arange(9, dtype="<i2"),
+                                      chunks=(3,), compression="gzip")
+                first_address = int(h5py.h5o.get_info(first.id).addr)
+            with ModernH5File(source) as reader:
+                messages = [item for item in _messages(reader, reader.superblock.root_object_address)
+                            if item.kind == 6]
+                offset = messages[0].absolute_offset + len(messages[0].data) - reader.superblock.offset_size
+            with source.open("r+b") as stream:
+                stream.seek(offset)
+                first = stream.read(1)
+                stream.seek(offset)
+                stream.write(bytes([first[0] ^ 1]))
+            output, report_path = folder / "cycle-out.h5", folder / "cycle-report.json"
+            report = rescue_all(source, output, report_path)
+            anchor = f"/recovered/group_{first_address:x}"
+            with h5py.File(output, "r") as handle:
+                self.assertEqual(h5py.h5o.get_info(handle[anchor].id).addr,
+                                 h5py.h5o.get_info(handle[anchor + "/child/back"].id).addr)
+                np.testing.assert_array_equal(handle[anchor + "/child/signal"][:],
+                                              np.arange(9, dtype="<i2"))
+            self.assertEqual(report["datasets_exported"], 1)
+            self.assertEqual(report["inventory"]["detached_discovery"]["omitted_links"], [])
+
     def test_checked_dangling_edge_keeps_the_good_sibling_and_reports_omission(self):
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)
@@ -197,7 +228,7 @@ class DetachedHierarchyTests(unittest.TestCase):
         self.assertEqual(result["dataset_paths"], {200: "/recovered/group_32/a"})
         self.assertEqual(result["omitted_links"][0]["target_address"], 777)
 
-    def test_shared_child_group_is_an_alias_and_cycle_is_omitted(self):
+    def test_shared_child_group_and_cycle_are_both_hard_links(self):
         discovery = {"root_object_address": 1,
             "datasets": [{"address": 200}],
             "groups": [
@@ -209,9 +240,21 @@ class DetachedHierarchyTests(unittest.TestCase):
         result = detached_hierarchies(discovery, set(), set(), max_objects=10, max_links=10)
         self.assertEqual(result["dataset_paths"], {200: "/recovered/group_32/child/value"})
         self.assertEqual(result["group_aliases"],
-                         [{"path": "/recovered/group_46/same", "target": "/recovered/group_32/child"}])
-        self.assertEqual([item["reason"] for item in result["omitted_links"]],
-                         ["cyclic group hard link"])
+                         [{"path": "/recovered/group_32/child/loop", "target": "/recovered/group_32/child"},
+                          {"path": "/recovered/group_46/same", "target": "/recovered/group_32/child"}])
+        self.assertEqual(result["omitted_links"], [])
+
+    def test_rootless_checked_cycle_gets_a_synthetic_anchor(self):
+        discovery = {"root_object_address": 1, "datasets": [{"address": 200}],
+                     "groups": [
+                         {"address": 50, "links": [{"name": "other", "address": 70}]},
+                         {"address": 70, "links": [{"name": "back", "address": 50},
+                                                   {"name": "signal", "address": 200}]},
+                     ]}
+        result = detached_hierarchies(discovery, set(), set(), max_objects=10, max_links=10)
+        self.assertEqual(result["dataset_paths"], {200: "/recovered/group_32/other/signal"})
+        self.assertEqual(result["group_aliases"],
+                         [{"path": "/recovered/group_32/other/back", "target": "/recovered/group_32"}])
 
     def test_checked_link_to_already_known_dataset_keeps_one_object(self):
         discovery = {"root_object_address": 1, "datasets": [],

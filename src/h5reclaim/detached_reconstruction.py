@@ -2,9 +2,9 @@
 
 The checked group header establishes its internal hard links, including links
 shared by several groups. It cannot establish the group's missing parent name.
-Each root therefore gets a synthetic path, and repeated object addresses are
-represented by hard links to one exported object. Unreadable targets and group
-cycles are recorded as omitted edges, never guessed measurement values.
+Each component therefore gets a synthetic root, and repeated object addresses
+are represented by hard links to one exported object. Unreadable targets are
+recorded as omitted edges, never guessed measurement values.
 """
 
 from __future__ import annotations
@@ -19,8 +19,10 @@ def detached_hierarchies(discovery: dict, known_groups: set[int],
 
     Each dataset has one canonical export path. Other checked incoming links
     become aliases to that same object, including links from separate roots.
-    A cyclic group edge cannot be materialized by HDF5 and is retained only as
-    evidence. Reachable valid branches of an incomplete group remain usable.
+    HDF5 group hard links can form cycles. A component with no parentless group
+    gets an address-derived synthetic anchor; a repeated group address becomes
+    a hard link to the canonical group. Valid branches of an incomplete group
+    remain usable while missing targets are reported separately.
     """
     blocked = set(blocked_paths or ())
     datasets = {item["address"] for item in discovery["datasets"]}
@@ -33,7 +35,8 @@ def detached_hierarchies(discovery: dict, known_groups: set[int],
             if link["address"] in candidates:
                 incoming[link["address"]] += 1
 
-    roots = sorted(address for address in candidates if not incoming[address])
+    roots = (sorted(address for address in candidates if not incoming[address])
+             + sorted(address for address in candidates if incoming[address]))
     group_paths: dict[int, str] = {}
     dataset_paths: dict[int, str] = {}
     dataset_aliases: dict[int, list[str]] = {}
@@ -43,6 +46,8 @@ def detached_hierarchies(discovery: dict, known_groups: set[int],
     link_count = 0
 
     for root in roots:
+        if root in group_paths:
+            continue
         root_path = f"/recovered/group_{root:x}"
         if root_path in accepted_paths:
             omitted_links.append({"group_address": root, "reason": "synthetic root path is occupied"})
@@ -58,13 +63,8 @@ def detached_hierarchies(discovery: dict, known_groups: set[int],
             address, path = pending.pop()
             if address in group_paths or address in component_groups:
                 target = (component_groups | group_paths)[address]
-                # HDF5 cannot represent a group hard link back to an ancestor.
-                if path.startswith(target + "/"):
-                    component_omissions.append({"group_address": address, "path": path,
-                                                "reason": "cyclic group hard link"})
-                else:
-                    component_group_aliases.append({"path": path, "target": target})
-                    component_paths.add(path)
+                component_group_aliases.append({"path": path, "target": target})
+                component_paths.add(path)
                 continue
             if len(group_paths) + len(component_groups) + len(dataset_paths) + len(component_datasets) >= max_objects:
                 component_omissions.append({"group_address": address, "path": path,
