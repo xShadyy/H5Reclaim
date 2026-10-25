@@ -340,6 +340,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
     commands = parser.add_subparsers(dest="command", required=True, metavar="COMMAND", title="commands")
+    commands.add_parser("doctor", help="show installed dependencies, optional readers and HDF5 tools")
+    batch_cmd = commands.add_parser("batch-rescue", help="recover multiple files with bounded jobs and verified resumption")
+    batch_cmd.add_argument("sources", nargs="+", type=Path)
+    batch_cmd.add_argument("--output-dir", required=True, type=Path)
+    batch_cmd.add_argument("--summary", required=True, type=Path)
+    batch_cmd.add_argument("--jobs", type=int, default=1)
+    batch_cmd.add_argument("--resume", action="store_true")
+    batch_cmd.add_argument("--html", action="store_true")
+    batch_cmd.add_argument("--fail-on-partial", action="store_true")
+    batch_cmd.add_argument("--streaming-budget", type=Path)
     plan_cmd = commands.add_parser("plan-repair", help="create an exact metadata repair plan without changing the source")
     plan_cmd.add_argument("source", type=Path)
     plan_cmd.add_argument("--output", required=True, type=Path)
@@ -576,6 +586,25 @@ def main(argv: list[str] | None = None) -> int:
                  or Path(arguments[0]).suffix.lower() in (".h5", ".hdf5", ".he5"))):
         arguments.insert(0, "rescue")
     args = parser.parse_args(arguments)
+
+    if args.command == "doctor":
+        from .doctor import doctor
+        print(json.dumps(doctor(), indent=2, sort_keys=True))
+        return 0
+
+    if args.command == "batch-rescue":
+        try:
+            from .batch import batch_rescue
+            from .large_streaming import LargeBudget
+            options = json.loads(args.streaming_budget.read_text()) if args.streaming_budget else {}
+            result = batch_rescue(args.sources, args.output_dir, args.summary, jobs=args.jobs,
+                resume=args.resume, budget=LargeBudget(**options), html=args.html,
+                fail_on_partial=args.fail_on_partial)
+            print(json.dumps(result["counts"], sort_keys=True))
+            return 0 if result["passed"] else 1
+        except (OSError, ValueError, RuntimeError, TypeError) as exc:
+            print(f"h5reclaim: batch failed: {_display_path(exc, 300)}", file=sys.stderr)
+            return 2
 
     if args.command in ("plan-repair", "apply-repair", "explain-plan"):
         try:
