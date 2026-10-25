@@ -326,8 +326,6 @@ def _analyze_snapshot(
                 root, "intact_tree", {"root_address": root.address, "root_level": 0},
             )
         else:
-            if len(walk.broken_links) > 1:
-                raise UnsupportedCase("this release handles at most one broken leaf link")
             nodes = {node.address: node for node in walk.nodes}
             parent_entries = {
                 entry.address: (node.address, slot)
