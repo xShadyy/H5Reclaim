@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.3.0
+
+- Repair two damaged child pointers within one independently checked EAIB,
+  EASB or BTIN metadata parent when one complete assignment restores the
+  parent's original checksum and all child allocations check. Bridge separate
+  nonadjacent legacy v1 B-tree gaps with reciprocal rooted sibling evidence.
+- Relocate variable-length strings and numbers, nested pointer-bearing records,
+  and supported object and region references after checked modern index
+  restoration in a disposable source view. Whole-file rescue can remap
+  references to independently exported sibling objects.
+- Decode N-bit, scale-offset and available SZIP filters through a bounded
+  native in-memory dataset. Scale-offset reproduces stored decoded values,
+  which may be lossy relative to values before the original write.
+- Inspect and repair rooted version-0 and version-1 file-space declarations,
+  additional persistent paged section types, and multiple damaged fixed
+  header fields where canonical replacements restore the original checksum.
+- Reconstruct checked detached group aliases and cycles under synthetic paths;
+  report unresolved edges while retaining independently checked siblings.
+- Add a disposable `h5clear --image` probe that reports altered-copy metadata
+  openability without exporting values or modifying the source.
+- Score two additional same-parent cases in the ten-case compressed streaming
+  panel against independent generated values.
+
 ## 1.2.0
 
 - Recover multiple damaged modern index links in distinct metadata parents,
