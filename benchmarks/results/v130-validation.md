@@ -1,6 +1,6 @@
 # H5Reclaim 1.3.0 validation
 
-Validation date: 2026-10-26. Full local test runs used Linux and Python
+Validation date: 2026-10-25 (UTC). Full local test runs used Linux and Python
 3.12.14. This validation did not push to GitHub or publish a release.
 
 | Check | Result |
