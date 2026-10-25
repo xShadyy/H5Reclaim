@@ -367,7 +367,6 @@ def main(argv: list[str] | None = None) -> int:
     batch_cmd.add_argument("--summary", required=True, type=Path)
     batch_cmd.add_argument("--jobs", type=int, default=1)
     batch_cmd.add_argument("--resume", action="store_true")
-    batch_cmd.add_argument("--html", action="store_true")
     batch_cmd.add_argument("--fail-on-partial", action="store_true")
     batch_cmd.add_argument("--streaming-budget", type=Path)
     capture_meta_cmd = commands.add_parser("capture-metadata", help="capture checked full-file metadata before damage")
@@ -409,7 +408,6 @@ def main(argv: list[str] | None = None) -> int:
             command.add_argument("--length", type=int, default=64)
     report_cmd = commands.add_parser("report", help="summarize an existing evidence JSON report and its status-map paths")
     report_cmd.add_argument("report", type=Path, help="evidence JSON produced by rescue, recover or export-readable")
-    report_cmd.add_argument("--html", type=Path, help="also write a new self-contained HTML report")
     result_cmd = commands.add_parser(
         "verify-result", help="check a saved recovery report against its output and validity maps",
         description=("Check report, schema and validity-map consistency in a bounded HDF5 worker. "
@@ -664,7 +662,7 @@ def main(argv: list[str] | None = None) -> int:
             from .large_streaming import LargeBudget
             options = json.loads(args.streaming_budget.read_text()) if args.streaming_budget else {}
             result = batch_rescue(args.sources, args.output_dir, args.summary, jobs=args.jobs,
-                resume=args.resume, budget=LargeBudget(**options), html=args.html,
+                resume=args.resume, budget=LargeBudget(**options),
                 fail_on_partial=args.fail_on_partial)
             print(json.dumps(result["counts"], sort_keys=True))
             return 0 if result["passed"] else 1
@@ -785,10 +783,6 @@ def main(argv: list[str] | None = None) -> int:
                     or report.get("schema_version") != 1 or report.get("outcome") not in ("complete", "partial")):
                 raise RecoveryError("expected a H5Reclaim recovery evidence report with schema_version 1")
             print(_render_report(report))
-            if args.html:
-                from .html_report import write_html_report
-                write_html_report(args.report, args.html)
-                print(f"HTML report: {_display_path(args.html, 240)}")
             return 0
         except (RecoveryError, OSError, ValueError, RuntimeError, KeyError, TypeError, AttributeError) as exc:
             print(f"h5reclaim: report summary failed: {_display_path(exc, 300)}", file=sys.stderr)

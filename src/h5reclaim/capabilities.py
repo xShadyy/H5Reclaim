@@ -44,6 +44,6 @@ def capabilities():
                     "official h5copy/h5repack integration when installed"],
         "verification": {"report_maps": True, "accepted_fixed_chunk_digests": True,
             "artifact_fingerprints": True, "historical_authenticity": "requires appropriate separately retained earlier evidence"},
-        "reporting": ["JSON", "terminal", "self-contained searchable HTML"],
+        "reporting": ["JSON", "terminal"],
         "default_streaming_budget": asdict(LargeBudget()),
         "scope": "capability envelope, not a prediction of recovery success for arbitrary damaged files"}

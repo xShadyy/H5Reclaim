@@ -19,9 +19,10 @@ class BatchTests(unittest.TestCase):
                 handle.create_dataset("data", data=np.arange(12), chunks=(4,))
             bad.write_bytes(b"no HDF5 metadata")
             summary, outputs = root / "summary.json", root / "outputs"
-            result = batch_rescue([source, bad], outputs, summary, jobs=2, html=True)
+            result = batch_rescue([source, bad], outputs, summary, jobs=2)
             self.assertEqual(result["counts"], {"complete": 1, "partial": 0, "failed": 1})
             self.assertTrue(Path(result["results"][0]["output"]).is_file())
+            self.assertTrue(Path(result["results"][0]["report"]).is_file())
             reused = batch_rescue([source], outputs, summary, resume=True)
             self.assertTrue(reused["results"][0]["reused"])
             Path(reused["results"][0]["report"]).write_text("changed")
