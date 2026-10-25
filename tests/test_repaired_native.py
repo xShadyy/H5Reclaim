@@ -160,6 +160,28 @@ class CheckedNativeRelocationTests(unittest.TestCase):
             self.assertEqual(handle[handle["science"][0]].name, "/other")
             np.testing.assert_array_equal(handle["other"][:], np.arange(4, dtype="<u2"))
 
+    def test_uncheckable_sibling_does_not_complete_ownership_inventory(self):
+        from h5reclaim.ownership_inventory import inventory_other_allocations
+        with h5py.File(self.source, "w", libver="latest") as handle:
+            other = handle.create_dataset("other", data=np.arange(4, dtype="<u2"))
+            selected_address = h5py.h5o.get_info(other.id).addr
+            sibling = handle.create_dataset("science", shape=(64,), chunks=(1,),
+                                            dtype=h5py.ref_dtype)
+            sibling[0] = sibling.ref
+            sibling_address = h5py.h5o.get_info(sibling.id).addr
+        with ModernH5File(self.source) as reader:
+            index = reader.read_index(sibling_address, (64,), (1,), 8,
+                                      maxshape=(64,), max_chunks=64)
+        self._damage(index)
+        with self.source.open("r+b") as stream:
+            stream.seek(index.data_block_address + 6)
+            value = stream.read(1)
+            stream.seek(index.data_block_address + 6)
+            stream.write(bytes((value[0] ^ 0x40,)))
+        inventory = inventory_other_allocations(self.source, selected_address)
+        self.assertFalse(inventory.complete)
+        self.assertTrue(inventory.incomplete_reasons)
+
 
 if __name__ == "__main__":
     unittest.main()

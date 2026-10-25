@@ -32,7 +32,7 @@ def checked_chunk_ranges(snapshot: Path, item: h5py.Dataset, address: int,
         raise UnsupportedFormat("native sibling fallback does not follow dependent storage")
     filters = tuple(int(creation.get_filter(i)[0]) for i in range(creation.get_nfilters()))
     with ModernH5File(snapshot, large_sparse_scan=True, max_chunks=grid,
-                      max_chunk_bytes=min(128 << 20, max_bytes),
+                      max_chunk_bytes=128 << 20,
                       repair_scan_bytes=min(512 << 20, max_bytes),
                       repair_scan_seconds=min(180, max_seconds)) as reader:
         width = _file_element_width(item.id.get_type(), reader.superblock.offset_size)
