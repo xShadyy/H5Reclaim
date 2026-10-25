@@ -158,10 +158,13 @@ workflow does not upload to PyPI.
 2. Expand free-space and detached-object coverage beyond the structures
    repaired in this release. Keep unassigned bytes separate from accepted
    measurements.
-3. Profile dense 100 GB and larger datasets, reduce physical scan costs and
+3. Add a native decoding and reference-remapping route for damaged indexes
+   holding variable-length or reference types, with independent allocation
+   and readback checks before accepting values.
+4. Profile dense 100 GB and larger datasets, reduce physical scan costs and
    expand index and quota coverage. The current sparse 4 GiB test is not a
    dense throughput benchmark.
-4. Add deeper NWB, netCDF and NeXus consistency checks after HDF5 recovery,
+5. Add deeper NWB, netCDF and NeXus consistency checks after HDF5 recovery,
    plus more platform and optional-codec interoperability tests.
 
 No collection or publication of actual recovery incidents was added.
