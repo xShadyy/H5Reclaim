@@ -166,7 +166,10 @@ section checksums, reciprocal owner, counts and allocation bounds. The repair
 can restore a checked declaration before walking its managers. It uses the
 original checksum where a unique correction exists; explicit resealing needs
 checked surviving structure. Missing historical free-space sections cannot
-be inferred from an absent section list.
+be inferred from an absent section list. Fixed signature, version, client and
+reciprocal-owner fields may be restored together only when their canonical
+values reproduce the stored checksum; unknown damaged counts or sizes remain
+unassigned.
 
 ## Restore captured metadata after later damage
 
