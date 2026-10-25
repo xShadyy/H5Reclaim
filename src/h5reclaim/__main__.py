@@ -15,7 +15,7 @@ from pathlib import Path
 from .baseline import capture_baseline
 from .diagnose import diagnose
 from .dependency_routes import (
-    DependencyError, inspect_dependencies, load_dependency_manifest, probe_status_copy,
+    DependencyError, inspect_dependencies, load_dependency_manifest, probe_image_copy, probe_status_copy,
     validate_dependency_manifest,
 )
 from .evidence import export_unassigned_fragments, load_evidence_report
@@ -465,6 +465,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     status_cmd.add_argument("source", type=Path)
     status_cmd.add_argument("--json", action="store_true", help="print the complete machine-readable probe report")
+    image_cmd = commands.add_parser(
+        "probe-image", help="try h5clear --image only on a disposable copy with a modern superblock extension"
+    )
+    image_cmd.add_argument("source", type=Path)
+    image_cmd.add_argument("--json", action="store_true", help="print the complete machine-readable probe report")
     fragments_cmd = commands.add_parser(
         "export-fragments", help="export anchored but unresolved raw extents from a report as coordinate-free bytes"
     )
@@ -1173,13 +1178,14 @@ def main(argv: list[str] | None = None) -> int:
             print(f"h5reclaim: fragment export failed: {_display_path(exc, 300)}", file=sys.stderr)
             return 2
 
-    if args.command == "probe-status":
+    if args.command in ("probe-status", "probe-image"):
         try:
-            result = probe_status_copy(args.source)
+            result = (probe_status_copy(args.source) if args.command == "probe-status"
+                      else probe_image_copy(args.source))
             if args.json:
                 print(json.dumps(result, indent=2, sort_keys=True))
             else:
-                print("H5Reclaim disposable status probe")
+                print(f"H5Reclaim disposable {args.command.removeprefix('probe-')} probe")
                 print(f"Source: {_display_path(args.source, 240)}")
                 print(f"Result: {result['outcome']} | {_display_path(result['detail'], 240)}")
                 print("Original file unchanged. No measurements verified or restored.")
@@ -1188,7 +1194,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.json:
                 print(json.dumps({"outcome": "error", "error": str(exc)[:300]}, sort_keys=True))
             else:
-                print(f"h5reclaim: status probe failed: {_display_path(exc, 300)}", file=sys.stderr)
+                print(f"h5reclaim: {args.command} failed: {_display_path(exc, 300)}", file=sys.stderr)
             return 2
 
     if args.command == "diagnose":

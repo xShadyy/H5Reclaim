@@ -20,6 +20,7 @@ from h5reclaim.dependency_routes import (
     inspect_dependencies,
     inspect_superblock_status,
     load_dependency_manifest,
+    probe_image_copy,
     probe_status_copy,
     validate_dependency_manifest,
 )
@@ -187,6 +188,45 @@ class StatusAndDependencyTests(unittest.TestCase):
             self.assertFalse(result["recovery_attempted"])
             self.assertFalse(result["source_modified"])
             self.assertEqual(flagged.read_bytes(), original)
+
+    def test_image_trial_requires_declared_modern_extension(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "plain.h5"
+            with h5py.File(path, "w", libver="latest") as handle:
+                handle.create_dataset("data", data=np.arange(8))
+            with patch("h5reclaim.dependency_routes.subprocess.run", side_effect=AssertionError("invoked")):
+                report = probe_image_copy(path, executable="h5clear")
+            self.assertEqual(report["outcome"], "not_applicable")
+            self.assertFalse(report["superblock_extension_declared"])
+
+    def test_image_trial_only_modifies_disposable_copy_and_audits_change(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "persistent-space.h5"
+            with h5py.File(path, "w", libver="latest", fs_strategy="fsm", fs_persist=True) as handle:
+                handle.create_dataset("data", data=np.arange(8))
+            before = path.read_bytes()
+            calls = []
+
+            def fake_h5clear(command, **kwargs):
+                calls.append(command)
+                self.assertEqual(command[:2], ["h5clear", "--image"])
+                trial = Path(command[2])
+                self.assertNotEqual(trial, path)
+                with trial.open("r+b") as handle:
+                    handle.seek(-1, 2)
+                    handle.write(b"X")
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            with patch("h5reclaim.dependency_routes.subprocess.run", side_effect=fake_h5clear):
+                report = probe_image_copy(path, executable="h5clear")
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(report["changed_bytes_in_trial"], 1)
+            self.assertEqual(report["first_changed_offsets"], [len(before) - 1])
+            self.assertFalse(report["source_modified"])
+            self.assertFalse(report["recovery_attempted"])
+            self.assertIsNone(report["recovered_values"])
+            self.assertEqual(path.read_bytes(), before)
+            self.assertFalse(Path(calls[0][2]).exists())
 
     def test_explicit_bundle_matches_names_and_pinned_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -91,6 +91,22 @@ class DependencyIntegrationTests(unittest.TestCase):
             self.assertFalse(result["source_modified"])
             self.assertEqual(flagged.read_bytes(), before)
 
+    def test_probe_image_cli_reports_unavailable_without_mutating_source(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "persistent-space.h5"
+            with h5py.File(path, "w", libver="latest", fs_strategy="fsm", fs_persist=True) as handle:
+                handle.create_dataset("readings", data=np.arange(4))
+            before = path.read_bytes()
+            stdout = io.StringIO()
+            with patch("h5reclaim.dependency_routes.shutil.which", return_value=None), \
+                    contextlib.redirect_stdout(stdout):
+                status = main(["probe-image", str(path), "--json"])
+            report = json.loads(stdout.getvalue())
+            self.assertEqual(status, 1)
+            self.assertEqual(report["outcome"], "unavailable")
+            self.assertTrue(report["superblock_extension_declared"])
+            self.assertEqual(path.read_bytes(), before)
+
     def test_diagnose_cli_accepts_explicit_related_file_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)
