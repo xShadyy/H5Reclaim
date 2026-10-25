@@ -22,6 +22,19 @@ class LargeScaleTypesTests(unittest.TestCase):
         self.addCleanup(folder.cleanup)
         self.root = Path(folder.name)
 
+    def test_too_small_metadata_budget_refuses_cleanly(self) -> None:
+        source = self.root / "tiny.h5"
+        output = self.root / "tiny-recovered.h5"
+        report_path = self.root / "tiny-report.json"
+        with h5py.File(source, "w", libver="latest") as opened:
+            opened.create_dataset("science", data=np.array([1, 2], dtype="u1"),
+                                  chunks=(1,))
+        with self.assertRaisesRegex(UnsupportedCase, "metadata budget"):
+            recover_large_structural(source, "/science", output, report_path,
+                                     budget=LargeBudget(max_metadata_bytes=7))
+        self.assertFalse(output.exists())
+        self.assertFalse(report_path.exists())
+
     def test_million_slot_sparse_fixed_array_is_checked_without_materializing_grid(self) -> None:
         source = self.root / "million.h5"
         truth = {0: 7, 500_000: 9, 1_000_000: 11}

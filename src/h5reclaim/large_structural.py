@@ -73,6 +73,8 @@ def recover_large_structural(source: str | Path, dataset_path: str, output: str 
     source, output, report_path = Path(source), Path(output), Path(report_path)
     _validate_paths(source, output, report_path)
     budget = budget or LargeBudget()
+    if budget.max_metadata_bytes < 8:
+        raise UnsupportedCase("large structural metadata budget cannot hold a datatype header")
     deadline = time.monotonic() + budget.max_seconds
     decoded_limit = min(MAX_LARGE_CHUNK_BYTES, budget.max_chunk_bytes)
     stored_limit = min(128 << 20, max(decoded_limit * 2, 2 << 20))
