@@ -1,11 +1,9 @@
-"""Streaming structural recovery of one checked fixed-array pointer in a large file.
+"""Stream fixed-record chunks from independently checked modern HDF5 indexes.
 
-This route is intentionally narrow. A genuine modern FAHD-to-FADB pointer has
-to be damaged; its *original* FAHD checksum must uniquely identify the FADB
-over a complete bounded sparse/dense scan. The selected object header, FAHD
-substituted checksum, FADB and its initialized pages are checked independently.
-Values are decoded directly from those indexed physical ranges, never read
-through the damaged native chunk index. Sparse grid slots remain unknown.
+A broken link is accepted only when a unique child restores the parent's
+original checksum and its independently checked index agrees with the rooted
+schema. Chunk payloads are decoded one at a time; damaged or unavailable
+payloads remain explicit nonaccepted entries in a sparse validity map.
 """
 
 from __future__ import annotations
@@ -16,6 +14,7 @@ import os
 import shutil
 import tempfile
 import time
+from math import prod
 from pathlib import Path
 
 import h5py
@@ -25,213 +24,235 @@ from .format import FormatError
 from .large_streaming import LargeBudget, sparse_snapshot
 from .metadata import UnsupportedCase, read_dataset_spec
 from .modern_indexes import ModernH5File
+from .native_io import read_fixed_block, write_fixed_block
+from .output_annotations import add_output_annotations, ensure_group, metadata_group_for_path
 from .ownership_inventory import inventory_other_allocations, reject_sibling_overlap
 from .recovery import RecoveryError, VERSION, _validate_paths, _verify_source, sha256_file
+from .schema_codec import (ChunkDecodeError, MissingFilterDecoder, decode_chunk,
+                           validate_stored_size, fletcher32_applied)
 
 
 MAX_LARGE_INDEX_CHUNKS = 65536
+# Compatibility names. Actual dataset and decoder limits come from LargeBudget.
 MAX_LARGE_ELEMENT_COUNT = 1_048_576
-MAX_LARGE_CHUNK_BYTES = 1 << 20
+MAX_LARGE_CHUNK_BYTES = 64 << 20
 MAX_LARGE_REPORT_BYTES = 1 << 20
 DISK_RESERVE_BYTES = 64 << 20
+STATUS_CODES = {"unknown": 0, "recovered": 1, "decode_failed": 2, "decoder_unavailable": 3}
 
 
-def recover_large_fixed_array(
-    source: str | Path, dataset_path: str, output: str | Path, report_path: str | Path,
-    *, published_output: Path | None = None, budget: LargeBudget | None = None,
-) -> dict[str, object]:
-    """Recover one broken FAHD data-block link under explicit scale quotas.
+def recover_large_fixed_array(source, dataset_path, output, report_path, *,
+                              published_output=None, budget=None):
+    """Compatibility entry point requiring one checked FAHD-to-FADB repair."""
+    return recover_large_structural(source, dataset_path, output, report_path,
+                                    published_output=published_output, budget=budget,
+                                    require_fixed_array=True)
 
-    The input's HDF5 superblock may be above 4 GiB, and the selected grid
-    may exceed 8192 chunks. Allocated records and output evidence are streamed;
-    there is no list of decoded chunk payloads held in memory. This route
-    accepts only one-dimensional unfiltered primitive numeric fixed arrays.
+
+def recover_large_structural(source: str | Path, dataset_path: str, output: str | Path,
+                             report_path: str | Path, *, published_output: Path | None = None,
+                             budget: LargeBudget | None = None,
+                             require_fixed_array: bool = False) -> dict[str, object]:
+    """Recover a broken fixed-array, extensible-array or v2 B-tree chunk index.
+
+    Supports checked rank 1..5 fixed-record schemas (rank 5 uses fixed arrays),
+    filtered or unfiltered chunks, partial edges, and allocated grids up to
+    65,536 slots. gzip, shuffle, Fletcher32, LZF and installed packaged codecs
+    use the shared bounded decoder. At most one index link may need repair.
+    No native read of the damaged dataset's measurements is used.
     """
     source, output, report_path = Path(source), Path(output), Path(report_path)
     _validate_paths(source, output, report_path)
     budget = budget or LargeBudget()
     deadline = time.monotonic() + budget.max_seconds
+    decoded_limit = min(MAX_LARGE_CHUNK_BYTES, budget.max_chunk_bytes)
+    stored_limit = min(128 << 20, max(decoded_limit * 2, 2 << 20))
     with sparse_snapshot(source, budget=budget) as (image, digest, identity, size, copied):
-        spec = read_dataset_spec(image, dataset_path)
-        dtype = np.dtype(spec.dtype)
-        grid = spec.chunk_grid[0]
-        if (len(spec.shape) != 1 or spec.filters or spec.file_type_encoding is not None
-                or dtype.kind not in "iuf" or dtype.itemsize not in (1, 2, 4, 8)
-                or spec.shape[0] > MAX_LARGE_ELEMENT_COUNT
-                or spec.chunk_bytes > MAX_LARGE_CHUNK_BYTES
-                or not 1 <= grid <= min(MAX_LARGE_INDEX_CHUNKS, budget.max_chunks)):
-            raise UnsupportedCase(
-                "large structural route requires a bounded 1D unfiltered primitive "
-                "numeric fixed-array dataset with at most 65536 grid chunks"
-            )
-        with ModernH5File(image, large_sparse_scan=True,
-                          max_chunks=MAX_LARGE_INDEX_CHUNKS) as reader:
-            index = reader.read_index(
-                spec.object_address, spec.shape, spec.chunks, dtype.itemsize,
-                maxshape=spec.maxshape or spec.shape, filters=spec.filters,
-                max_chunks=MAX_LARGE_INDEX_CHUNKS,
-            )
-            if index.index_type != "fixed_array" or not index.reconstructed_data_block_pointer:
+        spec = read_dataset_spec(image, dataset_path, max_elements=budget.max_logical_bytes,
+                                 max_chunk_bytes=decoded_limit, max_rank=5)
+        element_size = np.dtype(spec.dtype).itemsize
+        total, grid = prod(spec.shape), spec.chunk_grid
+        grid_count = prod(grid)
+        if total * element_size > budget.max_logical_bytes:
+            raise UnsupportedCase("structural dataset exceeds the logical byte budget")
+        if grid_count > min(MAX_LARGE_INDEX_CHUNKS, budget.max_chunks, budget.max_grid):
+            raise UnsupportedCase("large structural chunk grid exceeds the configured quota")
+        with ModernH5File(image, large_sparse_scan=True, max_chunks=min(MAX_LARGE_INDEX_CHUNKS, budget.max_chunks),
+                          max_chunk_bytes=stored_limit,
+                          repair_scan_bytes=min(budget.max_scan_bytes, budget.max_source_bytes),
+                          repair_scan_seconds=min(budget.max_seconds, 86400)) as reader:
+            index = reader.read_index(spec.object_address, spec.shape, spec.chunks, element_size,
+                                      maxshape=spec.maxshape, filters=spec.filters,
+                                      max_chunks=min(MAX_LARGE_INDEX_CHUNKS, budget.max_chunks))
+            repairs = list(index.reconstructed_links)
+            if index.reconstructed_data_block_pointer:
+                repairs.append({"kind": "fahd_to_fadb", "source_address": index.base_address,
+                                "target_address": index.data_block_address,
+                                "pointer_offset": index.data_block_pointer_offset})
+            if require_fixed_array and (index.index_type != "fixed_array" or not index.reconstructed_data_block_pointer):
                 raise UnsupportedCase("large structural route requires one damaged checked FAHD pointer")
-            if index.reconstructed_links:
-                raise FormatError("more than one checked index link needs repair")
-            if not 1 <= len(index.chunks) <= min(MAX_LARGE_INDEX_CHUNKS, budget.max_chunks):
-                raise UnsupportedCase("allocated chunk count exceeds large structural quota")
-
-            ranges = []
-            seen: set[int] = set()
+            if not repairs:
+                raise UnsupportedCase("large structural route requires a uniquely checked damaged index link")
+            if len(repairs) != 1:
+                raise FormatError("only one damaged modern index link can be justified per export")
+            if not index.chunks or len(index.chunks) > budget.max_chunks:
+                raise UnsupportedCase("allocated chunks are absent or exceed the configured budget")
+            coordinates, ranges = set(), []
             for record in index.chunks:
-                origin = record.coordinate[0]
-                if (origin < 0 or origin >= spec.shape[0] or origin % spec.chunks[0]
-                        or origin in seen or record.filter_mask or record.size != spec.chunk_bytes):
-                    raise FormatError("fixed-array record contradicts selected dataset grid")
-                seen.add(origin)
+                coordinate = record.coordinate
+                if (len(coordinate) != len(spec.shape) or coordinate in coordinates
+                        or any(start < 0 or start >= extent or start % width
+                               for start, extent, width in zip(coordinate, spec.shape, spec.chunks))):
+                    raise FormatError("checked index duplicates or misplaces a chunk coordinate")
+                coordinates.add(coordinate)
+                try:
+                    validate_stored_size(spec, record.size, record.filter_mask,
+                                         max_decoded_bytes=decoded_limit, max_stored_bytes=stored_limit)
+                except ChunkDecodeError as exc:
+                    raise FormatError(f"indexed chunk size or filter mask contradicts schema: {exc}") from exc
                 start = reader.absolute(record.address)
-                if start > size or record.size > size - start:
-                    raise FormatError("indexed raw chunk extends past the physical source")
-                ranges.append((start, start + record.size, (origin,)))
+                if record.size > size - start or start + record.size > reader.superblock.eof_address:
+                    raise FormatError("indexed raw chunk extends outside the source")
+                ranges.append((start, start + record.size, coordinate))
             ordered = sorted(ranges)
-            if any(first[1] > second[0] for first, second in zip(ordered, ordered[1:])):
-                raise FormatError("selected fixed-array payload ranges overlap")
+            if any(a[1] > b[0] for a, b in zip(ordered, ordered[1:])):
+                raise FormatError("selected raw chunk ranges overlap")
             for start, end, coordinate in ordered:
-                for meta_start, meta_end, kind in reader.metadata_ranges:
-                    if start < meta_end and meta_start < end:
-                        raise FormatError(f"chunk {coordinate} overlaps checked {kind}")
-
-            inventory = inventory_other_allocations(
-                image, spec.object_address, max_allocations=budget.max_chunks,
-                max_seconds=min(120, max(1, budget.max_seconds)),
-                skip_selected_object_info=True,
-            )
+                if any(start < stop and begin < end for begin, stop, _ in reader.metadata_ranges):
+                    raise FormatError(f"chunk {coordinate} overlaps independently checked metadata")
+            inventory = inventory_other_allocations(image, spec.object_address,
+                max_allocations=budget.max_chunks, max_seconds=min(120, budget.max_seconds),
+                skip_selected_object_info=True)
             reject_sibling_overlap(ordered, inventory)
+            with h5py.File(image, "r") as original:
+                creation = original[spec.path].id.get_create_plist()
+                datatype = original[spec.path].id.get_type().copy()
+            metadata_group = metadata_group_for_path(spec.path)
+            rank = len(spec.shape)
             evidence_dtype = np.dtype([
-                ("origin", "<u8"), ("source_offset", "<u8"),
-                ("stored_bytes", "<u8"), ("raw_sha256", "S64"),
-                ("parent_pointer_offset", "<u8"), ("parent_address", "<u8"),
-                ("child_address", "<u8"),
-            ])
-            with tempfile.TemporaryDirectory(prefix=".h5reclaim-large-", dir=output.parent) as out_dir:
-                with tempfile.TemporaryDirectory(prefix=".h5reclaim-large-", dir=report_path.parent) as rep_dir:
-                    staged_output = Path(out_dir) / "output.h5"
-                    staged_report = Path(rep_dir) / "report.json"
-                    source_values = hashlib.sha256()
-                    with h5py.File(staged_output, "x") as result:
-                        group, _, leaf = spec.path.rpartition("/")
-                        parent = result.require_group(group or "/")
-                        target = parent.create_dataset(
-                            leaf, shape=spec.shape, dtype=dtype, chunks=spec.chunks,
-                        )
-                        for name, value in spec.attributes:
-                            target.attrs[name] = value
-                        meta = result.require_group("/_h5reclaim")
-                        validity = meta.create_dataset(
-                            "validity", shape=(grid,), dtype="u1", fillvalue=0,
-                            chunks=(min(grid, 4096),),
-                        )
-                        evidence = meta.create_dataset(
-                            "physical_evidence", shape=(len(index.chunks),),
-                            dtype=evidence_dtype,
-                            chunks=(min(len(index.chunks), 1024),),
-                        )
-                        accepted = 0
-                        for row, record in enumerate(sorted(index.chunks,
-                                                              key=lambda item: item.coordinate)):
-                            if time.monotonic() > deadline:
-                                raise UnsupportedCase("large structural recovery exceeded its time quota")
-                            origin = record.coordinate[0]
-                            raw = reader.read_at(record.address, record.size)
-                            values = np.frombuffer(raw, dtype=dtype)
-                            count = min(spec.chunks[0], spec.shape[0] - origin)
-                            target[origin:origin + count] = values[:count]
-                            validity[origin // spec.chunks[0]] = 1
-                            evidence[row] = (
-                                origin, reader.absolute(record.address), record.size,
-                                hashlib.sha256(raw).hexdigest(),
-                                index.data_block_pointer_offset, index.base_address,
-                                index.data_block_address,
-                            )
-                            source_values.update(values[:count].tobytes(order="C"))
-                            accepted += count
-                            if (staged_output.stat().st_size > budget.max_output_bytes
-                                    or shutil.disk_usage(staged_output.parent).free <
-                                    budget.disk_reserve_bytes):
-                                raise UnsupportedCase("large structural output exceeds disk quota")
-                        result.flush()
-                    output_values = hashlib.sha256()
-                    with h5py.File(staged_output, "r") as result:
-                        target = result[spec.path]
-                        for record in sorted(index.chunks, key=lambda item: item.coordinate):
-                            origin = record.coordinate[0]
-                            count = min(spec.chunks[0], spec.shape[0] - origin)
-                            output_values.update(np.asarray(
-                                target[origin:origin + count]).tobytes(order="C"))
-                    if output_values.digest() != source_values.digest():
-                        raise RecoveryError("structural output differs bitwise from checked-index raw chunks")
-                    report: dict[str, object] = {
+                ("origin", "<u8") if rank == 1 else ("origin", "<u8", (rank,)),
+                ("source_offset", "<u8"), ("stored_bytes", "<u8"), ("filter_mask", "<u4"),
+                ("raw_sha256", "S64"), ("decoded_sha256", "S64"), ("status", "u1"),
+                ("parent_pointer_offset", "<u8"), ("parent_address", "<u8"), ("child_address", "<u8")])
+            records = sorted(index.chunks, key=lambda item: item.coordinate)
+            with tempfile.TemporaryDirectory(prefix=".h5reclaim-structural-", dir=output.parent) as out_dir, \
+                 tempfile.TemporaryDirectory(prefix=".h5reclaim-structural-", dir=report_path.parent) as rep_dir:
+                staged_output, staged_report = Path(out_dir) / "output.h5", Path(rep_dir) / "report.json"
+                accepted, failures, checksummed = 0, [], 0
+                counts = {name: 0 for name in STATUS_CODES}
+                counts["unknown"] = grid_count - len(records)
+                value_hash = hashlib.sha256()
+                with h5py.File(staged_output, "x") as result:
+                    parent_path, leaf = spec.path.rsplit("/", 1)
+                    parent = ensure_group(result, parent_path or "/")
+                    output_creation = h5py.h5p.create(h5py.h5p.DATASET_CREATE)
+                    output_creation.set_chunk(spec.chunks)
+                    from .native_io import copy_fixed_fill
+                    copy_fixed_fill(creation, output_creation, datatype)
+                    maximum = tuple(h5py.h5s.UNLIMITED if n is None else n for n in spec.maxshape)
+                    target = h5py.Dataset(h5py.h5d.create(parent.id, leaf.encode("utf-8"), datatype,
+                        h5py.h5s.create_simple(spec.shape, maximum), dcpl=output_creation))
+                    for name, value in spec.attributes:
+                        target.attrs[name] = value
+                    meta = ensure_group(result, metadata_group)
+                    validity = meta.create_dataset("validity", shape=grid, dtype="u1", fillvalue=0,
+                        chunks=tuple(min(n, max(1, int(4096 ** (1 / rank)))) for n in grid))
+                    validity.attrs["codes_json"] = json.dumps(STATUS_CODES, sort_keys=True)
+                    evidence = meta.create_dataset("physical_evidence", shape=(len(records),),
+                        dtype=evidence_dtype, chunks=(min(len(records), 1024),))
+                    repair = repairs[0]
+                    for row, record in enumerate(records):
+                        if time.monotonic() > deadline:
+                            raise UnsupportedCase("large structural recovery exceeded the time quota")
+                        coordinate = record.coordinate
+                        cell = tuple(start // width for start, width in zip(coordinate, spec.chunks))
+                        raw = reader.read_at(record.address, record.size)
+                        code, decoded_digest = 1, ""
+                        try:
+                            payload = decode_chunk(raw, spec, record.filter_mask,
+                                max_decoded_bytes=decoded_limit, max_stored_bytes=stored_limit)
+                        except MissingFilterDecoder as exc:
+                            code, reason = 3, str(exc)
+                        except ChunkDecodeError as exc:
+                            code, reason = 2, str(exc)
+                        if code == 1:
+                            extent = tuple(min(width, size - start) for start, width, size
+                                           in zip(coordinate, spec.chunks, spec.shape))
+                            selection = tuple(slice(start, start + count) for start, count in zip(coordinate, extent))
+                            block = np.frombuffer(payload, dtype=f"V{element_size}").reshape(spec.chunks)
+                            cropped = np.ascontiguousarray(block[tuple(slice(0, n) for n in extent)])
+                            write_fixed_block(target, selection, cropped)
+                            checked = read_fixed_block(target, selection).tobytes()
+                            if checked != cropped.tobytes():
+                                raise RecoveryError("structural chunk output differs bitwise on readback")
+                            decoded_digest = hashlib.sha256(checked).hexdigest()
+                            value_hash.update(checked)
+                            accepted += prod(extent)
+                            checksummed += int(fletcher32_applied(spec, record.filter_mask,
+                                                                 max_decoded_bytes=decoded_limit))
+                        elif len(failures) < 64:
+                            failures.append({"coordinate": list(coordinate), "status": code, "reason": reason[:500]})
+                        validity[cell] = code
+                        counts[next(name for name, value in STATUS_CODES.items() if value == code)] += 1
+                        evidence[row] = (coordinate[0] if rank == 1 else coordinate,
+                            reader.absolute(record.address), record.size, record.filter_mask,
+                            hashlib.sha256(raw).hexdigest(), decoded_digest, code,
+                            repair.get("pointer_offset", 0), repair.get("source_address", 0),
+                            repair.get("target_address", 0))
+                        if (staged_output.stat().st_size > budget.max_output_bytes
+                                or shutil.disk_usage(staged_output.parent).free < budget.disk_reserve_bytes):
+                            raise UnsupportedCase("large structural output exceeds the disk quota")
+                    collisions = add_output_annotations(target, {
+                        "h5reclaim_chunk_status": metadata_group + "/validity",
+                        "h5reclaim_warning": "Use the reported validity map; nonaccepted positions are not measurements."})
+                    legacy_operation = (require_fixed_array and rank == 1 and not spec.filters)
+                    report = {
                         "schema_version": 1, "tool": "h5reclaim", "tool_version": VERSION,
-                        "operation": "large_checked_fixed_array_pointer_recovery",
-                        "outcome": "complete" if accepted == spec.shape[0] else "partial",
-                        "source": {
-                            "path": str(source), "size_bytes": size,
-                            "sha256_before": digest, "sha256_after": digest,
-                            "snapshot_physical_data_bytes_copied": copied,
-                        },
-                        "dataset": {
-                            "path": spec.path, "shape": list(spec.shape),
-                            "dtype": dtype.str, "chunks": list(spec.chunks),
-                            "maxshape": list(spec.maxshape or spec.shape),
+                        "operation": "large_checked_fixed_array_pointer_recovery" if legacy_operation else "large_checked_chunk_index_recovery",
+                        "outcome": "complete" if accepted == total else "partial",
+                        "source": {"path": str(source), "size_bytes": size, "sha256_before": digest,
+                                   "sha256_after": digest, "snapshot_physical_data_bytes_copied": copied},
+                        "dataset": {"path": spec.path, "shape": list(spec.shape), "dtype": np.dtype(spec.dtype).str,
+                            "chunks": list(spec.chunks), "maxshape": list(spec.maxshape),
+                            "filters_in_order": list(spec.filters), "output_filters": [],
                             "attributes_copied": [name for name, _ in spec.attributes],
-                            "attributes_omitted": list(spec.omitted_attributes),
-                        },
-                        "index": {
-                            "type": index.index_type,
-                            "fahd_address": index.base_address,
+                            "attributes_omitted": list(spec.omitted_attributes)},
+                        "index": {"type": index.index_type, "repairs": repairs,
+                            "fahd_address": index.base_address if index.index_type == "fixed_array" else None,
                             "fadb_address": index.data_block_address,
-                            "damaged_pointer_absolute_offset": index.data_block_pointer_offset,
-                            "justification": (
-                                "unique candidate in a complete bounded scan restores the original "
-                                "FAHD checksum; FADB back-pointer and checksum, initialized page "
-                                "checksums, rooted object layout and chunk slot ranges validate"
-                            ),
-                        },
-                        "allocated_chunks_checked": len(index.chunks),
-                        "chunk_grid_count": grid,
-                        "accepted_elements": accepted,
-                        "unknown_elements": spec.shape[0] - accepted,
-                        "validity_map": "/_h5reclaim/validity",
-                        "physical_evidence": "/_h5reclaim/physical_evidence",
-                        "ownership_inventory": inventory.report(),
-                        "output_values_sha256": output_values.hexdigest(),
+                            "damaged_pointer_absolute_offset": repair.get("pointer_offset"),
+                            "justification": "unique original-parent-checksum restoration, independently checked child/index and rooted schema"},
+                        "allocated_chunks_checked": len(records), "chunk_grid_count": grid_count,
+                        "accepted_elements": accepted, "unknown_elements": total - accepted,
+                        "counts": counts, "validity_codes": STATUS_CODES,
+                        "validity": {"dataset": metadata_group + "/validity", "granularity": "chunk", "codes": STATUS_CODES},
+                        "metadata_group": metadata_group, "validity_map": metadata_group + "/validity",
+                        "physical_evidence": metadata_group + "/physical_evidence",
+                        "physical_evidence_schema": "chunk_origin_and_decoded_sha256_v1",
+                        "failed_chunks_sample": failures, "checksummed_accepted_chunks": checksummed,
+                        "selected_annotation_collisions": collisions, "ownership_inventory": inventory.report(),
+                        "output_values_sha256": value_hash.hexdigest(),
+                        "output_values_sha256_scope": "accepted chunks in lexicographic coordinate order, cropped to dataset edges",
                         "output_path": str(published_output or output),
-                        "limits": (
-                            "One checked FAHD-to-FADB pointer in a fixed-size unfiltered 1D "
-                            "numeric dataset. A recovered coordinate is justified by checked "
-                            "metadata and decoded bytes, but unchecksummed measurements have no "
-                            "historical authenticity proof. Unknown slots must not be treated as "
-                            "fill measurements. Other objects and dimension scales are omitted."
-                        ),
-                    }
-                    report_text = json.dumps(report, sort_keys=True, indent=2) + "\n"
-                    if len(report_text.encode("utf-8")) > MAX_LARGE_REPORT_BYTES:
-                        raise UnsupportedCase("large structural report exceeds size quota")
-                    with h5py.File(staged_output, "r+") as result:
-                        meta = result["/_h5reclaim"]
-                        meta.create_dataset("report_json", data=report_text,
-                                            dtype=h5py.string_dtype(encoding="utf-8"))
-                        meta.attrs["source_sha256"] = digest
-                    staged_report.write_text(report_text, encoding="utf-8")
-                    if (staged_output.stat().st_size > budget.max_output_bytes
-                            or sha256_file(image) != digest):
-                        raise RecoveryError("large structural output size or private snapshot changed")
-                    _verify_source(source, identity, digest)
-                    _validate_paths(source, output, report_path)
-                    published = False
-                    try:
-                        os.link(staged_output, output)
-                        published = True
-                        os.link(staged_report, report_path)
-                    except Exception:
-                        if published:
-                            output.unlink(missing_ok=True)
-                        raise
-                    return report
+                        "limits": "One uniquely checked modern index-link repair; fixed records, bounded chunk grid and scan. Missing or undecodable chunks remain nonaccepted. Current bytes do not establish historical authenticity."}
+                    serialized = json.dumps(report, indent=2, sort_keys=True) + "\n"
+                    if len(serialized.encode()) > MAX_LARGE_REPORT_BYTES:
+                        raise UnsupportedCase("large structural report exceeds the size quota")
+                    meta.create_dataset("report_json", data=serialized, dtype=h5py.string_dtype("utf-8"))
+                    meta.attrs["source_sha256"] = digest
+                    result.flush()
+                staged_report.write_text(serialized, encoding="utf-8")
+                if staged_output.stat().st_size > budget.max_output_bytes or sha256_file(image) != digest:
+                    raise RecoveryError("large structural output quota or source snapshot changed")
+                _verify_source(source, identity, digest)
+                _validate_paths(source, output, report_path)
+                published = False
+                try:
+                    os.link(staged_output, output)
+                    published = True
+                    os.link(staged_report, report_path)
+                except Exception:
+                    if published:
+                        output.unlink(missing_ok=True)
+                    raise
+                return report

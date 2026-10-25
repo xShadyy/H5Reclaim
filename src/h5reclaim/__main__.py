@@ -527,7 +527,7 @@ def main(argv: list[str] | None = None) -> int:
     choices.add_argument("--large-readable", action="store_true",
                          help="stream currently native-readable multidimensional fixed records")
     choices.add_argument("--large-structural", action="store_true",
-                         help="stream one checked damaged fixed-array pointer in a large sparse numeric dataset")
+                         help="stream compressed multidimensional fixed-record chunks through a checked modern index repair")
     arguments = list(argv if argv is not None else sys.argv[1:])
     if not arguments:
         parser.print_help()

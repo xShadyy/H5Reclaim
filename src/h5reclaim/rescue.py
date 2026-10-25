@@ -142,7 +142,7 @@ def _auto_image(source, dataset, output, report, *, budget, strict_history,
         elif condition["end_of_address"].get("relation") == "past_physical_eof":
             routes = ["truncated_chunks", "nonchunked"]
         else:
-            routes = (["native_stream"] if dataset.split('/')[1] == '_h5reclaim' or resume_dir is not None or root_trial else []) + ["structural", "nonchunked"] + ([] if prefer_streaming else ["readable"]) + ["native_stream", "large_structural"]
+            routes = (["native_stream"] if dataset.split('/')[1] == '_h5reclaim' or resume_dir is not None or root_trial else []) + ["structural", "large_structural", "nonchunked"] + ([] if prefer_streaming else ["readable"]) + ["native_stream"]
         chosen = None
         for route in routes:
             try:
@@ -159,6 +159,9 @@ def _auto_image(source, dataset, output, report, *, budget, strict_history,
             if candidate[0].get("counts", {}).get("decoder_unavailable", 0):
                 # Keep the structural candidate until an available native
                 # decoder has produced and verified a better candidate.
+                continue
+            if candidate[0].get("outcome") != "complete" and _coverage(candidate[0]) == 0:
+                # An empty native export must not hide a later checked index repair.
                 continue
             if candidate[0].get("outcome") == "complete" or route != "structural":
                 break

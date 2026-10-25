@@ -193,8 +193,8 @@ def _child(request_path: Path, response_path: Path) -> int:
                             published_output=request["published_output"])
         elif route == "large_structural":
             from .large_streaming import LargeBudget
-            from .large_structural import recover_large_fixed_array
-            recover_large_fixed_array(args["source"], args["dataset"], output, report,
+            from .large_structural import recover_large_structural
+            recover_large_structural(args["source"], args["dataset"], output, report,
                                       published_output=Path(request["published_output"]),
                                       budget=LargeBudget(**json.loads(args.get("streaming_budget", "{}"))))
         elif route == "structural":
