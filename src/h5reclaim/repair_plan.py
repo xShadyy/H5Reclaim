@@ -19,8 +19,9 @@ from .metadata import UnsupportedCase
 from .metadata_correction import _unique_one_byte, _selected_layout_pointer
 from .header_dimension_trial import _selected_dimension_field
 from .modern_indexes import ModernH5File, lookup3
-from .metadata_fallback import _messages, _unique
+from .metadata_fallback import _messages, _unique, _compact_links
 from .preflight import inspect_metadata_local
+from .file_space_repair import inspect_file_space, repair_file_space
 from .recovery import VERSION, RecoveryError, _validate_paths, _verify_source, sha256_file
 
 
@@ -129,7 +130,90 @@ def _object_header(reader, address):
     return reader.absolute(address), reader.read_at(address, prefix_size + size + 4)
 
 
-def _object_repairs(path, inspection, allow_reseal, touches):
+def _compact_root_link_fields(reader, raw):
+    """Locate existing hard-link address bytes in the first v2 header block.
+
+    Link names, message lengths and formats must already be readable. This
+    routine does not synthesize a missing name or scan for an unowned link.
+    """
+    flags = raw[5]
+    head = 6 + (16 if flags & 32 else 0) + (4 if flags & 16 else 0) + (1 << (flags & 3))
+    data, prefix = raw[head:-4], 6 if flags & 4 else 4
+    positions, cursor = [], 0
+    while len(data) - cursor >= prefix:
+        kind = data[cursor]
+        length = int.from_bytes(data[cursor + 1:cursor + 3], "little")
+        message_flags = data[cursor + 3]
+        if message_flags & 0xA0 or cursor + prefix + length > len(data):
+            raise FormatError("corrupt root group message framing cannot justify detached ownership")
+        start = cursor + prefix
+        message = data[start:start + length]
+        if kind == 6 and not message_flags & 2:
+            if len(message) < 3 or message[0] != 1 or message[1] & 0xE8:
+                raise FormatError("root group link is outside supported compact hard-link encoding")
+            link_flags = message[1]
+            pos = 2 + (8 if link_flags & 4 else 0) + (1 if link_flags & 16 else 0)
+            width = 1 << (link_flags & 3)
+            if (link_flags & 16 and message[pos - 1] != 1 or pos + width > len(message)):
+                raise FormatError("root group compact link name framing is invalid")
+            name_size = int.from_bytes(message[pos:pos + width], "little")
+            pos += width + name_size
+            if not 1 <= name_size <= 2048 or pos + reader.superblock.offset_size != len(message):
+                raise FormatError("root group compact hard link address is truncated")
+            name = message[pos - name_size:pos]
+            try:
+                decoded = name.decode("utf-8" if link_flags & 16 else "ascii")
+            except UnicodeDecodeError as exc:
+                raise FormatError("root group compact link name is invalid") from exc
+            if not decoded or decoded in (".", "..") or "/" in decoded or "\x00" in decoded:
+                raise FormatError("root group compact link name is not canonical")
+            beginning = head + start + pos
+            positions.extend(range(beginning, beginning + reader.superblock.offset_size))
+        cursor += prefix + length
+    if any(data[cursor:]):
+        raise FormatError("nonzero root group object-header gap")
+    return tuple(positions)
+
+
+def _restore_detached_root_link(path, reader, address, start, raw, budget, touches):
+    positions = _compact_root_link_fields(reader, raw)
+    if not positions:
+        return False
+    stored = int.from_bytes(raw[-4:], "little")
+    try:
+        offset, value = _unique_one_byte(raw, positions, stored)
+    except FormatError as exc:
+        if "no unique original-checksum correction" in str(exc):
+            return False
+        raise
+    proposal = bytearray(raw)
+    proposal[offset] = value
+    offsize = reader.superblock.offset_size
+    field = next(positions[index] for index in range(0, len(positions), offsize)
+                 if offset in positions[index:index + offsize])
+    target = int.from_bytes(proposal[field:field + offsize], "little")
+    # Independent physical scan finds a checked dataset header at the
+    # checksum-restored target; the final rooted preflight then checks that
+    # recovered link, index and allocations together.
+    from .object_discovery import scan_local
+    known = {entry["address"] for entry in scan_local(path, budget)["datasets"]}
+    if target not in known:
+        raise FormatError("checksum-restored link target lacks a checked detached dataset header")
+    _write(path, start, proposal)
+    try:
+        with ModernH5File(path, large_sparse_scan=True) as fresh:
+            links = _compact_links(fresh, address)
+            if target not in {step.object_address for step in links.values() if step is not None}:
+                raise FormatError("restored group link does not own the checked detached header")
+    except Exception:
+        _write(path, start, raw)
+        raise
+    touches.append((start, start + len(raw), "restore_detached_compact_hard_link",
+                    "unique original group checksum and independently checked dataset header"))
+    return True
+
+
+def _object_repairs(path, inspection, allow_reseal, touches, budget):
     changed_any = False
     if not inspection.get("objects"):
         return False
@@ -164,6 +248,10 @@ def _object_repairs(path, inspection, allow_reseal, touches):
                 if restored is not None:
                     _write(path, start, restored)
                     touches.append((start, start + len(raw), "restore_object_layout_or_dimension", "original checksum restored"))
+                    changed_any = True
+                    continue
+                if descriptor.get("path") == "/" and _restore_detached_root_link(
+                        path, reader, address, start, raw, budget, touches):
                     changed_any = True
                     continue
                 if allow_reseal:
@@ -234,6 +322,7 @@ def _build_plan(original, working, digest, budget, allow_reseal):
     deadline = time.monotonic() + budget.max_seconds
     try:
         _superblock(working, allow_reseal, touches)
+        repair_file_space(working, touches, budget=budget, allow_reseal=allow_reseal)
         for _ in range(16):
             _deadline(deadline)
             inspection = inspect_metadata_local(working, budget=budget)
@@ -248,12 +337,15 @@ def _build_plan(original, working, digest, budget, allow_reseal):
             if inspection["decision"] in ("accept", "accept_with_warnings") and inspection["analysis"]["complete"]:
                 break
             try:
-                if _object_repairs(working, inspection, allow_reseal, touches):
+                if _object_repairs(working, inspection, allow_reseal, touches, budget):
                     continue
             except (FormatError, UnsupportedCase):
                 pass
             break
         inspection = inspect_metadata_local(working, budget=budget)
+        # Check a repaired free-space manager independently of the namespace
+        # walk, including the reciprocal section-list owner and all records.
+        inspect_file_space(working, budget=budget)
         executable = inspection["decision"] in ("accept", "accept_with_warnings") and inspection["analysis"]["complete"]
         unresolved = inspection["findings"] if not executable else []
         validation = {"decision": inspection["decision"], "analysis": inspection["analysis"]}

@@ -19,6 +19,18 @@ def _uint(raw):
     return int.from_bytes(raw, "little")
 
 
+def _version(path):
+    with path.open("rb") as source:
+        size, position = path.stat().st_size, 0
+        while position + 9 <= size:
+            source.seek(position)
+            prefix = source.read(9)
+            if prefix[:8] == SIGNATURE:
+                return prefix[8]
+            position = 512 if position == 0 else position * 2
+    raise FormatError("cannot inspect file-space managers without a rooted superblock")
+
+
 def _rooted_addresses(reader):
     sb = reader.superblock
     offsize = sb.offset_size
@@ -41,7 +53,8 @@ def _rooted_addresses(reader):
     return addresses, list(reader.metadata_ranges[1:])
 
 
-def _section_list(reader, owner, address, used, allocated, sections, maximum, address_bits, budget, deadline):
+def _section_list(reader, owner, address, used, allocated, sections, maximum, address_bits,
+                  budget, deadline, *, override=None, check_checksum=True):
     sb = reader.superblock
     if not used:
         if sections or allocated or address != sb.undefined_address:
@@ -54,9 +67,9 @@ def _section_list(reader, owner, address, used, allocated, sections, maximum, ad
     if start + allocated > min(sb.eof_address, reader.size):
         raise FormatError("persistent free-space section list crosses EOF")
     _deadline(deadline)
-    raw = reader.read_at(address, used)
+    raw = override if override is not None else reader.read_at(address, used)
     if (raw[:5] != b"FSSE\x00" or _uint(raw[5:5 + sb.offset_size]) != owner
-            or lookup3(raw[:-4]) != _uint(raw[-4:])):
+            or check_checksum and lookup3(raw[:-4]) != _uint(raw[-4:])):
         raise FormatError("persistent free-space section list has wrong signature, owner or checksum")
     count_width = max(1, (sections.bit_length() + 7) // 8)
     size_width = max(1, (maximum.bit_length() + 7) // 8)
@@ -86,7 +99,8 @@ def _section_list(reader, owner, address, used, allocated, sections, maximum, ad
     return records, (start, start + allocated, "rooted file free-space section list")
 
 
-def _manager(reader, address, budget, deadline, *, override=None, check_checksum=True):
+def _manager(reader, address, budget, deadline, *, override=None, check_checksum=True,
+             check_sections=True):
     sb = reader.superblock
     offsize, lensize = sb.offset_size, sb.length_size
     size = 18 + 7 * lensize + offsize
@@ -112,14 +126,24 @@ def _manager(reader, address, budget, deadline, *, override=None, check_checksum
     allocated = _uint(raw[fields:fields + lensize])
     if (not 1 <= classes <= 16 or not 1 <= shrink <= 100 or not 100 <= expand <= 1000
             or not 1 <= address_bits <= 64 or not maximum or count != serialized + unserialized
-            or count > budget.max_chunks or serialized > budget.max_chunks or total > reader.size):
+            or count > budget.max_chunks or serialized > budget.max_chunks or total > reader.size
+            or used > allocated or allocated > budget.max_metadata_bytes
+            or used and (used < 13 + 4 or section_address == sb.undefined_address)
+            or not used and (serialized or allocated or section_address != sb.undefined_address)):
         raise FormatError("rooted file free-space manager fields exceed checked bounds")
-    records, section_range = _section_list(reader, address, section_address, used, allocated,
-        serialized, maximum, address_bits, budget, deadline)
-    if sum(length for _, length in records) > total:
-        raise FormatError("serialized persistent free-space sections exceed declared total")
+    if used and reader.absolute(section_address) + allocated > min(sb.eof_address, reader.size):
+        raise FormatError("rooted file free-space section allocation crosses EOF")
+    if check_sections:
+        records, section_range = _section_list(reader, address, section_address, used, allocated,
+            serialized, maximum, address_bits, budget, deadline)
+        if sum(length for _, length in records) > total:
+            raise FormatError("serialized persistent free-space sections exceed declared total")
+    else:
+        section_range = None
     return {"address": address, "total_bytes": total, "section_count": count,
         "serialized_sections": serialized, "section_list_address": section_address,
+        "section_list_used_bytes": used, "section_list_allocated_bytes": allocated,
+        "maximum_section_bytes": maximum, "address_bits": address_bits,
         "metadata_ranges": [(start, start + size, "rooted file free-space manager header")]
                            + ([section_range] if section_range else [])}
 
@@ -132,17 +156,7 @@ def inspect_file_space(path, budget=None):
     """
     path, budget = Path(path), budget or LargeBudget()
     deadline = time.monotonic() + budget.max_seconds
-    with path.open("rb") as source:
-        size, position = path.stat().st_size, 0
-        while position + 9 <= size:
-            source.seek(position)
-            prefix = source.read(9)
-            if prefix[:8] == SIGNATURE:
-                break
-            position = 512 if position == 0 else position * 2
-        else:
-            raise FormatError("cannot inspect file-space managers without a rooted superblock")
-    if prefix[8] < 2:
+    if _version(path) < 2:
         return {"version": "legacy_not_covered", "managers": [], "metadata_ranges": []}
     with ModernH5File(path, large_sparse_scan=True) as reader:
         addresses, extension_ranges = _rooted_addresses(reader)
@@ -159,10 +173,12 @@ def inspect_file_space(path, budget=None):
 def repair_file_space(path, touches, *, budget=None, allow_reseal=False):
     """Repair a header only with an original checksum, or explicit resealing.
 
-    Full section-list parsing and its own original checksum are required for
-    either operation. A damaged section list cannot be silently discarded.
+    Each repaired header/list must pass a separate full section parse before
+    the repaired copy can be published. Missing sections are never invented.
     """
     path, budget = Path(path), budget or LargeBudget()
+    if _version(path) < 2:
+        return
     deadline = time.monotonic() + budget.max_seconds
     with ModernH5File(path, large_sparse_scan=True) as reader:
         addresses, _ = _rooted_addresses(reader)
@@ -172,25 +188,67 @@ def repair_file_space(path, touches, *, budget=None, allow_reseal=False):
             raw = reader.read_at(address, size)
             original = _uint(raw[-4:])
             if lookup3(raw[:-4]) == original:
-                _manager(reader, address, budget, deadline)
+                header = _manager(reader, address, budget, deadline, check_sections=False)
+            else:
+                mode = "original checksum restored"
+                try:
+                    offset, value = _unique_one_byte(raw, range(0, size - 4), original)
+                    candidate = bytearray(raw)
+                    candidate[offset] = value
+                    header = _manager(reader, address, budget, deadline,
+                                      override=bytes(candidate), check_sections=False)
+                    kind = "restore_file_space_header_field"
+                except FormatError as exc:
+                    if not allow_reseal or "no unique original-checksum correction" not in str(exc):
+                        raise
+                    header = _manager(reader, address, budget, deadline,
+                                      check_checksum=False, check_sections=False)
+                    candidate = bytearray(raw[:-4] + lookup3(raw[:-4]).to_bytes(4, "little"))
+                    kind, mode = "reseal_file_space_header", "current structural coherence; checksum recomputed"
+                physical = reader.absolute(address)
+                with path.open("r+b") as output:
+                    output.seek(physical)
+                    output.write(candidate)
+                touches.append((physical, physical + size, kind, mode))
+            section_address = header["section_list_address"]
+            used = header["section_list_used_bytes"]
+            allocated = header["section_list_allocated_bytes"]
+            count = header["serialized_sections"]
+            maximum = header["maximum_section_bytes"]
+            bits = header["address_bits"]
+            if not used:
+                _section_list(reader, address, section_address, used, allocated, count,
+                              maximum, bits, budget, deadline)
                 continue
-            mode = "original checksum restored"
-            try:
-                offset, value = _unique_one_byte(raw, range(4, size - 4), original)
-                candidate = bytearray(raw)
-                candidate[offset] = value
-                _manager(reader, address, budget, deadline, override=bytes(candidate))
-                kind = "restore_file_space_header_field"
-            except FormatError as exc:
-                if not allow_reseal or "no unique original-checksum correction" not in str(exc):
-                    raise
-                _manager(reader, address, budget, deadline, check_checksum=False)
-                candidate = bytearray(raw[:-4] + lookup3(raw[:-4]).to_bytes(4, "little"))
-                kind, mode = "reseal_file_space_header", "checked sections and current structural coherence; checksum recomputed"
-            physical = reader.absolute(address)
-            with path.open("r+b") as output:
-                output.seek(physical)
-                output.write(candidate)
-            touches.append((physical, physical + size, kind, mode))
+            raw_list = reader.read_at(section_address, used)
+            stored = _uint(raw_list[-4:])
+            if lookup3(raw_list[:-4]) == stored:
+                entries, _ = _section_list(reader, address, section_address, used, allocated,
+                                           count, maximum, bits, budget, deadline)
+            else:
+                mode = "original checksum restored"
+                try:
+                    if used > 1024:
+                        raise FormatError("section list exceeds one-byte original-checksum trial budget")
+                    position, value = _unique_one_byte(raw_list, range(0, used - 4), stored)
+                    candidate = bytearray(raw_list)
+                    candidate[position] = value
+                    entries, _ = _section_list(reader, address, section_address, used, allocated,
+                        count, maximum, bits, budget, deadline, override=bytes(candidate))
+                    kind = "restore_file_space_section_field"
+                except FormatError as exc:
+                    if not allow_reseal or "no unique original-checksum correction" not in str(exc):
+                        raise
+                    entries, _ = _section_list(reader, address, section_address, used, allocated,
+                        count, maximum, bits, budget, deadline, check_checksum=False)
+                    candidate = bytearray(raw_list[:-4] + lookup3(raw_list[:-4]).to_bytes(4, "little"))
+                    kind, mode = "reseal_file_space_section_list", "rooted section structure and current coherence; checksum recomputed"
+                section_physical = reader.absolute(section_address)
+                with path.open("r+b") as output:
+                    output.seek(section_physical)
+                    output.write(candidate)
+                touches.append((section_physical, section_physical + used, kind, mode))
+            if sum(length for _, length in entries) > header["total_bytes"]:
+                raise FormatError("repaired file free-space sections exceed header total")
     # This second parse does not use the repaired in-memory candidates.
     inspect_file_space(path, budget)
