@@ -112,6 +112,19 @@ of every HDF5 semantic constraint or a security sandbox. The strict profile
 also rejects declared nonlocal dependencies. Marker matches are unassigned
 candidates; they do not prove ownership or surviving measurements.
 
+If a modern file declares a superblock extension and an installed HDF5
+`h5clear` can run, `probe-image` tests removal of a stale metadata cache image
+on a disposable copy:
+
+```sh
+h5reclaim probe-image damaged.h5 --json
+```
+
+The report records whether the altered copy opens and its changed byte
+offsets. It never publishes the copy or treats an openable file as proof that
+measurements are correct. `probe-status` similarly tests stale write flags
+on a disposable copy.
+
 ## Review and apply metadata repairs
 
 ```sh
