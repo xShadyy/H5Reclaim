@@ -12,6 +12,7 @@ import time
 from .format import H5File, FormatError, UnsupportedFormat, SIGNATURE
 from .large_streaming import LargeBudget, sparse_snapshot, _deadline
 from .modern_indexes import ModernH5File
+from .file_space_repair import inspect_file_space
 from .metadata_fallback import (_messages, _old_messages, _old_root_address,
                                 _old_group_links, _compact_links, _unique, _filters, _old_filters)
 
@@ -76,7 +77,7 @@ def inspect_metadata_local(path, *, budget=None, profile="forensic"):
                          "address": address, "severity": severity})
     version = _version(path)
     reader_type = H5File if version < 2 else ModernH5File
-    options = {} if version < 2 else dict(large_sparse_scan=True, max_chunks=min(budget.max_chunks, 65536),
+    options = {} if version < 2 else dict(large_sparse_scan=True, max_chunks=budget.max_chunks,
         max_chunk_bytes=min(128 << 20, 2 * budget.max_chunk_bytes),
         repair_scan_bytes=budget.max_scan_bytes, repair_scan_seconds=min(86400, budget.max_seconds))
     with reader_type(path, **options) as reader:
@@ -154,7 +155,7 @@ def inspect_metadata_local(path, *, budget=None, profile="forensic"):
                         if dimensions[-1] != width or any(n <= 0 for n in dimensions):
                             raise FormatError("chunk dimensions contradict datatype width")
                         index = reader.read_index(address, shape, dimensions[:-1], width, maxshape=maximum,
-                            filters=tuple(p.id for p in pipeline), max_chunks=min(budget.max_chunks, 65536))
+                            filters=tuple(p.id for p in pipeline), max_chunks=budget.max_chunks)
                         descriptor.update(chunks=list(dimensions[:-1]), index_type=index.index_type,
                                           allocated_chunks=len(index.chunks))
                         selected_repairs = list(index.reconstructed_links)
@@ -163,7 +164,7 @@ def inspect_metadata_local(path, *, budget=None, profile="forensic"):
                                 "target_address": index.data_block_address, "pointer_offset": index.data_block_pointer_offset})
                         for repair in selected_repairs:
                             repairs.append({**repair, "dataset": selected_path})
-                            finding("INDEX_LINK_REPAIRABLE", "one index link has a unique original-checksum-restoring repair",
+                            finding("INDEX_LINK_REPAIRABLE", "index link has a unique original-checksum-restoring repair",
                                 object_path=selected_path, address=address)
                         for chunk in index.chunks:
                             start = reader.absolute(chunk.address)
@@ -230,6 +231,21 @@ def inspect_metadata_local(path, *, budget=None, profile="forensic"):
             if any(start < stop and begin < end for begin, stop, _ in reader.metadata_ranges):
                 finding("PAYLOAD_METADATA_OVERLAP", "chunk allocation overlaps checked metadata", object_path=selected_path)
         ranges = sorted(set(reader.metadata_ranges))
+    file_space = {"version": "legacy_not_covered", "managers": [], "metadata_ranges": []}
+    if version >= 2:
+        try:
+            file_space = inspect_file_space(path, budget=budget)
+            for start, end, kind in file_space["metadata_ranges"]:
+                if any(start < stop and begin < end for begin, stop, _ in payloads):
+                    finding("PAYLOAD_FILE_SPACE_OVERLAP",
+                            "file-space metadata allocation overlaps a dataset payload")
+            ranges = sorted(set((*ranges, *(tuple(item) for item in file_space["metadata_ranges"]))))
+        except UnsupportedFormat as exc:
+            complete = False
+            finding("UNSUPPORTED_FILE_SPACE", exc, severity="unsupported")
+        except (FormatError, OSError, ValueError, IndexError) as exc:
+            complete = False
+            finding("CORRUPT_FILE_SPACE", exc)
     errors = any(f["severity"] == "error" for f in findings)
     decision = ("reject_corrupt" if errors else "reject_dependencies" if profile == "strict" and external else
                 "incomplete" if not complete else "accept_with_warnings" if findings else "accept")
@@ -237,9 +253,11 @@ def inspect_metadata_local(path, *, budget=None, profile="forensic"):
         "decision": decision, "analysis": {"complete": complete, "objects_checked": len(seen), "links_seen": links_seen},
         "objects": objects, "findings": findings, "index_repairs": repairs,
         "metadata_ranges": [list(r) for r in ranges], "declared_dependencies": external,
+        "file_space": {"version": file_space["version"], "manager_count": len(file_space["managers"]),
+                       "metadata_ranges": file_space["metadata_ranges"]},
         "boundary": {"native_file_opens": False, "payload_reads": False, "decompression": False,
                      "dynamic_plugins": False, "external_file_opens": False, "writes": False},
-        "scope": "reachable headers, namespace and supported modern chunk indexes; other semantic constraints and raw measurement integrity are outside this check"}
+        "scope": "reachable headers, namespace, supported modern chunk indexes and rooted persistent file-space managers; other semantic constraints and raw measurement integrity are outside this check"}
 
 
 def preflight(source, *, budget=None, profile="forensic"):
