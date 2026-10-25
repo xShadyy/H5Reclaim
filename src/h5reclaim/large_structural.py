@@ -205,7 +205,7 @@ def recover_large_structural(source: str | Path, dataset_path: str, output: str 
                     collisions = add_output_annotations(target, {
                         "h5reclaim_chunk_status": metadata_group + "/validity",
                         "h5reclaim_warning": "Use the reported validity map; nonaccepted positions are not measurements."})
-                    legacy_operation = (require_fixed_array and rank == 1 and not spec.filters)
+                    legacy_operation = (index.index_type == "fixed_array" and rank == 1 and not spec.filters)
                     report = {
                         "schema_version": 1, "tool": "h5reclaim", "tool_version": VERSION,
                         "operation": "large_checked_fixed_array_pointer_recovery" if legacy_operation else "large_checked_chunk_index_recovery",

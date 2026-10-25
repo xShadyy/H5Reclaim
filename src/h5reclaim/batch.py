@@ -25,6 +25,9 @@ def _save(path, record):
 def batch_rescue(sources, output_dir, summary_path, *, jobs=1, resume=False,
                  budget=None, html=False, fail_on_partial=False):
     budget = budget or LargeBudget()
+    from dataclasses import asdict
+    from .recovery import VERSION
+    options = {"budget": asdict(budget), "tool_version": VERSION}
     if type(jobs) is not int or not 1 <= jobs <= 4:
         raise ValueError("batch jobs must be in 1..4")
     sources = [Path(p).absolute() for p in sources]
@@ -43,8 +46,10 @@ def batch_rescue(sources, output_dir, summary_path, *, jobs=1, resume=False,
         record = json.loads(summary_path.read_text())
         if record.get("kind") != "batch_recovery" or record.get("schema_version") != 1:
             raise ValueError("expected a version-1 batch summary")
+        if record.get("options") != options:
+            raise ValueError("batch belongs to a different tool version or recovery budget")
     else:
-        record = {"schema_version": 1, "tool": "h5reclaim", "kind": "batch_recovery", "results": []}
+        record = {"schema_version": 1, "tool": "h5reclaim", "kind": "batch_recovery", "options": options, "results": []}
     previous = {r["source"]: r for r in record["results"]}
     results, pending = {}, []
     for source in sources:
