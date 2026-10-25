@@ -12,7 +12,8 @@ from h5reclaim.file_space_repair import (
     _information_addresses, inspect_file_space, repair_file_space,
 )
 from h5reclaim.format import FormatError
-from h5reclaim.modern_indexes import lookup3
+from h5reclaim.modern_indexes import ModernH5File, lookup3
+from h5reclaim.metadata_fallback import _messages
 from h5reclaim.repair_plan import plan_repair, apply_repair
 from h5reclaim.preflight import inspect_metadata_local
 
@@ -74,6 +75,68 @@ class FileSpaceRepairTests(unittest.TestCase):
         with h5py.File(output, "r") as handle:
             np.testing.assert_array_equal(handle["kept"][:], np.arange(50, dtype="i4"))
         self.assertIn("repair_verified", audit.read_text())
+
+    def test_broken_file_space_declaration_is_restored_before_manager_walk(self):
+        pristine = self.source.read_bytes()
+        with ModernH5File(self.source, large_sparse_scan=True) as reader:
+            sb = reader.superblock
+            raw = reader._read_absolute(sb.signature_offset, 16 + 4 * sb.offset_size)
+            extension = int.from_bytes(raw[12 + sb.offset_size:12 + 2 * sb.offset_size], "little")
+            info = next(message for message in _messages(reader, extension) if message.kind == 0x17)
+            field = next(position for position in range(29, len(info.data) - sb.offset_size + 1, sb.offset_size)
+                         if info.data[position:position + sb.offset_size] != bytes([255]) * sb.offset_size)
+            damaged_at = info.absolute_offset + field
+        self.damage(damaged_at)
+        self.assertEqual(inspect_metadata_local(self.source)["decision"], "reject_corrupt")
+        plan_path, output, audit = (self.root / name for name in ("info.json", "info.h5", "info.jsonl"))
+        planned = plan_repair(self.source, plan_path)
+        self.assertTrue(planned["executable"], planned)
+        self.assertTrue(any("restore_file_space_info_field" in action["repairs"]
+                            for action in planned["actions"]))
+        apply_repair(self.source, plan_path, output, audit)
+        self.assertEqual(output.read_bytes(), pristine)
+        self.assertEqual(inspect_metadata_local(output)["decision"], "accept")
+
+    def test_declaration_and_its_manager_can_be_repaired_in_one_plan(self):
+        manager_address = inspect_file_space(self.source)["managers"][0]["address"]
+        pristine = self.source.read_bytes()
+        with ModernH5File(self.source, large_sparse_scan=True) as reader:
+            sb = reader.superblock
+            raw = reader._read_absolute(sb.signature_offset, 16 + 4 * sb.offset_size)
+            extension = int.from_bytes(raw[12 + sb.offset_size:12 + 2 * sb.offset_size], "little")
+            info = next(message for message in _messages(reader, extension) if message.kind == 0x17)
+            positions = range(29, len(info.data) - sb.offset_size + 1, sb.offset_size)
+            field = next(pos for pos in positions
+                         if int.from_bytes(info.data[pos:pos + sb.offset_size], "little") == manager_address)
+            info_byte = info.absolute_offset + field
+        self.damage(manager_address + 6)
+        self.damage(info_byte)
+        plan_path, output, audit = (self.root / name for name in ("both.json", "both.h5", "both.jsonl"))
+        planned = plan_repair(self.source, plan_path)
+        self.assertTrue(planned["executable"], planned)
+        actions = {kind for action in planned["actions"] for kind in action["repairs"]}
+        self.assertIn("restore_file_space_info_field", actions)
+        self.assertIn("restore_file_space_header_field", actions)
+        apply_repair(self.source, plan_path, output, audit)
+        self.assertEqual(output.read_bytes(), pristine)
+
+    def test_file_space_extension_checksum_reseal_needs_opt_in(self):
+        with ModernH5File(self.source, large_sparse_scan=True) as reader:
+            sb = reader.superblock
+            raw = reader._read_absolute(sb.signature_offset, 16 + 4 * sb.offset_size)
+            extension = int.from_bytes(raw[12 + sb.offset_size:12 + 2 * sb.offset_size], "little")
+            prefix = reader.read_at(extension, 6)
+            flags = prefix[5]
+            head_size = 6 + (16 if flags & 32 else 0) + (4 if flags & 16 else 0)
+            width = 1 << (flags & 3)
+            size = int.from_bytes(reader.read_at(extension + head_size, width), "little")
+            checksum_at = reader.absolute(extension) + head_size + width + size
+        self.damage(checksum_at + 3)
+        self.assertFalse(plan_repair(self.source)["executable"])
+        planned = plan_repair(self.source, allow_reseal=True)
+        self.assertTrue(planned["executable"], planned)
+        self.assertTrue(any("reseal_file_space_info_header" in action["repairs"]
+                            for action in planned["actions"]))
 
     def test_checksum_reseal_needs_opt_in_and_intact_sections(self):
         manager = inspect_file_space(self.source)["managers"][0]

@@ -21,7 +21,7 @@ from .header_dimension_trial import _selected_dimension_field
 from .modern_indexes import ModernH5File, lookup3
 from .metadata_fallback import _messages, _unique, _compact_links
 from .preflight import inspect_metadata_local
-from .file_space_repair import inspect_file_space, repair_file_space
+from .file_space_repair import _information_addresses, inspect_file_space, repair_file_space
 from .recovery import VERSION, RecoveryError, _validate_paths, _verify_source, sha256_file
 
 
@@ -128,6 +128,63 @@ def _object_header(reader, address):
     if not 4 <= size <= 16384:
         raise UnsupportedCase("object-header repair exceeds its 16 KiB quota")
     return reader.absolute(address), reader.read_at(address, prefix_size + size + 4)
+
+
+def _restore_file_space_info_message(path, budget, allow_reseal, touches):
+    """Restore a damaged checked superblock-extension declaration first.
+
+    FSHD/FSSE repair needs the declaration's rooted manager addresses. A
+    damaged 0x17 message makes the extension OHDR checksum fail before those
+    addresses can be read; repair its message data against the unchanged
+    original OHDR checksum before walking the managers.
+    """
+    with ModernH5File(path, large_sparse_scan=True) as reader:
+        sb = reader.superblock
+        offsize = sb.offset_size
+        superblock = reader._read_absolute(sb.signature_offset, 16 + 4 * offsize)
+        extension = int.from_bytes(superblock[12 + offsize:12 + 2 * offsize], "little")
+        if extension == sb.undefined_address:
+            return
+        start, raw = _object_header(reader, extension)
+        stored = int.from_bytes(raw[-4:], "little")
+        if lookup3(raw[:-4]) == stored:
+            return
+        flags = raw[5]
+        head = 6 + (16 if flags & 32 else 0) + (4 if flags & 16 else 0) + (1 << (flags & 3))
+        content = raw[head:-4]
+        prefix = 6 if flags & 4 else 4
+        cursor, candidates = 0, []
+        while len(content) - cursor >= prefix:
+            kind = content[cursor]
+            length = int.from_bytes(content[cursor + 1:cursor + 3], "little")
+            message_flags = content[cursor + 3]
+            if message_flags & 0xA0 or cursor + prefix + length > len(content):
+                raise FormatError("superblock extension message framing is damaged")
+            if kind == 0x17:
+                if message_flags & 2 or candidates:
+                    raise FormatError("shared or repeated file-space info cannot justify repair")
+                candidates.append(range(head + cursor + prefix, head + cursor + prefix + length))
+            cursor += prefix + length
+        if any(content[cursor:]) or len(candidates) != 1:
+            raise UnsupportedCase("no uniquely framed file-space declaration in damaged extension")
+        positions = candidates[0]
+        try:
+            offset, value = _unique_one_byte(raw, positions, stored)
+        except FormatError as exc:
+            if not allow_reseal or "no unique original-checksum correction" not in str(exc):
+                raise
+            _information_addresses(bytes(raw[index] for index in positions), 0, sb)
+            proposal = raw[:-4] + lookup3(raw[:-4]).to_bytes(4, "little")
+            kind = "reseal_file_space_info_header"
+            basis = "framed rooted file-space declaration and current structural coherence; checksum recomputed"
+        else:
+            proposal = bytearray(raw)
+            proposal[offset] = value
+            _information_addresses(bytes(proposal[index] for index in positions), 0, sb)
+            kind = "restore_file_space_info_field"
+            basis = "unique original superblock-extension checksum restored"
+    _write(path, start, proposal)
+    touches.append((start, start + len(raw), kind, basis))
 
 
 def _compact_root_link_fields(reader, raw):
@@ -322,6 +379,7 @@ def _build_plan(original, working, digest, budget, allow_reseal):
     deadline = time.monotonic() + budget.max_seconds
     try:
         _superblock(working, allow_reseal, touches)
+        _restore_file_space_info_message(working, budget, allow_reseal, touches)
         repair_file_space(working, touches, budget=budget, allow_reseal=allow_reseal)
         for _ in range(16):
             _deadline(deadline)
