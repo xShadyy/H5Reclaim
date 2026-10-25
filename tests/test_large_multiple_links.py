@@ -169,6 +169,15 @@ class MultipleLinkTests(unittest.TestCase):
         self.assertEqual(len(json.loads(cli_report.read_text())["unresolved_links"]), 2)
         with h5py.File(cli_output) as result:
             np.testing.assert_array_equal(result["data"][:], np.arange(400, dtype="<u4"))
+        from h5reclaim.repair_plan import apply_repair, plan_repair
+        plan_path = self.folder / "same-parent-plan.json"
+        plan = plan_repair(self.source, plan_path)
+        self.assertTrue(plan["executable"], plan)
+        fixed = self.folder / "same-parent-repaired-copy.h5"
+        apply_repair(self.source, plan_path, fixed, self.folder / "same-parent-audit.jsonl")
+        self.assertEqual(self.source.read_bytes(), damaged)
+        with h5py.File(fixed) as result:
+            np.testing.assert_array_equal(result["data"][:], np.arange(400, dtype="<u4"))
 
     def test_two_easb_links_in_one_parent_recover_filtered_values(self):
         truth = np.arange(64, dtype="<u4").reshape((8, 8))
