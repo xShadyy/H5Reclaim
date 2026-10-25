@@ -219,12 +219,22 @@ class ExtensibleArrayTests(unittest.TestCase):
         self.assertEqual(report["counts"]["recovered"], 40)
         self.assertEqual(broken.read_bytes(), bytes(raw))
 
-        # With an unrelated EAIB byte also damaged there is no valid original
-        # checksum to restore by modifying the pointer alone.
+        # A second child pointer in the same EAIB is also recoverable when
+        # both checked child addresses uniquely restore the original checksum.
         corrupt = bytearray(raw)
         corrupt[pointer+8] ^= 1
         extra = Path(self.temp.name) / "eaib_two_faults.h5"
         extra.write_bytes(corrupt)
+        restored, _ = _parse(extra, selected_metadata_from=self.path)
+        self.assertEqual(len(restored.reconstructed_links), 2)
+        self.assertEqual([x.address for x in restored.chunks],
+                         [x.address for x in healthy.chunks])
+
+        # Corrupting an unrelated chunk record in addition to the pointer
+        # cannot be made authentic by changing only checked child links.
+        unrelated = bytearray(raw)
+        unrelated[pointer-8] ^= 1
+        extra.write_bytes(unrelated)
         with self.assertRaises(FormatError):
             _parse(extra, selected_metadata_from=self.path)
 

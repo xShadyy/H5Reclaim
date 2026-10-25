@@ -100,9 +100,29 @@ jobs:
         run: python -m pip install -e ".[filters,applications]"
       - name: Check intact and damaged application files
         run: python benchmarks/run_application_corpus.py
+  recovery-workbench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install optional reader and official HDF5 tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y hdf5-tools
+          python -m pip install -e ".[filters,readers]"
+      - name: Check workbench, alternate reader and actual copy/repack integrations
+        run: python -m unittest discover -s tests -p 'test_external_tools.py' -q
+      - name: Check independent reader agreement
+        run: python -m unittest discover -s tests -p 'test_alternative_reader.py' -q
+      - name: Independently score compressed multidimensional index repairs
+        run: python benchmarks/run_streaming_recovery.py --output workbench-coverage.json
   release-artifacts:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [readme-translations, installed-package, release-coverage, real-data-and-tests, minimum-dependencies, application-compatibility]
+    needs: [readme-translations, installed-package, release-coverage, real-data-and-tests, minimum-dependencies, application-compatibility, recovery-workbench]
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -127,3 +147,11 @@ jobs:
             dist/SHA256SUMS
           if-no-files-found: error
           retention-days: 14
+      - name: Attach validated packages to a reviewable GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --verify-tag --draft --generate-notes
+          fi
+          gh release upload "$GITHUB_REF_NAME" dist/*.whl dist/*.tar.gz dist/SHA256SUMS --clobber

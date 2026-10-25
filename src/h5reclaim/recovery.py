@@ -32,7 +32,7 @@ from .snapshot_io import (
 )
 
 
-VERSION = "1.0.0"
+VERSION = "1.3.0"
 _WINDOWS_STAT = os.name == "nt"
 STATUS_CODES = {
     "recovered": 1,
@@ -326,8 +326,6 @@ def _analyze_snapshot(
                 root, "intact_tree", {"root_address": root.address, "root_level": 0},
             )
         else:
-            if len(walk.broken_links) > 1:
-                raise UnsupportedCase("this release handles at most one broken leaf link")
             nodes = {node.address: node for node in walk.nodes}
             parent_entries = {
                 entry.address: (node.address, slot)
@@ -372,12 +370,13 @@ def _analyze_snapshot(
                         # bounded path and a key interval consistent with it.
                         subtree = reader.walk_tree(
                             node.address, rank=rank, element_size=element_size,
-                            max_nodes=MAX_NODES - len(walk.nodes),
+                            max_nodes=MAX_NODES - len(walk.nodes) - len(graft_nodes),
                         )
                         if subtree.broken_links:
                             raise UnsupportedCase("bridged v1 internal subtree has another broken child link")
                         added = {child.address for child in subtree.nodes}
-                        if len(added) != len(subtree.nodes) or added.intersection(nodes):
+                        if (len(added) != len(subtree.nodes) or added.intersection(nodes)
+                                or added.intersection(child.address for child in graft_nodes)):
                             raise FormatError("bridged subtree repeats an already rooted B-tree node")
                         graft_nodes.extend(subtree.nodes)
                         selected_nodes = subtree.nodes
@@ -729,6 +728,11 @@ def recover(
         name for name, _value in analysis.spec.attributes
     })
     analysis.report["selected_annotation_collisions"] = annotation_collisions
+    by_coordinate = {record.coordinate: record for record in analysis.records}
+    for mapping in analysis.report.get("mappings", []):
+        record = by_coordinate[tuple(mapping["coordinate"])]
+        mapping["decoded_chunk_sha256"] = hashlib.sha256(record.payload).hexdigest()
+    analysis.report["payload_digest_scope"] = "nominal unfiltered output chunk bytes, including edge padding"
     report_text = json.dumps(analysis.report, indent=2, sort_keys=True) + "\n"
     # Private temporary directories keep HDF5's pathname reopen away from
     # other users of a shared output directory. The context managers clean up

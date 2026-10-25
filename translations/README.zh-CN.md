@@ -5,7 +5,7 @@
 <p align="center">
   <a href="../pyproject.toml"><img alt="Python 3.10+" src="https://img.shields.io/badge/Python-3.10%2B-3559F0?style=flat-square&amp;logo=python&amp;logoColor=white"></a>
   <a href="../LICENSE"><img alt="许可证：Apache 2.0" src="https://img.shields.io/badge/License-Apache%202.0-263557?style=flat-square"></a>
-  <a href="https://github.com/xShadyy/H5Reclaim/blob/main/benchmarks/results/v100rc1-release-coverage.json"><img alt="受控基准测试：95.4% 的恢复结果可用" src="https://img.shields.io/badge/Controlled%20benchmark-95.4%25-3559F0?style=flat-square"></a>
+  <a href="https://github.com/xShadyy/H5Reclaim/blob/main/benchmarks/results/v130-release-coverage.json"><img alt="受控基准测试：95.4% 的恢复结果可用" src="https://img.shields.io/badge/Controlled%20benchmark-95.4%25-3559F0?style=flat-square"></a>
 </p>
 
 <p align="center">
@@ -18,7 +18,11 @@ H5Reclaim 可从损坏的 HDF5 文件中恢复科学数据。对于写入中断�
 
 **一条命令即可发现数据集、选择恢复方法，并创建新的 HDF5 文件及清晰的 JSON 报告。** 原始文件保持不变。H5Reclaim 可以保留部分损坏的数据集中仍可读取的测量值，并继续恢复文件的其他部分。
 
-1.0.0 版本在 **109 次受控损坏文件试验中实现了 95.4% 的可用恢复率**：其中 77 次完全精确恢复，27 次部分恢复；在这组试验中，已接受的值没有错误。这些生成的试验只衡量所声明的故障类别，不能作为其他文件的预期成功率。[查看结果](https://github.com/xShadyy/H5Reclaim/blob/main/benchmarks/results/v100rc1-release-coverage.json)。
+在 109 次受控损坏文件试验中，1.3.0 版本获得了 104 个可用结果：77 次完全精确恢复和 27 次部分恢复。另有 5 次拒绝恢复，没有接受错误的数值。这与此前 1.0.0 版本的同一组试验结果相同。[查看 1.3.0 结果](../benchmarks/results/v130-release-coverage.json)。
+
+1.3.0 版本可以修复同一个已验证索引节点中的两个损坏链接，通过原生 HDF5 迁移部分变长数据和引用，覆盖更多空闲空间结构，并保留经过验证的游离组硬链接别名。在[另外十个压缩数据受控案例](../benchmarks/results/v130-streaming-recovery.json)中，包括同一节点内的双链接故障，没有接受错误的数值。
+
+有关检查与修复工具、支持的格式、验证和批量处理，请参阅[使用指南](../USAGE.md)。
 
 <a id="quick-start"></a>
 ## 快速开始

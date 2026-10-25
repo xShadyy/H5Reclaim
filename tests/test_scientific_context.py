@@ -39,7 +39,7 @@ class ScientificContextTests(unittest.TestCase):
     def test_rooted_metadata_and_omissions_are_reported_without_link_targets(self):
         result = audit_context(self.source, "/lab/readings", self.digest,
                                copied_attributes=("units",), omitted_attributes=("DIMENSION_LIST",))
-        self.assertEqual(result["status"], "bounded_observation")
+        self.assertEqual(result["status"], "bounded_observation", result)
         self.assertEqual(result["source_sha256_bound"], self.digest)
         selected = result["source_metadata"]["selected_dataset"]
         self.assertEqual(selected["unit_attribute_names"], ["channel_units", "units"])
@@ -86,7 +86,7 @@ class ScientificContextTests(unittest.TestCase):
                 selected.attrs[f"extra_{index:02d}"] = index
         digest = hashlib.sha256(self.source.read_bytes()).hexdigest()
         result = audit_context(self.source, "/lab/readings", digest)
-        self.assertEqual(result["status"], "bounded_observation")
+        self.assertEqual(result["status"], "bounded_observation", result)
         self.assertIsNone(result["source_metadata"]["selected_dataset"]["attribute_names"]["names"])
         self.assertTrue(any("selected attribute names exceed" in item for item in result["omissions"]))
 

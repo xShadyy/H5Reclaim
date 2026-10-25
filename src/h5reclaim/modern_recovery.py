@@ -3,11 +3,10 @@
 This route needs a native lookup of the selected local dataset from the same
 private snapshot. The raw parser independently checks the selected object's
 checksum and layout. Direct rules or a validated index must attribute every
-accepted coordinate to a bounded physical byte range. A bounded candidate
-scan can bridge one FAHD, EAHD, EAIB, EASB, BTHD, or BTIN child link only
-when its original parent checksum restores, the child checks independently,
-and the complete resulting index agrees. A signature alone never establishes
-ownership.
+accepted coordinate to a bounded physical byte range. Bounded candidate
+scans can bridge links in FAHD, EAHD, EAIB, EASB, BTHD, or BTIN
+parents when each original parent checksum restores, the children check
+independently, and the complete resulting index agrees.
 """
 
 from __future__ import annotations
@@ -72,17 +71,17 @@ def analyze_modern_snapshot(
                 "pointer_offset": index.data_block_pointer_offset,
                 "resolution": "unique checksum-restoring candidate with FADB checksum and FAHD back-pointer",
             })
-        if len(repairs) > 1:
-            raise FormatError("only one damaged modern index link can be justified per export")
+        if len({item["pointer_offset"] for item in repairs}) != len(repairs):
+            raise FormatError("reconstructed index repairs reuse a pointer slot")
         def uses_reconstructed_link(chunk) -> bool:
             if index.reconstructed_data_block_pointer:
                 return True
             if not repairs:
                 return False
-            wanted = repairs[0]["pointer_offset"]
+            wanted = {repair["pointer_offset"] for repair in repairs}
             path = chunk.evidence.get(
                 "index_chain" if index.index_type == "extensible_array" else "link_path", ())
-            return any(step.get("pointer_offset") == wanted for step in path)
+            return any(step.get("pointer_offset") in wanted for step in path)
         coordinates: set[tuple[int, ...]] = set()
         for chunk in index.chunks:
             coordinate = chunk.coordinate
@@ -222,13 +221,13 @@ def analyze_modern_snapshot(
             "local selected dataset resolved from same snapshot",
             "version-2/3 superblock and checksum-verified version-2 object header",
             "version-4/5 chunked layout with validated direct, fixed-array, extensible-array, or v2 B-tree index",
-            ("one damaged modern index pointer was uniquely reconstructed by restoring "
-             "the original parent checksum; the child index and complete traversal checked"
+            ("each damaged modern index pointer was uniquely reconstructed by restoring "
+             "its original parent checksum; the child index and complete traversal checked"
              if repairs else "index is intact; no broken modern index pointers were inferred"),
         ],
         "coverage_note": (
-            ("One modern index pointer was reconstructed; all reported chunks follow a "
-             "uniquely bridged checked index and remain subject to payload integrity limits."
+            ("Checked modern index pointers were reconstructed; reported chunks "
+             "follow a checked index and remain subject to payload integrity limits."
              if repairs else
              "This route exports allocated chunks whose modern index is intact. "
              "It does not show that native HDF5 could not already read the dataset "

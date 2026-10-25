@@ -5,7 +5,7 @@
 <p align="center">
   <a href="pyproject.toml"><img alt="Python 3.10+" src="https://img.shields.io/badge/Python-3.10%2B-3559F0?style=flat-square&amp;logo=python&amp;logoColor=white"></a>
   <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/License-Apache%202.0-263557?style=flat-square"></a>
-  <a href="https://github.com/xShadyy/H5Reclaim/blob/main/benchmarks/results/v100rc1-release-coverage.json"><img alt="Controlled benchmark: 95.4% useful recovery" src="https://img.shields.io/badge/Controlled%20benchmark-95.4%25-3559F0?style=flat-square"></a>
+  <a href="https://github.com/xShadyy/H5Reclaim/blob/main/benchmarks/results/v130-release-coverage.json"><img alt="Controlled benchmark: 95.4% useful recovery" src="https://img.shields.io/badge/Controlled%20benchmark-95.4%25-3559F0?style=flat-square"></a>
 </p>
 
 <p align="center">
@@ -17,7 +17,11 @@ H5Reclaim recovers scientific data from damaged HDF5 files. It brings surviving 
 
 **One command discovers your datasets, selects recovery methods, and creates a new HDF5 file with a clear JSON report.** Your original stays untouched. H5Reclaim keeps readable measurements from partially damaged datasets and continues recovering the rest of the file.
 
-The 1.0.0 release achieved **95.4% useful recovery across 109 controlled damaged-file trials**: 77 fully exact recoveries and 27 partial recoveries, with zero wrong accepted values in this panel. [Explore the results](https://github.com/xShadyy/H5Reclaim/blob/main/benchmarks/results/v100rc1-release-coverage.json).
+Across **109 controlled damaged-file trials**, the 1.3.0 build produced 104 useful outputs: 77 fully exact and 27 partial recoveries, with five refusals and zero wrong accepted values. This is the same result as the earlier 1.0.0 panel. [Explore the 1.3.0 results](benchmarks/results/v130-release-coverage.json).
+
+Version 1.3.0 adds checked repairs for two broken links in one index parent, native relocation of selected heap-backed values and references, broader file-space repair, and checked detached group aliases. Its [separate ten-case compressed streaming panel](benchmarks/results/v130-streaming-recovery.json) includes same-parent faults and found zero wrong accepted values.
+
+See the [usage guide](USAGE.md) for the recovery workbench, supported formats, verification, and batch workflows.
 
 ## Quick start
 

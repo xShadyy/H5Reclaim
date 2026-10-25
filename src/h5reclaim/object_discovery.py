@@ -25,7 +25,7 @@ import h5py
 from .format import FormatError, UnsupportedFormat, H5File
 from .large_streaming import LargeBudget, _deadline, sparse_snapshot
 from .metadata import UnsupportedCase
-from .metadata_fallback import _messages, _old_messages, _old_root_address, _unique
+from .metadata_fallback import _messages, _old_messages, _old_root_address, _unique, _compact_links
 from .modern_indexes import ModernH5File, lookup3
 from .native_bindings import public_function
 from .recovery import VERSION, RecoveryError, _verify_source, sha256_file
@@ -117,9 +117,11 @@ def _discovery_reader(image):
 def scan_local(image, budget=None):
     budget = budget or LargeBudget()
     deadline = time.monotonic() + budget.max_seconds
-    datasets, headers, rejected = [], [], 0
+    datasets, groups, headers, rejected = [], [], [], 0
     with _discovery_reader(image) as reader:
         headers.extend(reader.metadata_ranges)
+        root_address = (reader.superblock.root_object_address if reader.superblock.version >= 2
+                        else None)
         candidates, scanned = _scan_headers(reader, budget, deadline)
         limit_reached = False
         for address in candidates:
@@ -130,6 +132,24 @@ def scan_local(image, budget=None):
                 messages = _messages(reader, address) if prefix == b"OHDR" else _old_messages(reader, address)
                 headers.extend(reader.metadata_ranges[1:])
                 space, typ, layout = (_unique(messages, kind) for kind in (1, 3, 8))
+                if (prefix == b"OHDR" and space is None and typ is None
+                        and layout is None and address != root_address):
+                    # Link names inside a checked group survive even when the
+                    # link *to* that group does not. Its historical parent
+                    # name cannot be inferred and is never reported as such.
+                    reader.metadata_ranges = reader.metadata_ranges[:1]
+                    links = _compact_links(reader, address)
+                    if links and not any(step is None for step in links.values()):
+                        if len(groups) + len(datasets) >= budget.max_objects:
+                            limit_reached = True
+                            break
+                        groups.append({"address": address,
+                            "links": [{"name": name, "address": step.object_address}
+                                      for name, step in sorted(links.items())],
+                            "header_ranges": [list(part) for part in reader.metadata_ranges[1:]],
+                            "identity": "checked group address and internal link names; original parent path unknown"})
+                        headers.extend(reader.metadata_ranges[1:])
+                    continue
                 if space is None or typ is None or layout is None:
                     continue
                 if any(item.flags & 2 for item in (space, typ, layout)):
@@ -149,11 +169,12 @@ def scan_local(image, budget=None):
                 rejected += 1
         if limit_reached:
             raise UnsupportedCase("detached dataset count exceeds the discovery budget")
-    return {"mode": "object_header_discovery", "datasets": datasets,
+    return {"mode": "object_header_discovery", "datasets": datasets, "groups": groups,
+        "root_object_address": root_address,
         "metadata_ranges": [list(part) for part in sorted(set(headers))],
         "scan_physical_bytes": scanned, "signature_candidates": len(candidates),
         "rejected_headers": rejected, "complete_namespace": False,
-        "scope": "modern checked and legacy structural object headers; names and unreadable objects remain unresolved"}
+        "scope": "checked dataset headers and surviving modern group-internal link names; detached parent paths and unreadable objects remain unresolved"}
 
 
 @contextmanager

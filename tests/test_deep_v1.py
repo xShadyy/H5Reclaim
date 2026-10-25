@@ -98,6 +98,35 @@ class DeepTreeTests(unittest.TestCase):
             self.assertEqual(hashlib.sha256(original.read_bytes()).hexdigest(), before_original)
             self.assertEqual(hashlib.sha256(damaged.read_bytes()).hexdigest(), before_damaged)
 
+    def test_two_distinct_leaf_gaps_under_one_legacy_parent_are_attributed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            original, values, _leaf_pointer, _root_pointer, width = self._fixture(base)
+            with h5py.File(original) as handle, H5File(original) as reader:
+                address = int(h5py.h5o.get_info(handle["measurements"].id).addr)
+                root = reader.read_tree(reader.read_dataset_layout(address).root_address)
+                parent = next(node for node in reader.walk_tree(root.address).nodes
+                              if node.level == 1 and len(node.entries) >= 5)
+                positions = (parent.entries[1].pointer_offset,
+                             parent.entries[3].pointer_offset)
+            damaged = base / "two-leaf-gaps.h5"
+            shutil.copyfile(original, damaged)
+            with damaged.open("r+b") as stream:
+                for position in positions:
+                    stream.seek(position)
+                    stream.write(b"\xff" * width)
+            damaged_hash = hashlib.sha256(damaged.read_bytes()).hexdigest()
+            output, report_path = base / "two-leaf-recovery.h5", base / "two-leaf-report.json"
+            result = recover(damaged, "/measurements", output, report_path)
+            self.assertTrue(result["complete"])
+            self.assertEqual(result["index"]["broken_links"], 2)
+            self.assertEqual(sum(link["kind"] == "bridged_index"
+                                 for link in result["evidence_ledger"]["links"]), 2)
+            self.assertEqual(result["counts"]["recovered"], values.size)
+            with h5py.File(output) as saved:
+                np.testing.assert_array_equal(saved["measurements"][:], values)
+            self.assertEqual(hashlib.sha256(damaged.read_bytes()).hexdigest(), damaged_hash)
+
     def test_missing_internal_subtree_refuses_without_output(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
@@ -145,6 +174,35 @@ class DeepTreeTests(unittest.TestCase):
             with h5py.File(output, "r") as recovered:
                 np.testing.assert_array_equal(recovered["/measurements"][...], values)
             self.assertEqual(hashlib.sha256(original.read_bytes()).hexdigest(), healthy_hash)
+            self.assertEqual(hashlib.sha256(damaged.read_bytes()).hexdigest(), damaged_hash)
+
+    def test_internal_and_separate_rooted_leaf_gaps_recover_together(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            original, values, internal_pointer, _right, _middle, width = self._internal_fixture(base)
+            with h5py.File(original) as handle, H5File(original) as reader:
+                address = int(h5py.h5o.get_info(handle["measurements"].id).addr)
+                root = reader.read_tree(reader.read_dataset_layout(address).root_address)
+                first_parent = reader.read_tree(root.entries[0].address)
+                self.assertGreaterEqual(len(first_parent.entries), 3)
+                leaf_pointer = first_parent.entries[1].pointer_offset
+            damaged = base / "internal-and-leaf.h5"
+            shutil.copyfile(original, damaged)
+            with damaged.open("r+b") as stream:
+                for pointer in (internal_pointer, leaf_pointer):
+                    stream.seek(pointer)
+                    stream.write(b"\xff" * width)
+            output, report_path = base / "mixed-recovered.h5", base / "mixed-report.json"
+            damaged_hash = hashlib.sha256(damaged.read_bytes()).hexdigest()
+            result = recover(damaged, "/measurements", output, report_path)
+            self.assertTrue(result["complete"])
+            self.assertEqual(result["counts"]["recovered"], values.size)
+            self.assertEqual(result["index"]["broken_links"], 2)
+            self.assertEqual(result["index"]["reconstructed_internal_subtrees"], 1)
+            self.assertEqual(sum(link["kind"] == "bridged_index"
+                                 for link in result["evidence_ledger"]["links"]), 2)
+            with h5py.File(output) as saved:
+                np.testing.assert_array_equal(saved["measurements"][:], values)
             self.assertEqual(hashlib.sha256(damaged.read_bytes()).hexdigest(), damaged_hash)
 
     def test_internal_bridge_without_reciprocal_sibling_refuses(self) -> None:

@@ -42,6 +42,12 @@ class SeededMatrixTest(unittest.TestCase):
             self.assertEqual(cases["trial_000_payload"]["observed"]["unresolved_chunks"], 1)
             self.assertEqual(cases["trial_000_link_and_payload"]["observed"]["unresolved_chunks"], 1)
             self.assertEqual(cases["trial_000_direct_payload"]["observed"]["exact_verified_chunks"], 63)
+            two_links = cases["trial_000_two_links"]["observed"]
+            self.assertEqual(two_links["decision"], "output")
+            self.assertEqual(two_links["exact_verified_chunks"], 14)
+            self.assertEqual(two_links["unresolved_chunks"], 114)
+            self.assertEqual(two_links["false_accepted_chunks"], 0)
+            self.assertEqual(two_links["reconstructed_link_chunks"], 0)
             for case in report["cases"]:
                 self.assertTrue(case["passed"], case["case"])
                 entry = next(item for item in json.loads((ROOT / "corpus" / "manifest.json").read_text())[

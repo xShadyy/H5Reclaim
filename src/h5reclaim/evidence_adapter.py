@@ -131,8 +131,6 @@ def _build(
         root.address, rank=len(spec.shape), element_size=np.dtype(spec.dtype).itemsize,
         max_nodes=len(walk.nodes),
     ) if internal_bridges else ()
-    if len(internal_bridges) > 1:
-        raise EvidenceAdapterError("at most one internal subtree bridge is supported")
     for candidate in internal_bridges:
         parent = nodes.get(candidate.parent_address)
         slot = candidate.entry_index
@@ -157,6 +155,7 @@ def _build(
         if (child_walk.broken_links or len(child_addresses) != len(child_walk.nodes)
                 or any(nodes.get(node.address) != node for node in child_walk.nodes)
                 or child_addresses & {node.address for node in rooted_walk.nodes}
+                or child_addresses & graft_addresses
                 or any(parent_addresses.get(address) not in child_addresses
                        for address in child_addresses if address != candidate.node.address)
                 or root.address in child_addresses):

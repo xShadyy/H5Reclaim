@@ -5,7 +5,7 @@
 <p align="center">
   <a href="../pyproject.toml"><img alt="Python 3.10+" src="https://img.shields.io/badge/Python-3.10%2B-3559F0?style=flat-square&amp;logo=python&amp;logoColor=white"></a>
   <a href="../LICENSE"><img alt="Licença: Apache 2.0" src="https://img.shields.io/badge/License-Apache%202.0-263557?style=flat-square"></a>
-  <a href="https://github.com/xShadyy/H5Reclaim/blob/main/benchmarks/results/v100rc1-release-coverage.json"><img alt="Benchmark controlado: 95,4% de recuperações úteis" src="https://img.shields.io/badge/Controlled%20benchmark-95.4%25-3559F0?style=flat-square"></a>
+  <a href="https://github.com/xShadyy/H5Reclaim/blob/main/benchmarks/results/v130-release-coverage.json"><img alt="Benchmark controlado: 95,4% de recuperações úteis" src="https://img.shields.io/badge/Controlled%20benchmark-95.4%25-3559F0?style=flat-square"></a>
 </p>
 
 <p align="center">
@@ -18,7 +18,11 @@ O H5Reclaim recupera dados científicos de arquivos HDF5 danificados. Ele transf
 
 **Um único comando encontra os conjuntos de dados, seleciona os métodos de recuperação e cria um novo arquivo HDF5 com um relatório JSON claro.** O arquivo original permanece intacto. O H5Reclaim preserva as medições legíveis de conjuntos de dados parcialmente danificados e continua recuperando o restante do arquivo.
 
-A versão 1.0.0 alcançou **95,4% de recuperações úteis em 109 testes controlados com arquivos danificados**: 77 recuperações totalmente exatas e 27 parciais, sem valores incorretos aceitos nesse conjunto de testes. Esses testes gerados medem as classes de falhas declaradas, não uma taxa de sucesso esperada para outros arquivos. [Explore os resultados](https://github.com/xShadyy/H5Reclaim/blob/main/benchmarks/results/v100rc1-release-coverage.json).
+Em 109 testes controlados com arquivos danificados, a versão 1.3.0 produziu 104 resultados úteis: 77 recuperações totalmente exatas e 27 parciais. Cinco casos foram recusados e nenhum valor incorreto foi aceito. É o mesmo resultado do teste anterior da versão 1.0.0. [Resultados da 1.3.0](../benchmarks/results/v130-release-coverage.json).
+
+A versão 1.3.0 repara dois links danificados no mesmo nó de índice verificado, realoca certos valores de comprimento variável e referências, cobre mais estruturas de espaço livre e preserva aliases verificados de grupos desconectados. No [teste separado com dez casos comprimidos](../benchmarks/results/v130-streaming-recovery.json), incluindo falhas no mesmo nó, nenhum valor incorreto foi aceito.
+
+O [guia de uso](../USAGE.md) apresenta as ferramentas de inspeção e reparo, os formatos compatíveis, a verificação e o processamento em lote.
 
 <a id="quick-start"></a>
 ## Primeiros passos

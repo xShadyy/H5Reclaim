@@ -22,10 +22,10 @@ MAX_REPORT = 32 * 1024 * 1024
 ROUTES = frozenset({
     "family", "split", "vds", "external_raw", "external_link", "nonchunked",
     "replicas", "parity", "erasure", "status", "metadata_trial", "capsule",
-    "truncated_chunks", "large_readable", "large_structural", "structural", "element_baseline", "chunk_baseline", "readable", "protection",
+    "truncated_chunks", "large_readable", "large_structural", "relocated_native", "structural", "element_baseline", "chunk_baseline", "readable", "protection",
     "variable_readable",
     "native_stream",
-    "object", "native_family", "native_split",
+    "object", "native_family", "native_split", "alternative_reader",
 })
 
 
@@ -191,12 +191,22 @@ def _child(request_path: Path, response_path: Path) -> int:
             from .variable_readable import export_variable
             export_variable(args["source"], args["dataset"], output, report,
                             published_output=request["published_output"])
+        elif route == "alternative_reader":
+            from .alternative_reader import export_alternative
+            export_alternative(args["source"], args["dataset"], output, report,
+                budget=budget, published_output=request["published_output"])
         elif route == "large_structural":
             from .large_streaming import LargeBudget
-            from .large_structural import recover_large_fixed_array
-            recover_large_fixed_array(args["source"], args["dataset"], output, report,
+            from .large_structural import recover_large_structural
+            recover_large_structural(args["source"], args["dataset"], output, report,
                                       published_output=Path(request["published_output"]),
                                       budget=LargeBudget(**json.loads(args.get("streaming_budget", "{}"))))
+        elif route == "relocated_native":
+            from .large_streaming import LargeBudget
+            from .repaired_native import recover_relocated_index
+            recover_relocated_index(args["source"], args["dataset"], output, report,
+                published_output=Path(request["published_output"]),
+                budget=LargeBudget(**json.loads(args.get("streaming_budget", "{}"))))
         elif route == "structural":
             from .recovery import recover
             if args.get("hints"):

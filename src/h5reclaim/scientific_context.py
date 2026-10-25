@@ -218,6 +218,10 @@ def audit_context(source: str | Path, selected_path: str, expected_sha256: str,
         environment["HDF5_PLUGIN_PRELOAD"] = "::"
         environment.pop("HDF5_PLUGIN_PATH", None)
         environment.pop("HDF5_EXTFILE_PREFIX", None)
+        # This worker inspects tiny metadata only. BLAS thread stacks can
+        # otherwise consume its address-space quota before HDF5 opens a file.
+        for name in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+            environment[name] = "1"
         try:
             result = run_worker(
                 [sys.executable, "-m", "h5reclaim.scientific_context", str(request), str(response)],

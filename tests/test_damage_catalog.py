@@ -54,8 +54,15 @@ class DamageCatalogTest(unittest.TestCase):
             self.assertEqual(four_khz_corruption["exact_verified_chunks"], 63)
             self.assertEqual(four_khz_corruption["rejected_corrupt_chunks"], 1)
             self.assertEqual(four_khz_corruption["reconstructed_link_chunks"], 0)
+            two_links = cases["two_index_links"]["observed"]
+            self.assertEqual(two_links["decision"], "partial")
+            self.assertEqual(two_links["exact_verified_chunks"], 14)
+            self.assertEqual(two_links["unresolved_index_chunks"], 114)
+            self.assertEqual(two_links["status_counts"]["allocation_unknown"], 114)
+            self.assertEqual(two_links["reconstructed_link_chunks"], 0)
+            self.assertEqual(two_links["wrong_claimed_chunks"], 0)
             for name in (
-                "two_index_links", "selected_object_header", "gwosc_4khz_missing_payload_pointer",
+                "selected_object_header", "gwosc_4khz_missing_payload_pointer",
                 "zenodo_qubit_feedback", "zenodo_pallas_cloud_aircraft",
             ):
                 self.assertEqual(cases[name]["observed"]["decision"], "refused")

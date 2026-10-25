@@ -1,0 +1,236 @@
+{
+  "cases": [
+    {
+      "broken_index_links": 1,
+      "case": "fa_2d_4mib_chunks",
+      "chunks": [
+        1024,
+        1024
+      ],
+      "compression": "gzip",
+      "decoded_chunk_bytes": 4194304,
+      "elapsed_seconds": 0.5243,
+      "exact_accepted_elements": 2097152,
+      "fully_exact": true,
+      "index": "fixed_array",
+      "logical_bytes": 8388608,
+      "partial_expected": false,
+      "passed": true,
+      "reported_index_repairs": 1,
+      "shape": [
+        2048,
+        1024
+      ],
+      "snapshot_physical_bytes_copied": 33534,
+      "source_bytes": 33534,
+      "source_unchanged": true,
+      "unknown_elements": 0,
+      "wrong_accepted_elements": 0
+    },
+    {
+      "broken_index_links": 1,
+      "case": "ea_3d",
+      "chunks": [
+        8,
+        32,
+        32
+      ],
+      "compression": "gzip",
+      "decoded_chunk_bytes": 32768,
+      "elapsed_seconds": 0.5144,
+      "exact_accepted_elements": 1179648,
+      "fully_exact": true,
+      "index": "extensible_array",
+      "logical_bytes": 4718592,
+      "partial_expected": false,
+      "passed": true,
+      "reported_index_repairs": 1,
+      "shape": [
+        72,
+        128,
+        128
+      ],
+      "snapshot_physical_bytes_copied": 78386,
+      "source_bytes": 78386,
+      "source_unchanged": true,
+      "unknown_elements": 0,
+      "wrong_accepted_elements": 0
+    },
+    {
+      "broken_index_links": 1,
+      "case": "btree_2d",
+      "chunks": [
+        100,
+        100
+      ],
+      "compression": "gzip",
+      "decoded_chunk_bytes": 40000,
+      "elapsed_seconds": 0.5254,
+      "exact_accepted_elements": 1100000,
+      "fully_exact": true,
+      "index": "v2_btree",
+      "logical_bytes": 4400000,
+      "partial_expected": false,
+      "passed": true,
+      "reported_index_repairs": 1,
+      "shape": [
+        1100,
+        1000
+      ],
+      "snapshot_physical_bytes_copied": 131342,
+      "source_bytes": 131342,
+      "source_unchanged": true,
+      "unknown_elements": 0,
+      "wrong_accepted_elements": 0
+    },
+    {
+      "broken_index_links": 1,
+      "case": "fa_3d_lzf",
+      "chunks": [
+        8,
+        8,
+        8
+      ],
+      "compression": "lzf",
+      "decoded_chunk_bytes": 2048,
+      "elapsed_seconds": 0.5752,
+      "exact_accepted_elements": 50061,
+      "fully_exact": true,
+      "index": "fixed_array",
+      "logical_bytes": 200244,
+      "partial_expected": false,
+      "passed": true,
+      "reported_index_repairs": 1,
+      "shape": [
+        33,
+        41,
+        37
+      ],
+      "snapshot_physical_bytes_copied": 58373,
+      "source_bytes": 58373,
+      "source_unchanged": true,
+      "unknown_elements": 0,
+      "wrong_accepted_elements": 0
+    },
+    {
+      "broken_index_links": 1,
+      "case": "fa_2d_bad_payload",
+      "chunks": [
+        8,
+        8
+      ],
+      "compression": "gzip",
+      "decoded_chunk_bytes": 256,
+      "elapsed_seconds": 0.5177,
+      "exact_accepted_elements": 1421,
+      "fully_exact": false,
+      "index": "fixed_array",
+      "logical_bytes": 5940,
+      "partial_expected": true,
+      "passed": true,
+      "reported_index_repairs": 1,
+      "shape": [
+        45,
+        33
+      ],
+      "snapshot_physical_bytes_copied": 4274,
+      "source_bytes": 4274,
+      "source_unchanged": true,
+      "unknown_elements": 64,
+      "wrong_accepted_elements": 0
+    },
+    {
+      "broken_index_links": 1,
+      "case": "fa_sparse_userblock_over_4gib",
+      "chunks": [
+        256,
+        250
+      ],
+      "compression": "gzip",
+      "decoded_chunk_bytes": 256000,
+      "elapsed_seconds": 11.8516,
+      "exact_accepted_elements": 1100000,
+      "fully_exact": true,
+      "index": "fixed_array",
+      "logical_bytes": 4400000,
+      "partial_expected": false,
+      "passed": true,
+      "reported_index_repairs": 1,
+      "shape": [
+        1100,
+        1000
+      ],
+      "snapshot_physical_bytes_copied": 60241,
+      "source_bytes": 4295027537,
+      "source_unchanged": true,
+      "unknown_elements": 0,
+      "wrong_accepted_elements": 0
+    },
+    {
+      "broken_index_links": 2,
+      "case": "ea_2d_two_broken_links",
+      "chunks": [
+        1,
+        1
+      ],
+      "compression": "gzip",
+      "decoded_chunk_bytes": 4,
+      "elapsed_seconds": 0.6922,
+      "exact_accepted_elements": 4,
+      "fully_exact": true,
+      "index": "extensible_array",
+      "logical_bytes": 16,
+      "partial_expected": false,
+      "passed": true,
+      "reported_index_repairs": 2,
+      "shape": [
+        2,
+        2
+      ],
+      "snapshot_physical_bytes_copied": 28672,
+      "source_bytes": 86054,
+      "source_unchanged": true,
+      "unknown_elements": 0,
+      "wrong_accepted_elements": 0
+    },
+    {
+      "broken_index_links": 2,
+      "case": "btree_2d_two_internal_links",
+      "chunks": [
+        2,
+        2
+      ],
+      "compression": "gzip",
+      "decoded_chunk_bytes": 16,
+      "elapsed_seconds": 9.387,
+      "exact_accepted_elements": 32400,
+      "fully_exact": true,
+      "index": "v2_btree",
+      "logical_bytes": 129600,
+      "partial_expected": false,
+      "passed": true,
+      "reported_index_repairs": 2,
+      "shape": [
+        180,
+        180
+      ],
+      "snapshot_physical_bytes_copied": 497664,
+      "source_bytes": 497664,
+      "source_unchanged": true,
+      "unknown_elements": 0,
+      "wrong_accepted_elements": 0
+    }
+  ],
+  "category": "controlled compressed multidimensional index-link recovery through the public CLI",
+  "environment": {
+    "h5py": "3.16.0",
+    "hdf5": "2.0.0",
+    "numpy": "2.5.4",
+    "platform": "Linux",
+    "python": "3.12.14"
+  },
+  "limits": "8 generated layouts and declared faults. Two cases damage distinct index parents. The >4 GiB case, when included, uses a sparse user block and small physically allocated data; it is an address-space check, not a dense multi-gigabyte throughput claim. Accepted coordinates are scored against NumPy truth after recovery exits.",
+  "passed": true,
+  "schema_version": 1,
+  "tool_version": "1.2.0"
+}

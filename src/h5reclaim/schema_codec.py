@@ -31,6 +31,13 @@ KNOWN_FILTERS = frozenset((h5py.h5z.FILTER_SHUFFLE,
                              h5py.h5z.FILTER_DEFLATE,
                              h5py.h5z.FILTER_FLETCHER32,
                              h5py.h5z.FILTER_LZF))
+# These HDF5 built-ins need dataset type and creation-property context to
+# reverse. Reconstruct that context from the checked source schema inside a
+# bounded, in-memory single-chunk dataset rather than interpreting their
+# persisted filter parameters as an independent byte-stream format.
+NATIVE_BUILTIN_FILTERS = frozenset((h5py.h5z.FILTER_NBIT,
+                                    h5py.h5z.FILTER_SCALEOFFSET,
+                                    h5py.h5z.FILTER_SZIP))
 
 
 class SchemaError(ValueError):
@@ -95,7 +102,12 @@ def canonical_numeric_dtype(datatype: h5py.h5t.TypeID, dtype: np.dtype) -> str:
     return dtype.str
 
 
-def fixed_file_datatype(datatype: h5py.h5t.TypeID) -> tuple[np.dtype, bytes]:
+def fixed_file_datatype(datatype: h5py.h5t.TypeID, *,
+                        max_encoding_bytes: int = MAX_DATATYPE_ENCODING_BYTES,
+                        max_record_bytes: int = 1_048_576,
+                        max_depth: int = MAX_DATATYPE_DEPTH,
+                        max_members: int = MAX_DATATYPE_MEMBERS,
+                        max_array_rank: int = 4) -> tuple[np.dtype, bytes]:
     """Accept bounded, self-contained HDF5 file types and retain their exact H5T.
 
     A NumPy dtype loses information such as string padding, enum names, opaque
@@ -104,32 +116,40 @@ def fixed_file_datatype(datatype: h5py.h5t.TypeID) -> tuple[np.dtype, bytes]:
     item size and a human-readable schema description. No pointers to a heap,
     another object, or variable-length storage are accepted.
     """
+    if (any(type(n) is not int for n in (max_encoding_bytes, max_record_bytes,
+                                        max_depth, max_members, max_array_rank))
+            or not 8 <= max_encoding_bytes <= 1 << 20
+            or not 1 <= max_record_bytes <= 64 << 20
+            or not 1 <= max_depth <= 256
+            or not 1 <= max_members <= 65_536
+            or not 1 <= max_array_rank <= 32):
+        raise ValueError("invalid fixed-record datatype quotas")
     try:
         encoded = datatype.encode()
         dtype = np.dtype(datatype.dtype)
-        if (not 2 < len(encoded) <= MAX_DATATYPE_ENCODING_BYTES
-                or dtype.hasobject or not 0 < datatype.get_size() <= 1_048_576
+        if (not 2 < len(encoded) <= max_encoding_bytes
+                or dtype.hasobject or not 0 < datatype.get_size() <= max_record_bytes
                 or dtype.itemsize != datatype.get_size()):
             raise SchemaError("datatype is variable, oversized, or disagrees with file width")
 
         def check(type_id: h5py.h5t.TypeID, depth: int) -> None:
-            if depth > MAX_DATATYPE_DEPTH:
+            if depth > max_depth:
                 raise SchemaError("datatype nesting exceeds limit")
             kind = type_id.get_class()
             if kind in (h5py.h5t.INTEGER, h5py.h5t.FLOAT):
                 canonical_numeric_dtype(type_id, type_id.dtype)
             elif kind == h5py.h5t.STRING:
-                if (type_id.is_variable_str() or not 0 < type_id.get_size() <= 4096
+                if (type_id.is_variable_str() or not 0 < type_id.get_size() <= max_record_bytes
                         or type_id.get_cset() not in (h5py.h5t.CSET_ASCII, h5py.h5t.CSET_UTF8)
                         or type_id.get_strpad() not in (h5py.h5t.STR_NULLTERM,
                                                        h5py.h5t.STR_NULLPAD,
                                                        h5py.h5t.STR_SPACEPAD)):
                     raise SchemaError("variable or unsupported fixed-width string")
             elif kind == h5py.h5t.OPAQUE:
-                if not 0 < type_id.get_size() <= 4096 or len(type_id.get_tag()) > 256:
+                if not 0 < type_id.get_size() <= max_record_bytes or len(type_id.get_tag()) > 256:
                     raise SchemaError("opaque type exceeds bounded tag or width")
             elif kind == h5py.h5t.ENUM:
-                if not 0 < type_id.get_nmembers() <= MAX_DATATYPE_MEMBERS:
+                if not 0 < type_id.get_nmembers() <= max_members:
                     raise SchemaError("enum exceeds member limit")
                 check(type_id.get_super(), depth + 1)
                 names = [type_id.get_member_name(index) for index in range(type_id.get_nmembers())]
@@ -137,13 +157,13 @@ def fixed_file_datatype(datatype: h5py.h5t.TypeID) -> tuple[np.dtype, bytes]:
                     raise SchemaError("enum has duplicate or unbounded member names")
             elif kind == h5py.h5t.ARRAY:
                 dimensions = type_id.get_array_dims()
-                if not 1 <= len(dimensions) <= 4 or any(not 0 < n <= 4096 for n in dimensions):
+                if not 1 <= len(dimensions) <= max_array_rank or any(n <= 0 for n in dimensions):
                     raise SchemaError("array dimensions exceed limits")
                 check(type_id.get_super(), depth + 1)
                 if np.prod(dimensions, dtype=object) * type_id.get_super().get_size() != type_id.get_size():
                     raise SchemaError("array width disagrees with dimensions")
             elif kind == h5py.h5t.COMPOUND:
-                if not 0 < type_id.get_nmembers() <= MAX_DATATYPE_MEMBERS:
+                if not 0 < type_id.get_nmembers() <= max_members:
                     raise SchemaError("compound exceeds member limit")
                 names = set()
                 ranges: list[tuple[int, int]] = []
@@ -247,10 +267,13 @@ def _pipeline(spec: object) -> tuple[FilterDescriptor, ...]:
     return tuple(result)
 
 
-def _validate_common(spec: object, mask: int) -> tuple[tuple[FilterDescriptor, ...], int]:
+def _validate_common(spec: object, mask: int, *,
+                     max_decoded_bytes: int = MAX_DECODED_CHUNK_BYTES) -> tuple[tuple[FilterDescriptor, ...], int]:
+    if type(max_decoded_bytes) is not int or not 0 < max_decoded_bytes <= 64 << 20:
+        raise ValueError("decoded chunk budget must be in 1..64 MiB")
     chunk_bytes = prod(spec.chunks) * np.dtype(spec.dtype).itemsize
-    if chunk_bytes <= 0 or chunk_bytes > MAX_DECODED_CHUNK_BYTES:
-        raise ChunkDecodeError("decoded chunk exceeds the bounded 1 MiB limit")
+    if chunk_bytes <= 0 or chunk_bytes > max_decoded_bytes:
+        raise ChunkDecodeError(f"decoded chunk exceeds the bounded {max_decoded_bytes}-byte limit")
     pipeline = _pipeline(spec)
     if (not isinstance(mask, int) or mask < 0 or mask >> len(pipeline)
             or len(pipeline) > MAX_FILTERS):
@@ -261,11 +284,15 @@ def _validate_common(spec: object, mask: int) -> tuple[tuple[FilterDescriptor, .
     return pipeline, chunk_bytes
 
 
-def validate_stored_size(spec: object, stored_size: int, mask: int) -> None:
+def validate_stored_size(spec: object, stored_size: int, mask: int, *,
+                         max_decoded_bytes: int = MAX_DECODED_CHUNK_BYTES,
+                         max_stored_bytes: int = MAX_STORED_CHUNK_BYTES) -> None:
     """Reject impossible allocation lengths before attempting the raw read."""
-    pipeline, chunk_bytes = _validate_common(spec, mask)
-    if not isinstance(stored_size, int) or not 0 < stored_size <= MAX_STORED_CHUNK_BYTES:
-        raise ChunkDecodeError("stored chunk exceeds the bounded 2 MiB limit")
+    pipeline, chunk_bytes = _validate_common(spec, mask, max_decoded_bytes=max_decoded_bytes)
+    if type(max_stored_bytes) is not int or not 0 < max_stored_bytes <= 128 << 20:
+        raise ValueError("stored chunk budget must be in 1..128 MiB")
+    if not isinstance(stored_size, int) or not 0 < stored_size <= max_stored_bytes:
+        raise ChunkDecodeError(f"stored chunk exceeds the bounded {max_stored_bytes}-byte limit")
     active = tuple(filter_ for index, filter_ in enumerate(pipeline)
                    if not mask & (1 << index))
     if not any(filter_.id not in KNOWN_FILTERS or filter_.id in
@@ -278,9 +305,10 @@ def validate_stored_size(spec: object, stored_size: int, mask: int) -> None:
             raise ChunkDecodeError("fixed-length filter pipeline has an unexpected stored size")
 
 
-def fletcher32_applied(spec: object, filter_mask: int) -> bool:
+def fletcher32_applied(spec: object, filter_mask: int, *,
+                       max_decoded_bytes: int = MAX_DECODED_CHUNK_BYTES) -> bool:
     """Whether this chunk actually used the Fletcher32 filter in its pipeline."""
-    pipeline, _chunk_bytes = _validate_common(spec, filter_mask)
+    pipeline, _chunk_bytes = _validate_common(spec, filter_mask, max_decoded_bytes=max_decoded_bytes)
     return any(filter_.id == h5py.h5z.FILTER_FLETCHER32
                and not filter_mask & (1 << position)
                for position, filter_ in enumerate(pipeline))
@@ -376,16 +404,24 @@ def _unlzf(data: bytes, max_output: int) -> bytes:
     return bytes(result)
 
 
-def decode_chunk(raw: bytes, spec: object, filter_mask: int) -> bytes:
+def decode_chunk(raw: bytes, spec: object, filter_mask: int, *,
+                 max_decoded_bytes: int = MAX_DECODED_CHUNK_BYTES,
+                 max_stored_bytes: int = MAX_STORED_CHUNK_BYTES) -> bytes:
     """Decode one raw chunk with exact final length and bounded intermediates."""
-    validate_stored_size(spec, len(raw), filter_mask)
-    pipeline, chunk_bytes = _validate_common(spec, filter_mask)
+    validate_stored_size(spec, len(raw), filter_mask, max_decoded_bytes=max_decoded_bytes,
+                         max_stored_bytes=max_stored_bytes)
+    pipeline, chunk_bytes = _validate_common(spec, filter_mask, max_decoded_bytes=max_decoded_bytes)
     extra = {filter_.id for position, filter_ in enumerate(pipeline)
              if not filter_mask & (1 << position) and filter_.id not in KNOWN_FILTERS}
     if extra:
-        from .filter_registry import register_optional
-        registered = register_optional()
-        if extra <= registered.keys():
+        registered = {}
+        if extra - NATIVE_BUILTIN_FILTERS:
+            from .filter_registry import register_optional
+            registered = register_optional()
+        native = {identifier for identifier in extra & NATIVE_BUILTIN_FILTERS
+                  if h5py.h5z.filter_avail(identifier) and
+                  h5py.h5z.get_filter_info(identifier) & h5py.h5z.FILTER_CONFIG_DECODE_ENABLED}
+        if extra <= registered.keys() | native:
             return _decode_packaged_chunk(raw, spec, filter_mask, pipeline, chunk_bytes)
     # Decoder availability is a property of the declared pipeline, not an
     # inference from what a later checksum or decompressor does to these
@@ -405,7 +441,7 @@ def decode_chunk(raw: bytes, spec: object, filter_mask: int) -> bytes:
         elif filter_.id == h5py.h5z.FILTER_DEFLATE:
             data = _inflate(data, chunk_bytes + 4)
         elif filter_.id == h5py.h5z.FILTER_LZF:
-            data = _unlzf(data, MAX_STORED_CHUNK_BYTES)
+            data = _unlzf(data, max_stored_bytes)
         elif filter_.id == h5py.h5z.FILTER_SHUFFLE:
             data = _unshuffle(data, np.dtype(spec.dtype).itemsize)
         else:
@@ -413,7 +449,7 @@ def decode_chunk(raw: bytes, spec: object, filter_mask: int) -> bytes:
         # A valid compressed stream can be larger than its input (even when
         # DEFLATE is declared optional), so only the decompressor's *output*
         # is capped at the nominal chunk plus one possible checksum word.
-        if len(data) > MAX_STORED_CHUNK_BYTES:
+        if len(data) > max_stored_bytes:
             raise ChunkDecodeError("filter stage exceeds the stored chunk size bound")
     if len(data) != chunk_bytes:
         raise ChunkDecodeError("decoded chunk has an unexpected nominal length")
@@ -421,7 +457,7 @@ def decode_chunk(raw: bytes, spec: object, filter_mask: int) -> bytes:
 
 
 def _decode_packaged_chunk(raw, spec, mask, pipeline, chunk_bytes):
-    """Decode an independently attributed raw chunk through packaged codecs.
+    """Decode a source-attributed chunk through native or packaged codecs.
 
     A single-chunk, in-memory HDF5 dataset supplies the validated type and
     pipeline. It never opens the damaged file or tries to repair its index.

@@ -93,6 +93,7 @@ def inventory_other_allocations(
     objects = siblings = links = 0
     problems: list[str] = []
     rooted_link_counts: dict[int, int] = {}
+    checked_siblings: dict[int, tuple[tuple[int, int], ...]] = {}
     contradiction: str | None = None
 
     def incomplete(reason: str) -> None:
@@ -111,8 +112,9 @@ def inventory_other_allocations(
                 path, item, recorded_address = pending.pop()
                 try:
                     address = (recorded_address if recorded_address is not None
-                               and skip_selected_object_info and
-                               recorded_address == selected_object_address else
+                               and ((skip_selected_object_info and
+                                     recorded_address == selected_object_address)
+                                    or recorded_address in checked_siblings) else
                                int(h5py.h5o.get_info(item.id).addr))
                 except (OSError, RuntimeError, ValueError) as exc:
                     incomplete(f"cannot inspect object at {path[:128]}: {type(exc).__name__}")
@@ -128,6 +130,14 @@ def inventory_other_allocations(
                     if address == selected_object_address:
                         continue
                     siblings += 1
+                    if address in checked_siblings:
+                        for start, end in checked_siblings[address]:
+                            if len(ranges) >= max_allocations:
+                                incomplete("checked sibling inventory exceeded its allocation limit")
+                                break
+                            ranges.append(OtherAllocation(start, end, path, address,
+                                                          "checked_chunk_index"))
+                        continue
                     try:
                         creation = item.id.get_create_plist()
                         if creation.get_external_count() or item.is_virtual:
@@ -202,9 +212,32 @@ def inventory_other_allocations(
                                     break
                                 declared_links = int(child_info.rc)
                         else:
-                            child_info = h5py.h5o.get_info(child.id)
-                            child_address = int(child_info.addr)
-                            declared_links = int(child_info.rc)
+                            link_info = item.id.links.get_info(name.encode("utf-8"))
+                            child_address = int(link_info.u)
+                            try:
+                                child_info = h5py.h5o.get_info(child.id)
+                            except (OSError, RuntimeError, ValueError):
+                                # H5Oget_info can inspect a damaged chunk
+                                # index. Resolve *physical ownership* from a
+                                # rooted checked index instead; leave any
+                                # uncheckable sibling as an incomplete scan.
+                                if not isinstance(child, h5py.Dataset) or opened_file is not None:
+                                    raise
+                                try:
+                                    from .checked_sibling import checked_chunk_ranges
+                                    checked_siblings[child_address] = checked_chunk_ranges(
+                                        snapshot, child, child_address,
+                                        max_allocations=max_allocations - len(ranges),
+                                        max_seconds=max(0.001, deadline - monotonic()),
+                                        max_bytes=min(size, 128 << 20))
+                                except (FormatError, OSError, RuntimeError, ValueError, OverflowError):
+                                    raise
+                                declared_links = None
+                            else:
+                                if int(child_info.addr) != child_address:
+                                    contradiction = "native object address disagrees with its rooted hard link"
+                                    break
+                                declared_links = int(child_info.rc)
                         observed_links = rooted_link_counts.get(child_address, 0) + 1
                         rooted_link_counts[child_address] = observed_links
                         if declared_links is not None and declared_links < observed_links:

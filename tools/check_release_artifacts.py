@@ -54,7 +54,7 @@ def check(dist: Path, tag: str | None) -> list[Path]:
             for name in names if name.startswith(prefix) and tar.getmember(name).isfile()
         }
     require(metadata(contents["PKG-INFO"]) == (name, version), "sdist metadata version/name differs")
-    for required in ("README.md", "LICENSE", "CHANGELOG.md", "SECURITY.md",
+    for required in ("README.md", "USAGE.md", "LICENSE", "CHANGELOG.md", "SECURITY.md",
                      "pyproject.toml", "assets/h5reclaim-banner.png"):
         require(required in contents, f"source distribution is missing {required}")
     for locale in ("pl", "de", "fr", "es", "pt-BR", "zh-CN", "ja", "ko", "ru", "ar"):

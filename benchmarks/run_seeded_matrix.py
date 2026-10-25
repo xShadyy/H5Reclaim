@@ -29,7 +29,8 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from run_damage_catalog import (  # noqa: E402
     DATASET, STATUS_NAMES, CatalogError, _call_recovery, _hash,
-    _header_change, _inspect_original, _mutated_copy, _pointer_changes,
+    _header_change, _inspect_original, _missing_child_indices,
+    _mutated_copy, _pointer_changes,
 )
 from run_real_corpus import run as survey_corpus  # noqa: E402
 from h5reclaim.format import H5File  # noqa: E402
@@ -51,10 +52,11 @@ class Scenario:
     name: str
     source_id: str
     damage_class: str
-    expectation: str  # full, partial_one, refusal
+    expectation: str  # full, partial_one, partial_disconnected, refusal
     mutations: tuple[Mutation, ...] = ()
     truncate_after: int | None = None
     target_chunk: int | None = None
+    expected_unknown_indices: tuple[int, ...] = ()
 
 
 def _byte_flip(source: Path, index: int, rng: random.Random) -> Mutation:
@@ -270,6 +272,7 @@ def score_output(
         "exact_verified_chunks": len(exact),
         "newly_accessible_exact_chunks": len(exact & set(native_unavailable)),
         "unresolved_chunks": len(unresolved),
+        "unresolved_indices": sorted(unresolved),
         "wrong_value_chunks": len(wrong_values),
         "unproven_accepted_chunks": len(unproven),
         "false_accepted_chunks": len(false_accepted),
@@ -304,6 +307,9 @@ def _scenarios(indexed: dict[str, dict[str, Any]], seed: int, trials: int) -> li
     original4 = ROOT / "corpus" / indexed[id4]["path"]
     details = _inspect_original(original16)
     pointer_changes, _ = _pointer_changes(original16, details)
+    disconnected = tuple(sorted(_missing_child_indices(original16, details, pointer_changes)))
+    if len(disconnected) != 114:
+        raise MatrixError("two lost scientific root links changed their checked chunk inventory")
     direct_pointers, direct_payloads = _direct_index(original4)
     with H5File(original16) as reader:
         root = reader.read_tree(details["btree_root_address"], rank=1, element_size=8)
@@ -342,7 +348,9 @@ def _scenarios(indexed: dict[str, dict[str, Any]], seed: int, trials: int) -> li
             (trial, Scenario("index_link", id16, "lost level-one root-to-leaf link", "full", (lost_index,))),
             (trial, Scenario("payload", id16, "compressed payload bit flip", "partial_one", (payload,), target_chunk=chunk16)),
             (trial, Scenario("link_and_payload", id16, "index and detached payload faults", "partial_one", (lost_index, mixed_payload), target_chunk=detached_chunk)),
-            (trial, Scenario("two_links", id16, "two lost root-to-leaf links", "refusal", (lost_index, left_index))),
+            (trial, Scenario("two_links", id16, "two adjacent lost root-to-leaf links",
+                             "partial_disconnected", (lost_index, left_index),
+                             expected_unknown_indices=disconnected)),
             (trial, Scenario("redirect_link", id16, "misleading pointer to reachable neighbor", "refusal", (redirect,))),
             (trial, Scenario("object_header", id16, "selected dataset object header damage", "refusal", (Mutation(*header_change),))),
             (trial, Scenario("superblock", id16, "HDF5 signature damage", "refusal", (Mutation(0, signature[:1], bytes((signature[0] ^ (1 << rng.randrange(8)),))),))),
@@ -402,6 +410,12 @@ def _run_case(
     elif expected == "full":
         expectation_met = (observation["decision"] == "output" and observation.get("unresolved_chunks") == 0
                            and observation.get("exact_verified_chunks") == observation.get("total_chunks"))
+    elif expected == "partial_disconnected":
+        expectation_met = (observation["decision"] == "output"
+                           and observation.get("unresolved_indices") == list(scenario.expected_unknown_indices)
+                           and observation.get("exact_verified_chunks") == observation.get("total_chunks", 0)
+                               - len(scenario.expected_unknown_indices)
+                           and observation.get("reconstructed_link_chunks") == 0)
     else:
         expectation_met = (observation["decision"] == "output" and observation.get("unresolved_chunks") == 1
                            and observation.get("exact_verified_chunks") == observation.get("total_chunks", 0) - 1

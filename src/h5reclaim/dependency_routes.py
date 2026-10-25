@@ -6,8 +6,8 @@ consistency field, and an EOA/EOF mismatch does not establish what was lost.
 
 External and virtual source names are read from metadata only. Referenced
 paths are deliberately not opened or resolved, and no dataset values are read.
-The optional h5clear experiment runs only on a second disposable copy; its
-result is never published as a recovered HDF5 file.
+The optional h5clear experiments run only on second disposable copies; their
+results are never published as recovered HDF5 files.
 
 Format reference: https://support.hdfgroup.org/documentation/hdf5/latest/_f_m_t4.html
 h5clear reference: https://support.hdfgroup.org/documentation/hdf5/latest/_h5_t_o_o_l__c_r__u_g.html
@@ -430,7 +430,7 @@ def discover_h5clear() -> dict[str, Any]:
     return {
         "available": executable is not None,
         "executable": executable,
-        "allowed_trial": "--status on a disposable copy only",
+        "allowed_trial": "--status or --image on a disposable copy only",
         "warning": "h5clear is not a general corruption repair tool and cannot restore overwritten data.",
     }
 
@@ -529,5 +529,87 @@ def probe_status_copy(source: str | Path, *, executable: str | None = None) -> d
                                     result.update(outcome="copy_metadata_opened", detail="Native HDF5 opens the throwaway status-cleared copy. This does not verify any measurement or repair the original.")
         if sha256_file(image) != digest:
             raise ValueError("private source snapshot changed during status probe")
+        _verify_source(source, identity, digest)
+        return result
+
+
+def probe_image_copy(source: str | Path, *, executable: str | None = None) -> dict[str, Any]:
+    """Try official cache-image removal on a throwaway copy, with no export.
+
+    A v2/v3 superblock must declare an in-file extension. The trial may show
+    that HDF5 opens the altered copy, but cannot authenticate any measurement
+    or justify copying arbitrary changes made by the external tool to output.
+    """
+    source = Path(source)
+    with source_snapshot(source) as (image, digest, identity, size):
+        sig = 0
+        with image.open("rb") as handle:
+            while sig + len(SIGNATURE) <= size:
+                handle.seek(sig)
+                if handle.read(len(SIGNATURE)) == SIGNATURE:
+                    break
+                sig = 512 if sig == 0 else sig * 2
+            else:
+                sig = None
+        observed = inspect_superblock_status(image, sig, size)
+        result: dict[str, Any] = {
+            "outcome": "not_applicable", "source": {"path": str(source), "sha256": digest},
+            "observation": observed, "trial_was_disposable": True,
+            "source_modified": False, "recovery_attempted": False,
+            "recovered_values": None,
+        }
+        eligible = False
+        if (observed["outcome"] == "observed" and observed["superblock_version"] in (2, 3)
+                and observed["end_of_address"]["relation"] in ("equal", "before_physical_eof")
+                and sig is not None):
+            width = observed["offset_size"]
+            with image.open("rb") as handle:
+                handle.seek(sig + 12 + width)
+                raw = handle.read(width)
+            if len(raw) == width:
+                extension = int.from_bytes(raw, "little")
+                base = observed["base_address_raw"]
+                eligible = (extension != (1 << (width * 8)) - 1
+                            and base <= size and extension < size - base)
+                result["superblock_extension_declared"] = eligible
+        if not eligible:
+            result["detail"] = "A bounded modern superblock extension is required for the cache-image trial."
+        else:
+            command = executable if executable is not None else shutil.which("h5clear")
+            if command is None:
+                result.update(outcome="unavailable", detail="h5clear was not found on PATH; no trial was run.")
+            else:
+                with tempfile.TemporaryDirectory(prefix="h5reclaim-image-probe-") as directory:
+                    trial = Path(directory) / "disposable-copy.h5"
+                    shutil.copyfile(image, trial)
+                    try:
+                        completed = subprocess.run(
+                            [command, "--image", str(trial)], capture_output=True,
+                            text=True, errors="replace", timeout=PROBE_TIMEOUT_SECONDS, check=False,
+                        )
+                    except (OSError, subprocess.TimeoutExpired) as exc:
+                        result.update(outcome="tool_failed", detail=_short(exc))
+                    else:
+                        result["tool_exit_code"] = completed.returncode
+                        result["tool_stderr"] = _short(completed.stderr)
+                        changed, first_offsets = _changed_bytes(image, trial, set())
+                        result["changed_bytes_in_trial"] = changed
+                        result["first_changed_offsets"] = first_offsets
+                        if completed.returncode:
+                            result.update(outcome="tool_failed", detail="h5clear could not remove the cache image on the disposable copy.")
+                        elif not changed:
+                            result.update(outcome="ineffective", detail="The image trial changed no bytes; no cache image removal was observed.")
+                        else:
+                            try:
+                                with h5py.File(trial, "r") as handle:
+                                    handle["/"]  # Metadata open only; no values read.
+                            except (OSError, RuntimeError, ValueError) as exc:
+                                result.update(outcome="metadata_still_unreadable", detail=_short(exc))
+                            else:
+                                result.update(outcome="copy_metadata_opened", detail=(
+                                    "HDF5 opened the altered throwaway copy. This does not verify measurements "
+                                    "or repair the original file."))
+        if sha256_file(image) != digest:
+            raise ValueError("private source snapshot changed during image probe")
         _verify_source(source, identity, digest)
         return result

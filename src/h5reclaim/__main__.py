@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -14,7 +15,7 @@ from pathlib import Path
 from .baseline import capture_baseline
 from .diagnose import diagnose
 from .dependency_routes import (
-    DependencyError, inspect_dependencies, load_dependency_manifest, probe_status_copy,
+    DependencyError, inspect_dependencies, load_dependency_manifest, probe_image_copy, probe_status_copy,
     validate_dependency_manifest,
 )
 from .evidence import export_unassigned_fragments, load_evidence_report
@@ -340,12 +341,79 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
     commands = parser.add_subparsers(dest="command", required=True, metavar="COMMAND", title="commands")
+    commands.add_parser("capabilities", help="show supported operations, repair classes and default resource limits")
+    alternative_cmd = commands.add_parser("export-alternative", help="export through optional Pyfive with explicit cross-reader or candidate statuses")
+    alternative_cmd.add_argument("source", type=Path)
+    alternative_cmd.add_argument("--dataset", required=True, type=_dataset_path)
+    alternative_cmd.add_argument("--output", required=True, type=Path)
+    alternative_cmd.add_argument("--report", required=True, type=Path)
+    alternative_cmd.add_argument("--streaming-budget", type=Path)
+    for name in ("copy", "repack"):
+        command = commands.add_parser(name, help=f"run official h5{name} on a disposable source copy")
+        command.add_argument("source", type=Path)
+        command.add_argument("--output", required=True, type=Path)
+        command.add_argument("--report", required=True, type=Path)
+        command.add_argument("--streaming-budget", type=Path)
+        if name == "copy":
+            command.add_argument("--dataset", required=True, type=_dataset_path)
+            command.add_argument("--destination-path", type=_dataset_path)
+        else:
+            command.add_argument("--compression", choices=("none", "gzip"))
+            command.add_argument("--level", type=int, default=6)
+    commands.add_parser("doctor", help="show installed dependencies, optional readers and HDF5 tools")
+    batch_cmd = commands.add_parser("batch-rescue", help="recover multiple files with bounded jobs and verified resumption")
+    batch_cmd.add_argument("sources", nargs="+", type=Path)
+    batch_cmd.add_argument("--output-dir", required=True, type=Path)
+    batch_cmd.add_argument("--summary", required=True, type=Path)
+    batch_cmd.add_argument("--jobs", type=int, default=1)
+    batch_cmd.add_argument("--resume", action="store_true")
+    batch_cmd.add_argument("--html", action="store_true")
+    batch_cmd.add_argument("--fail-on-partial", action="store_true")
+    batch_cmd.add_argument("--streaming-budget", type=Path)
+    capture_meta_cmd = commands.add_parser("capture-metadata", help="capture checked full-file metadata before damage")
+    capture_meta_cmd.add_argument("source", type=Path)
+    capture_meta_cmd.add_argument("--output", required=True, type=Path, help="new independent metadata snapshot ZIP")
+    capture_meta_cmd.add_argument("--streaming-budget", type=Path)
+    restore_meta_cmd = commands.add_parser("restore-metadata", help="restore captured metadata to a new copy if other bytes match")
+    restore_meta_cmd.add_argument("source", type=Path)
+    restore_meta_cmd.add_argument("snapshot", type=Path)
+    restore_meta_cmd.add_argument("--snapshot-sha256", required=True, help="independently retained digest of the earlier snapshot")
+    restore_meta_cmd.add_argument("--output", required=True, type=Path)
+    restore_meta_cmd.add_argument("--report", required=True, type=Path)
+    restore_meta_cmd.add_argument("--streaming-budget", type=Path)
+    plan_cmd = commands.add_parser("plan-repair", help="create an exact metadata repair plan without changing the source")
+    plan_cmd.add_argument("source", type=Path)
+    plan_cmd.add_argument("--output", required=True, type=Path)
+    plan_cmd.add_argument("--allow-reseal", action="store_true",
+                          help="also consider structurally validated checksum resealing; historical bytes remain unknown")
+    plan_cmd.add_argument("--streaming-budget", type=Path)
+    apply_cmd = commands.add_parser("apply-repair", help="regenerate a saved repair plan and apply it to a new verified copy")
+    apply_cmd.add_argument("source", type=Path)
+    apply_cmd.add_argument("plan", type=Path)
+    apply_cmd.add_argument("--output", required=True, type=Path)
+    apply_cmd.add_argument("--audit", required=True, type=Path)
+    explain_plan_cmd = commands.add_parser("explain-plan", help="show a saved repair plan and its exact before/after bytes")
+    explain_plan_cmd.add_argument("plan", type=Path)
+    for name, description in (("check", "preflight reachable metadata without native HDF5 reads"),
+                              ("markers", "scan bounded metadata signature candidates without assigning ownership"),
+                              ("explain", "show reachable object messages or a bounded byte range")):
+        command = commands.add_parser(name, help=description)
+        command.add_argument("source", type=Path)
+        command.add_argument("--streaming-budget", type=Path)
+        command.add_argument("--json", action="store_true")
+        if name != "markers":
+            command.add_argument("--profile", choices=("forensic", "strict"), default="forensic")
+        if name == "explain":
+            command.add_argument("--path", default="/")
+            command.add_argument("--offset", type=lambda s: int(s, 0))
+            command.add_argument("--length", type=int, default=64)
     report_cmd = commands.add_parser("report", help="summarize an existing evidence JSON report and its status-map paths")
     report_cmd.add_argument("report", type=Path, help="evidence JSON produced by rescue, recover or export-readable")
+    report_cmd.add_argument("--html", type=Path, help="also write a new self-contained HTML report")
     result_cmd = commands.add_parser(
         "verify-result", help="check a saved recovery report against its output and validity maps",
         description=("Check report, schema and validity-map consistency in a bounded HDF5 worker. "
-                     "Recovered values are not read or hashed. This cannot prove historical values "
+                     "Use --values to rehash accepted chunks against publication digests. This cannot prove historical values "
                      "or authenticate jointly modified files. "
                      "Exit status: 0 passed, 1 inconsistent, 2 unsupported or an error."),
     )
@@ -359,6 +427,18 @@ def main(argv: list[str] | None = None) -> int:
     result_cmd.add_argument("--worker-memory-bytes", type=int, default=1536 * 1024 * 1024)
     result_cmd.add_argument("--timeout-seconds", type=int, default=45)
     result_cmd.add_argument("--json", action="store_true", help="print a machine-readable result")
+    result_cmd.add_argument("--values", action="store_true", help="also verify saved accepted-chunk payload digests")
+    result_cmd.add_argument("--max-value-bytes", type=int, default=16 << 30)
+    for name, description in (("fingerprint-result", "capture SHA-256 fingerprints of a recovered file and report"),
+                              ("verify-fingerprint", "verify exact artifact bytes against a separately retained fingerprint")):
+        command = commands.add_parser(name, help=description)
+        command.add_argument("output", type=Path, help="recovered HDF5 artifact")
+        command.add_argument("report", type=Path, help="saved JSON evidence report")
+        if name == "fingerprint-result":
+            command.add_argument("--output", dest="fingerprint", required=True, type=Path, help="new fingerprint JSON")
+        else:
+            command.add_argument("fingerprint", type=Path)
+        command.add_argument("--max-bytes", type=int, default=64 << 30)
     manifest_cmd = commands.add_parser("related-manifest", help="find and hash declared companion files in a supplied directory")
     manifest_cmd.add_argument("source", type=Path)
     manifest_cmd.add_argument("--directory", required=True, type=Path)
@@ -385,6 +465,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     status_cmd.add_argument("source", type=Path)
     status_cmd.add_argument("--json", action="store_true", help="print the complete machine-readable probe report")
+    image_cmd = commands.add_parser(
+        "probe-image", help="try h5clear --image only on a disposable copy with a modern superblock extension"
+    )
+    image_cmd.add_argument("source", type=Path)
+    image_cmd.add_argument("--json", action="store_true", help="print the complete machine-readable probe report")
     fragments_cmd = commands.add_parser(
         "export-fragments", help="export anchored but unresolved raw extents from a report as coordinate-free bytes"
     )
@@ -527,7 +612,7 @@ def main(argv: list[str] | None = None) -> int:
     choices.add_argument("--large-readable", action="store_true",
                          help="stream currently native-readable multidimensional fixed records")
     choices.add_argument("--large-structural", action="store_true",
-                         help="stream one checked damaged fixed-array pointer in a large sparse numeric dataset")
+                         help="stream compressed multidimensional fixed-record chunks through a checked modern index repair")
     arguments = list(argv if argv is not None else sys.argv[1:])
     if not arguments:
         parser.print_help()
@@ -538,6 +623,130 @@ def main(argv: list[str] | None = None) -> int:
         arguments.insert(0, "rescue")
     args = parser.parse_args(arguments)
 
+    if args.command == "capabilities":
+        from .capabilities import capabilities
+        print(json.dumps(capabilities(), indent=2, sort_keys=True))
+        return 0
+
+    if args.command == "export-alternative":
+        try:
+            options = json.loads(args.streaming_budget.read_text()) if args.streaming_budget else {}
+            result = run_route("alternative_reader", args.output, args.report, source=str(args.source),
+                dataset=args.dataset, streaming_budget=json.dumps(options))
+            print(_render_report(result))
+            return 0
+        except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
+            print(f"h5reclaim: alternative export failed: {_display_path(exc, 300)}", file=sys.stderr)
+            return 2
+
+    if args.command in ("copy", "repack"):
+        try:
+            from .external_tools import export_with_tool
+            from .large_streaming import LargeBudget
+            options = json.loads(args.streaming_budget.read_text()) if args.streaming_budget else {}
+            result = export_with_tool(args.source, args.output, args.report, operation=args.command,
+                dataset=getattr(args, "dataset", None), destination_path=getattr(args, "destination_path", None),
+                compression=getattr(args, "compression", None), level=getattr(args, "level", 6), budget=LargeBudget(**options))
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 0
+        except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
+            print(f"h5reclaim: official HDF5 operation failed: {_display_path(exc, 300)}", file=sys.stderr)
+            return 2
+
+    if args.command == "doctor":
+        from .doctor import doctor
+        print(json.dumps(doctor(), indent=2, sort_keys=True))
+        return 0
+
+    if args.command == "batch-rescue":
+        try:
+            from .batch import batch_rescue
+            from .large_streaming import LargeBudget
+            options = json.loads(args.streaming_budget.read_text()) if args.streaming_budget else {}
+            result = batch_rescue(args.sources, args.output_dir, args.summary, jobs=args.jobs,
+                resume=args.resume, budget=LargeBudget(**options), html=args.html,
+                fail_on_partial=args.fail_on_partial)
+            print(json.dumps(result["counts"], sort_keys=True))
+            return 0 if result["passed"] else 1
+        except (OSError, ValueError, RuntimeError, TypeError) as exc:
+            print(f"h5reclaim: batch failed: {_display_path(exc, 300)}", file=sys.stderr)
+            return 2
+
+    if args.command in ("capture-metadata", "restore-metadata"):
+        try:
+            from .metadata_snapshot import capture_metadata_snapshot, restore_metadata_snapshot
+            from .large_streaming import LargeBudget
+            options = json.loads(args.streaming_budget.read_text()) if args.streaming_budget else {}
+            budget = LargeBudget(**options)
+            result = (capture_metadata_snapshot(args.source, args.output, budget=budget)
+                      if args.command == "capture-metadata" else
+                      restore_metadata_snapshot(args.source, args.snapshot, args.snapshot_sha256,
+                                                args.output, args.report, budget=budget))
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 0
+        except (OSError, ValueError, RuntimeError, TypeError, KeyError) as exc:
+            print(f"h5reclaim: metadata snapshot failed: {_display_path(exc, 300)}", file=sys.stderr)
+            return 2
+
+    if args.command in ("plan-repair", "apply-repair", "explain-plan"):
+        try:
+            from .repair_plan import plan_repair, apply_repair, load_plan
+            from .large_streaming import LargeBudget
+            if args.command == "plan-repair":
+                options = json.loads(args.streaming_budget.read_text()) if args.streaming_budget else {}
+                result = plan_repair(args.source, args.output, budget=LargeBudget(**options), allow_reseal=args.allow_reseal)
+                print(json.dumps(result, indent=2, sort_keys=True))
+                return 0 if result["executable"] else 1
+            if args.command == "apply-repair":
+                result = apply_repair(args.source, args.plan, args.output, args.audit)
+            else:
+                result = load_plan(args.plan)
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 0
+        except (OSError, ValueError, RuntimeError, TypeError, KeyError) as exc:
+            print(f"h5reclaim: metadata repair failed: {_display_path(exc, 300)}", file=sys.stderr)
+            return 2
+
+    if args.command in ("check", "markers", "explain"):
+        try:
+            from .preflight import preflight, scan_markers
+            from .large_streaming import LargeBudget
+            options = json.loads(args.streaming_budget.read_text()) if args.streaming_budget else {}
+            if args.command == "markers":
+                result = scan_markers(args.source, budget=LargeBudget(**options))
+            else:
+                result = preflight(args.source, budget=LargeBudget(**options), profile=args.profile)
+                if args.command == "explain":
+                    result["objects"] = [r for r in result["objects"] if r["path"] == args.path]
+                    if args.offset is not None:
+                        if not 0 <= args.offset < args.source.stat().st_size or not 1 <= args.length <= 4096:
+                            raise ValueError("byte inspection needs an in-file offset and length in 1..4096")
+                        with args.source.open("rb") as stream:
+                            stream.seek(args.offset)
+                            result["byte_range"] = {"offset": args.offset, "hex": stream.read(args.length).hex()}
+            if args.json or args.command != "check":
+                print(json.dumps(result, indent=2, sort_keys=True))
+            else:
+                print(f"H5Reclaim metadata preflight | {result['decision']}")
+                print(f"Objects checked: {len(result['objects'])}; findings: {len(result['findings'])}")
+                for finding in result["findings"][:20]:
+                    print(_display_path(f"{finding['code']}: {finding['message']}", 300))
+            return 1 if result.get("decision", "accept") not in ("accept", "accept_with_warnings") else 0
+        except (OSError, ValueError, RuntimeError, TypeError) as exc:
+            print(f"h5reclaim: inspection failed: {_display_path(exc, 300)}", file=sys.stderr)
+            return 2
+
+    if args.command in ("fingerprint-result", "verify-fingerprint"):
+        from .result_integrity import fingerprint_result, verify_fingerprint
+        try:
+            function = fingerprint_result if args.command == "fingerprint-result" else verify_fingerprint
+            result = function(args.output, args.report, args.fingerprint, max_bytes=args.max_bytes)
+            print(json.dumps(result, sort_keys=True))
+            return 0
+        except (OSError, ValueError, TypeError) as exc:
+            print(f"h5reclaim: artifact fingerprint failed: {_display_path(exc, 300)}", file=sys.stderr)
+            return 2
+
     if args.command == "verify-result":
         from .result_verification import ResultMismatch, ResultUnsupported, verify_result
         try:
@@ -546,7 +755,8 @@ def main(argv: list[str] | None = None) -> int:
                                    max_map_bytes=args.max_map_bytes,
                                    max_source_bytes=args.max_source_bytes,
                                    memory_bytes=args.worker_memory_bytes,
-                                   timeout_seconds=args.timeout_seconds)
+                                   timeout_seconds=args.timeout_seconds, check_values=args.values,
+                                   max_value_bytes=args.max_value_bytes)
             if args.json:
                 print(json.dumps(result, sort_keys=True))
             else:
@@ -556,8 +766,7 @@ def main(argv: list[str] | None = None) -> int:
                           f"{item['unknown_elements']} unknown elements")
                 if len(result["datasets"]) > MAX_DISPLAY_DATASETS:
                     print(f"... {len(result['datasets']) - MAX_DISPLAY_DATASETS} more in --json")
-                print("Report/map/schema consistency only. Recovered values are not read or hashed; "
-                      "historical values and jointly modified files are not authenticated.")
+                print(result["scope"])
             return 0
         except (ResultMismatch, ResultUnsupported, OSError, ValueError, RuntimeError, TypeError) as exc:
             status = "inconsistent" if isinstance(exc, ResultMismatch) else "unsupported" if isinstance(exc, ResultUnsupported) else "error"
@@ -576,6 +785,10 @@ def main(argv: list[str] | None = None) -> int:
                     or report.get("schema_version") != 1 or report.get("outcome") not in ("complete", "partial")):
                 raise RecoveryError("expected a H5Reclaim recovery evidence report with schema_version 1")
             print(_render_report(report))
+            if args.html:
+                from .html_report import write_html_report
+                write_html_report(args.report, args.html)
+                print(f"HTML report: {_display_path(args.html, 240)}")
             return 0
         except (RecoveryError, OSError, ValueError, RuntimeError, KeyError, TypeError, AttributeError) as exc:
             print(f"h5reclaim: report summary failed: {_display_path(exc, 300)}", file=sys.stderr)
@@ -965,13 +1178,14 @@ def main(argv: list[str] | None = None) -> int:
             print(f"h5reclaim: fragment export failed: {_display_path(exc, 300)}", file=sys.stderr)
             return 2
 
-    if args.command == "probe-status":
+    if args.command in ("probe-status", "probe-image"):
         try:
-            result = probe_status_copy(args.source)
+            result = (probe_status_copy(args.source) if args.command == "probe-status"
+                      else probe_image_copy(args.source))
             if args.json:
                 print(json.dumps(result, indent=2, sort_keys=True))
             else:
-                print("H5Reclaim disposable status probe")
+                print(f"H5Reclaim disposable {args.command.removeprefix('probe-')} probe")
                 print(f"Source: {_display_path(args.source, 240)}")
                 print(f"Result: {result['outcome']} | {_display_path(result['detail'], 240)}")
                 print("Original file unchanged. No measurements verified or restored.")
@@ -980,7 +1194,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.json:
                 print(json.dumps({"outcome": "error", "error": str(exc)[:300]}, sort_keys=True))
             else:
-                print(f"h5reclaim: status probe failed: {_display_path(exc, 300)}", file=sys.stderr)
+                print(f"h5reclaim: {args.command} failed: {_display_path(exc, 300)}", file=sys.stderr)
             return 2
 
     if args.command == "diagnose":

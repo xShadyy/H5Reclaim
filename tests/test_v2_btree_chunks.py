@@ -172,6 +172,33 @@ class V2BTreeChunkTests(unittest.TestCase):
         self.assertGreater(report["reconstructed_chunks"], 0)
         self.assertLess(report["reconstructed_chunks"], len(healthy.chunks))
 
+    def test_two_btin_links_in_same_parent_restore_full_tree(self):
+        self.fixture(shape=(60, 60))
+        obj, root, healthy, _ = self.inspect()
+        parent = healthy.chunks[0].evidence["node_chain"][0]
+        header = self.path.read_bytes()[root:root+38]
+        count = int.from_bytes(header[24:26], "little")
+        self.assertGreater(count, 1)
+        first = parent + 6 + count * 24
+        positions = (first, first + 9)
+        raw = bytearray(self.path.read_bytes())
+        for position in positions:
+            raw[position] ^= 0x40
+        self.path.write_bytes(raw)
+        repaired = self._parse_again(obj, root)
+        self.assertEqual(len(repaired.chunks), len(healthy.chunks))
+        self.assertEqual([chunk.address for chunk in repaired.chunks],
+                         [chunk.address for chunk in healthy.chunks])
+        self.assertEqual({link["pointer_offset"] for link in repaired.reconstructed_links},
+                         set(positions))
+        from h5reclaim.recovery import recover
+        report = recover(self.path, "/measurements",
+                         self.path.parent / "two_btin_recovered.h5",
+                         self.path.parent / "two_btin_recovered.json")
+        self.assertEqual(report["counts"]["recovered"], len(healthy.chunks))
+        self.assertEqual({link["pointer_offset"] for link in report["unresolved_links"]},
+                         set(positions))
+
     def test_depth_two_internal_link_repairs_checked_internal_child(self):
         self.fixture(shape=(180, 180))
         obj, root, healthy, _ = self.inspect()
@@ -186,6 +213,25 @@ class V2BTreeChunkTests(unittest.TestCase):
         self.assertEqual(len(repaired.chunks), len(healthy.chunks))
         self.assertEqual(repaired.reconstructed_links[0]["kind"], "btin_to_child")
         self.assertEqual(repaired.reconstructed_links[0]["target_address"], path[1]["target_address"])
+
+    def test_depth_two_parent_restores_two_checked_internal_children(self):
+        self.fixture(shape=(180, 180))
+        obj, root, healthy, _ = self.inspect()
+        root_parent = healthy.chunks[0].evidence["link_path"][1]["source_address"]
+        edges = list(dict.fromkeys(
+            step["pointer_offset"] for chunk in healthy.chunks
+            for step in chunk.evidence["link_path"]
+            if step["source_address"] == root_parent))
+        self.assertGreaterEqual(len(edges), 2)
+        raw = bytearray(self.path.read_bytes())
+        for edge in edges[:2]:
+            raw[edge] ^= 0x40
+        self.path.write_bytes(raw)
+        repaired = self._parse_again(obj, root, shape=(180, 180))
+        self.assertEqual([record.address for record in repaired.chunks],
+                         [record.address for record in healthy.chunks])
+        self.assertEqual({item["pointer_offset"] for item in repaired.reconstructed_links},
+                         set(edges[:2]))
 
     def test_pointer_repair_refuses_two_faults_and_corrupt_candidate(self):
         self.fixture()

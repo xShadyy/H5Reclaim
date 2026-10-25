@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from itertools import product
 from math import prod
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Sequence
 
 from .format import FormatError, SIGNATURE, UnsupportedFormat
 
@@ -26,6 +26,7 @@ MAX_CONTINUATIONS = 4
 MAX_CHUNKS = 8192
 MAX_CHUNK_BYTES = 16 << 20
 MAX_READ_BYTES = 16 << 20
+MAX_HDF5_RANK = 32
 _MASK = (1 << 32) - 1
 
 
@@ -114,18 +115,60 @@ class ModernIndex:
     reconstructed_links: tuple[dict[str, object], ...] = ()
 
 
+class RowMajorCoordinates(Sequence[tuple[int, ...]]):
+    """Index the checked chunk grid without storing every coordinate twice.
+
+    Fixed arrays need to map a slot to its row-major origin, but sparse
+    million-slot grids can contain only a handful of allocated chunks. A
+    sequence of Python tuples for every absent slot wastes hundreds of MiB.
+    """
+
+    def __init__(self, grid: tuple[int, ...], chunks: tuple[int, ...]):
+        self.grid, self.chunks = grid, chunks
+        self.slot_count = prod(grid)
+
+    def __len__(self) -> int:
+        return self.slot_count
+
+    def __getitem__(self, index: int | slice) -> tuple[int, ...] | list[tuple[int, ...]]:
+        if isinstance(index, slice):
+            return [self[item] for item in range(*index.indices(self.slot_count))]
+        if not isinstance(index, int):
+            raise TypeError("chunk slot index must be an integer")
+        if index < 0:
+            index += self.slot_count
+        if index < 0 or index >= self.slot_count:
+            raise IndexError("chunk slot is outside the selected grid")
+        origin = [0] * len(self.grid)
+        for axis in range(len(self.grid) - 1, -1, -1):
+            index, cell = divmod(index, self.grid[axis])
+            origin[axis] = cell * self.chunks[axis]
+        return tuple(origin)
+
+
 class ModernH5File:
     """A read-only, file-size and declared-EOF bounded modern-format reader."""
 
     def __init__(self, path: str | Path, *, large_sparse_scan: bool = False,
-                 max_chunks: int = MAX_CHUNKS):
-        if not 1 <= max_chunks <= 65536:
-            raise ValueError("modern parser chunk bound must be in 1..65536")
+                 max_chunks: int = MAX_CHUNKS, max_chunk_bytes: int = MAX_CHUNK_BYTES,
+                 repair_scan_bytes: int = 512 << 20, repair_scan_seconds: float = 180):
+        if type(max_chunks) is not int or not 1 <= max_chunks < 1 << 63:
+            raise ValueError("modern parser chunk bound must be a positive integer")
         if max_chunks > MAX_CHUNKS and not large_sparse_scan:
             raise ValueError("increased modern parser chunk bound requires explicit large mode")
+        if (type(max_chunk_bytes) is not int or not 0 < max_chunk_bytes <= 128 << 20
+                or type(repair_scan_bytes) is not int or not 0 < repair_scan_bytes < 1 << 63
+                or not 0 < repair_scan_seconds <= 86400):
+            raise ValueError("invalid modern chunk or repair scan budget")
+        if not large_sparse_scan and (max_chunk_bytes > MAX_CHUNK_BYTES or repair_scan_bytes > 512 << 20):
+            raise ValueError("increased parser budgets require explicit large mode")
         self.path = Path(path)
         self.large_sparse_scan = large_sparse_scan
         self.max_chunks = max_chunks
+        self.max_chunk_bytes = max_chunk_bytes
+        self.max_read_bytes = max(MAX_READ_BYTES, max_chunk_bytes)
+        self.repair_scan_bytes = repair_scan_bytes
+        self.repair_scan_seconds = repair_scan_seconds
         self._file: BinaryIO = self.path.open("rb")
         try:
             self.size = self._file.seek(0, 2)
@@ -151,7 +194,7 @@ class ModernH5File:
     def _read_absolute(self, offset: int, length: int) -> bytes:
         if self._file.closed:
             raise ValueError("source file is closed")
-        if length < 0 or length > MAX_READ_BYTES:
+        if length < 0 or length > self.max_read_bytes:
             raise UnsupportedFormat("modern metadata or raw single-read limit exceeded")
         if offset < 0 or offset > self.size or length > self.size - offset:
             raise FormatError("read outside source file")
@@ -304,8 +347,8 @@ class ModernH5File:
         shape = tuple(shape); chunks = tuple(chunks)
         if maxshape is None:
             raise UnsupportedFormat("modern index requires observed maximum shape")
-        if len(shape) not in (1, 2, 3, 4, 5) or len(shape) != len(chunks) or len(maxshape) != len(shape):
-            raise UnsupportedFormat("modern index requires rank 1 through 5 and matching dimensions")
+        if not 1 <= len(shape) <= MAX_HDF5_RANK or len(shape) != len(chunks) or len(maxshape) != len(shape):
+            raise UnsupportedFormat("modern index requires rank 1 through 32 and matching dimensions")
         if not all(isinstance(x, int) and x > 0 for x in (*shape, *chunks, element_size)):
             raise FormatError("invalid dataset shape, chunk shape, or element size")
         if any(limit is not None and limit < length for limit, length in zip(maxshape, shape)):
@@ -315,7 +358,7 @@ class ModernH5File:
         if max_chunks < 1 or max_chunks > self.max_chunks or count > max_chunks:
             raise UnsupportedFormat("modern index chunk count exceeds limit")
         chunk_bytes = prod(chunks) * element_size
-        if chunk_bytes > MAX_CHUNK_BYTES:
+        if chunk_bytes > self.max_chunk_bytes:
             raise UnsupportedFormat("modern index chunk size exceeds limit")
         data, layout_offset = self._parse_object_layout(object_address)
         if len(data) < 6 or data[0] not in (4, 5) or data[1] != 2:
@@ -331,8 +374,6 @@ class ModernH5File:
         if raw_dims != (*chunks, element_size):
             raise FormatError("modern raw chunk dimensions disagree with selected dataset")
         kind = data[end_dims]
-        if len(shape) == 5 and kind != 3:
-            raise UnsupportedFormat("rank-five recovery requires a fixed-array chunk index")
         offset = end_dims + 1
         if kind == 1:
             if any(length > width for length, width in zip(shape, chunks)) or tuple(maxshape) != shape or count != 1:
@@ -389,10 +430,9 @@ class ModernH5File:
             # The caller publishes the grid as unknown with no assignments.
             return ModernIndex(name, version, object_address, base,
                                layout_offset + offset, chunks, element_size, ())
-        if size < 1 or size > MAX_CHUNK_BYTES:
+        if size < 1 or size > self.max_chunk_bytes:
             raise UnsupportedFormat("modern stored chunk size exceeds limit")
-        coordinates = tuple(tuple(i * c for i, c in zip(index, chunks))
-                            for index in product(*(range(length) for length in grid)))
+        coordinates = RowMajorCoordinates(grid, chunks) if kind == 3 else None
         if kind == 4:
             from .extensible_array import read_extensible_array
             return read_extensible_array(
@@ -433,7 +473,8 @@ class ModernH5File:
         if total > self.superblock.eof_address - physical:
             raise FormatError("modern indexed chunks extend past HDF5 end-of-file")
         records: list[ModernChunk] = []
-        for linear, coordinate in enumerate(coordinates):
+        for linear, coordinate in enumerate(product(*(range(length) for length in grid))):
+            coordinate = tuple(i * c for i, c in zip(coordinate, chunks))
             address = base + (linear * size if kind == 2 else 0)
             records.append(ModernChunk(
                 coordinate, address, size, mask,
