@@ -18,7 +18,9 @@ H5Reclaim odzyskuje dane naukowe z uszkodzonych plików HDF5. Przenosi zachowane
 
 **Jedno polecenie wykrywa zbiory danych, dobiera metody odzyskiwania i tworzy nowy plik HDF5 wraz z przejrzystym raportem JSON.** Oryginał pozostaje nietknięty. H5Reclaim zachowuje odczytywalne pomiary z częściowo uszkodzonych zbiorów danych i kontynuuje odzyskiwanie pozostałej części pliku.
 
-Wersja 1.0.0 osiągnęła **95.4% użytecznych wyników w 109 kontrolowanych próbach z uszkodzonymi plikami**: 77 odzysków w pełni zgodnych z oryginałem i 27 odzysków częściowych, bez błędnie zaakceptowanych wartości w tym zestawie prób. Te wygenerowane próby mierzą zadeklarowane rodzaje uszkodzeń, a nie przewidywany wskaźnik skuteczności dla innych plików. [Poznaj wyniki](https://github.com/xShadyy/H5Reclaim/blob/main/benchmarks/results/v100rc1-release-coverage.json).
+W 109 kontrolowanych próbach z uszkodzonymi plikami wersja 1.2.0 dała 104 użyteczne wyniki: 77 w pełni zgodnych i 27 częściowych. Pięć prób zakończyło się odmową, a żadna błędna wartość nie została zaakceptowana. Wynik jest taki sam jak w zestawie prób wersji 1.0.0. [Wyniki wersji 1.2.0](../benchmarks/results/v120-release-coverage.json).
+
+Wersja 1.2.0 obsługuje też niezależnie uzasadnione naprawy wielu uszkodzonych łączy indeksu oraz większe indeksy rekordów o stałej długości. W [ośmiu kontrolowanych przypadkach kompresji](../benchmarks/results/v120-streaming-recovery.json), w tym z dwoma uszkodzonymi łączami, nie zaakceptowano błędnych wartości.
 
 Zobacz [przewodnik użytkownika](../USAGE.md), aby poznać narzędzia inspekcji i naprawy, obsługiwane formaty, weryfikację oraz odzyskiwanie wielu plików.
 

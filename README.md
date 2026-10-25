@@ -17,7 +17,9 @@ H5Reclaim recovers scientific data from damaged HDF5 files. It brings surviving 
 
 **One command discovers your datasets, selects recovery methods, and creates a new HDF5 file with a clear JSON report.** Your original stays untouched. H5Reclaim keeps readable measurements from partially damaged datasets and continues recovering the rest of the file.
 
-The 1.0.0 release achieved **95.4% useful recovery across 109 controlled damaged-file trials**: 77 fully exact recoveries and 27 partial recoveries, with zero wrong accepted values in this panel. [Explore the results](https://github.com/xShadyy/H5Reclaim/blob/main/benchmarks/results/v100rc1-release-coverage.json).
+Across **109 controlled damaged-file trials**, the 1.2.0 build produced 104 useful outputs: 77 fully exact and 27 partial recoveries, with five refusals and zero wrong accepted values. This is the same result as the earlier 1.0.0 panel. [Explore the 1.2.0 results](benchmarks/results/v120-release-coverage.json).
+
+Version 1.2.0 also adds multiple independently checked broken-link repairs and larger fixed-record index coverage. Its [separate eight-case compressed streaming panel](benchmarks/results/v120-streaming-recovery.json) includes two-link faults and found zero wrong accepted values.
 
 See the [usage guide](USAGE.md) for the recovery workbench, supported formats, verification, and batch workflows.
 
