@@ -31,16 +31,21 @@ CASES = (
     ("fa_3d_lzf", "fixed_array", (33, 41, 37), (8, 8, 8), "lzf", False, 0),
     ("fa_2d_bad_payload", "fixed_array", (45, 33), (8, 8), "gzip", True, 0),
     ("fa_sparse_userblock_over_4gib", "fixed_array", (1100, 1000), (256, 250), "gzip", False, 1 << 32),
+    ("ea_2d_two_broken_links", "extensible_array", (2, 2), (1, 1), "gzip", False, 0, "ea_two"),
+    ("btree_2d_two_internal_links", "v2_btree", (180, 180), (2, 2), "gzip", False, 0, "bt_two"),
 )
 
 
 def run_case(root, case):
-    name, kind, shape, chunks, codec, corrupt_payload, userblock = case
+    name, kind, shape, chunks, codec, corrupt_payload, userblock = case[:7]
+    damage = case[7] if len(case) > 7 else "single"
     folder = root / name
     folder.mkdir()
     source, output, report = (folder / n for n in ("damaged.h5", "recovered.h5", "report.json"))
     truth = np.arange(prod(shape), dtype="<i4").reshape(shape)
-    maximum = shape if kind == "fixed_array" else (None, *shape[1:]) if kind == "extensible_array" else (None,) * len(shape)
+    maximum = (shape if kind == "fixed_array" else
+               (1_000_000, None) if damage == "ea_two" else
+               (None, *shape[1:]) if kind == "extensible_array" else (None,) * len(shape))
     with h5py.File(source, "w", libver="latest", userblock_size=userblock) as handle:
         handle.create_dataset("science", data=truth, maxshape=maximum, chunks=chunks,
                               compression=codec, shuffle=True, fletcher32=True)
@@ -50,10 +55,27 @@ def run_case(root, case):
                                   maxshape=maximum, filters=spec.filters, max_chunks=65536)
         if index.index_type != kind:
             raise ValueError("HDF5 writer selected an unexpected index")
-        pointer = reader.absolute(index.base_address) + 16 if kind == "v2_btree" else index.data_block_pointer_offset
+        if damage == "ea_two":
+            secondary = next(step for item in index.chunks
+                for step in item.evidence["index_chain"] if step["kind"] == "easb_to_eadb")
+            pointers = [index.data_block_pointer_offset, secondary["pointer_offset"]]
+        elif damage == "bt_two":
+            parents = {}
+            for item in index.chunks:
+                path = item.evidence["link_path"]
+                if len(path) >= 3:
+                    parents.setdefault(path[-1]["source_address"], path[-1]["pointer_offset"])
+                if len(parents) == 2:
+                    break
+            if len(parents) != 2:
+                raise ValueError("HDF5 writer did not produce two independent internal parents")
+            pointers = list(parents.values())
+        else:
+            pointers = [reader.absolute(index.base_address) + 16 if kind == "v2_btree"
+                        else index.data_block_pointer_offset]
         payload = reader.absolute(index.chunks[0].address)
     with source.open("r+b") as stream:
-        for offset in [pointer, *([payload + 2] if corrupt_payload else [])]:
+        for offset in [*pointers, *([payload + 2] if corrupt_payload else [])]:
             stream.seek(offset)
             value = stream.read(1)
             stream.seek(offset)
@@ -88,8 +110,11 @@ def run_case(root, case):
         "snapshot_physical_bytes_copied": evidence["source"]["snapshot_physical_data_bytes_copied"],
         "exact_accepted_elements": correct, "wrong_accepted_elements": wrong, "unknown_elements": unknown,
         "fully_exact": correct == truth.size and wrong == 0,
-        "partial_expected": corrupt_payload,
-        "passed": wrong == 0 and correct > 0 and (unknown > 0 if corrupt_payload else unknown == 0)}
+        "partial_expected": corrupt_payload, "broken_index_links": len(pointers),
+        "reported_index_repairs": len(evidence.get("index", {}).get("repairs", [])),
+        "passed": (wrong == 0 and correct > 0 and
+                   len(evidence.get("index", {}).get("repairs", [])) == len(pointers) and
+                   (unknown > 0 if corrupt_payload else unknown == 0))}
 
 
 def run(root, include_large_sparse=True):
@@ -102,7 +127,7 @@ def run(root, include_large_sparse=True):
         "environment": {"python": platform.python_version(), "h5py": h5py.__version__,
             "hdf5": h5py.version.hdf5_version, "numpy": np.__version__, "platform": platform.system()},
         "cases": cases, "passed": all(c["passed"] and c["source_unchanged"] for c in cases),
-        "limits": "Six generated layouts and declared faults. The >4 GiB case uses a sparse user block and small physically allocated data; it is an address-space check, not a dense multi-gigabyte throughput claim. Accepted coordinates are scored against NumPy truth after recovery exits."}
+        "limits": f"{len(cases)} generated layouts and declared faults. Two cases damage distinct index parents. The >4 GiB case, when included, uses a sparse user block and small physically allocated data; it is an address-space check, not a dense multi-gigabyte throughput claim. Accepted coordinates are scored against NumPy truth after recovery exits."}
 
 
 def main():
