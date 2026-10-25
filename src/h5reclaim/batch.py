@@ -44,7 +44,7 @@ def batch_rescue(sources, output_dir, summary_path, *, jobs=1, resume=False,
         if not resume or summary_path.stat().st_size > 16 << 20:
             raise FileExistsError("batch summary exists; use --resume to verify and reuse completed results")
         record = json.loads(summary_path.read_text())
-        if record.get("kind") != "batch_recovery" or record.get("schema_version") != 1:
+        if not isinstance(record, dict) or record.get("kind") != "batch_recovery" or record.get("schema_version") != 1:
             raise ValueError("expected a version-1 batch summary")
         if record.get("options") != options:
             raise ValueError("batch belongs to a different tool version or recovery budget")
