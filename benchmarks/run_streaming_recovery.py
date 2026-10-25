@@ -33,6 +33,8 @@ CASES = (
     ("fa_sparse_userblock_over_4gib", "fixed_array", (1100, 1000), (256, 250), "gzip", False, 1 << 32),
     ("ea_2d_two_broken_links", "extensible_array", (2, 2), (1, 1), "gzip", False, 0, "ea_two"),
     ("btree_2d_two_internal_links", "v2_btree", (180, 180), (2, 2), "gzip", False, 0, "bt_two"),
+    ("ea_2d_two_links_same_parent", "extensible_array", (8, 8), (1, 1), "gzip", False, 0, "ea_same"),
+    ("btree_2d_two_links_same_parent", "v2_btree", (60, 60), (2, 2), "gzip", False, 0, "bt_same"),
 )
 
 
@@ -44,7 +46,7 @@ def run_case(root, case):
     source, output, report = (folder / n for n in ("damaged.h5", "recovered.h5", "report.json"))
     truth = np.arange(prod(shape), dtype="<i4").reshape(shape)
     maximum = (shape if kind == "fixed_array" else
-               (1_000_000, None) if damage == "ea_two" else
+               (1_000_000, None) if damage in ("ea_two", "ea_same") else
                (None, *shape[1:]) if kind == "extensible_array" else (None,) * len(shape))
     with h5py.File(source, "w", libver="latest", userblock_size=userblock) as handle:
         handle.create_dataset("science", data=truth, maxshape=maximum, chunks=chunks,
@@ -70,6 +72,18 @@ def run_case(root, case):
             if len(parents) != 2:
                 raise ValueError("HDF5 writer did not produce two independent internal parents")
             pointers = list(parents.values())
+        elif damage in ("ea_same", "bt_same"):
+            kind_name = "easb_to_eadb" if damage == "ea_same" else "btin_to_child"
+            parents = {}
+            for item in index.chunks:
+                for step in item.evidence["index_chain" if damage == "ea_same" else "link_path"]:
+                    if ((step["kind"] == kind_name) if damage == "ea_same"
+                            else step["source_kind"] == "BTIN"):
+                        parent_key = "parent_address" if damage == "ea_same" else "source_address"
+                        parents.setdefault(step[parent_key], set()).add(step["pointer_offset"])
+            pointers = next((sorted(offsets)[:2] for offsets in parents.values() if len(offsets) >= 2), [])
+            if len(pointers) != 2:
+                raise ValueError("HDF5 writer did not produce two links in one parent")
         else:
             pointers = [reader.absolute(index.base_address) + 16 if kind == "v2_btree"
                         else index.data_block_pointer_offset]
@@ -127,7 +141,7 @@ def run(root, include_large_sparse=True):
         "environment": {"python": platform.python_version(), "h5py": h5py.__version__,
             "hdf5": h5py.version.hdf5_version, "numpy": np.__version__, "platform": platform.system()},
         "cases": cases, "passed": all(c["passed"] and c["source_unchanged"] for c in cases),
-        "limits": f"{len(cases)} generated layouts and declared faults. Two cases damage distinct index parents. The >4 GiB case, when included, uses a sparse user block and small physically allocated data; it is an address-space check, not a dense multi-gigabyte throughput claim. Accepted coordinates are scored against NumPy truth after recovery exits."}
+        "limits": f"{len(cases)} generated layouts and declared faults. Two cases damage distinct index parents and two damage one parent. The >4 GiB case, when included, uses a sparse user block and small physically allocated data; it is an address-space check, not a dense multi-gigabyte throughput claim. Accepted coordinates are scored against NumPy truth after recovery exits."}
 
 
 def main():
