@@ -50,11 +50,11 @@ h5reclaim rescue damaged.h5 --dataset /experiment/measurements --large-structura
 | Property | Large structural recovery |
 | --- | --- |
 | Index families | Fixed array, extensible array, v2 B-tree |
-| Rank | 1 through 4; rank 5 with fixed arrays |
-| Records | Bounded fixed-width records; no heap pointers or object references in this route |
+| Rank | 1 through 32 when the observed index family and HDF5 layout permit |
+| Records | Bounded fixed-width records, including nested compounds, arrays, enums, opaque and fixed strings; no heap pointers or object references in this route |
 | Filters | gzip, shuffle, Fletcher32, LZF and supported installed hdf5plugin codecs |
-| Damage | At most one index link justified by a unique restoration of its original parent checksum |
-| Chunk grid | At most 65,536 slots, subject to the configured budget |
+| Damage | Multiple broken links in distinct metadata parents, each uniquely justified by restoration of that parent's original checksum; nested damage that prevents independent child validation is refused |
+| Chunk grid | The configured chunk and grid quotas, with an additional memory reserve that depends on the observed index family |
 | Decoded chunk | At most 64 MiB, subject to the configured budget |
 | Partial edges | Cropped to the declared dataset shape |
 | Damaged payload | Nonaccepted status; other justified chunks continue |
@@ -84,9 +84,14 @@ Provide a JSON file to override caller-controlled limits, for example:
 h5reclaim rescue damaged.h5 --dataset /experiment/measurements --streaming-budget budget.json
 ```
 
-Other parser-specific limits still apply. `capabilities` prints the supported
-envelope and default quota fields. Increasing a quota does not make an
-unsupported index or ambiguous ownership recoverable.
+The default chunk quota is 65,536. To request a larger sparse grid, raise
+`max_chunks` and `max_grid` in the budget file and provide enough
+`worker_memory_bytes` for the chosen index family. Fixed arrays avoid
+materializing absent chunk coordinates, while denser index structures need
+larger memory reserves. Other parser-specific and HDF5 format limits still
+apply. `capabilities` prints the current envelope and default quotas.
+Increasing a quota cannot resolve ambiguous ownership or make an invalid
+heap pointer safe to copy.
 
 ## Inspect metadata without reading measurements
 
@@ -98,9 +103,10 @@ h5reclaim explain damaged.h5 --offset 0x200 --length 64
 h5reclaim markers damaged.h5 --json
 ```
 
-The raw preflight checks reachable object headers, local namespaces and
-supported chunk indexes without opening an HDF5 file through the native
-library, decompressing measurements or following external dependencies.
+The raw preflight checks reachable object headers, local namespaces,
+supported chunk indexes and supported rooted persistent file-space managers
+without opening an HDF5 file through the native library, decompressing
+measurements or following external dependencies.
 It reports its coverage and incomplete walks. It is not a complete validator
 of every HDF5 semantic constraint or a security sandbox. The strict profile
 also rejects declared nonlocal dependencies. Marker matches are unassigned
@@ -116,8 +122,9 @@ h5reclaim apply-repair damaged.h5 repair.plan.json --output repaired-copy.h5 --a
 
 The default catalog includes original-checksum corrections of modern
 signatures/root pointers, selected object layout pointers and dimensions,
-checked FA/EA/B-tree child links, stale consistency flags, and a validated
-legacy signature restoration. The plan lists exact before/after bytes.
+checked FA/EA/B-tree child links, supported rooted file-space manager metadata,
+stale consistency flags, and a validated legacy signature restoration. The
+plan lists exact before/after bytes.
 Application hashes the input again and regenerates the entire plan. An
 edited or stale plan is refused. The repaired copy must pass the independent
 covered-metadata preflight before it and its audit log are published.
@@ -134,8 +141,26 @@ chunk-layout element widths and depth-zero B-tree record totals. Resealing
 establishes current structural coherence. It cannot establish that the bytes
 match their historical values. Unresolved plans are saved for inspection
 with `executable: false`; they cannot be applied. Arbitrary missing metadata,
-general free-space repairs and unconstrained checksum rewriting are outside
+other free-space encodings and unconstrained checksum rewriting are outside
 the implemented catalog. Use `capabilities` for the exact list.
+
+## Restore captured metadata after later damage
+
+Capture checked metadata while the file is still healthy. Save the returned
+`archive_sha256` separately from the archive:
+
+```sh
+h5reclaim capture-metadata healthy.h5 --output checked-metadata.zip
+h5reclaim restore-metadata damaged.h5 checked-metadata.zip --snapshot-sha256 YOUR_ARCHIVE_SHA256 --output restored.h5 --report restoration.json
+```
+
+This can restore captured superblock, group-link, datatype, dataspace, layout,
+index and supported file-space bytes even when several captured messages have
+been damaged. It requires the original file size and every byte outside the
+captured ranges to remain identical. The restored file must match the complete
+earlier file hash and pass strict covered-metadata preflight. It cannot infer
+uncaptured or later-changed metadata. The archive can contain inline dataset
+values and attributes; retain it as private scientific data.
 
 ## Verify results and use accepted measurements
 
