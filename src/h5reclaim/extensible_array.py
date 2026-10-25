@@ -2,8 +2,8 @@
 
 The selected object's layout pointer, shape, maximum shape, chunk dimensions,
 filter IDs, and object address must all come from the *same immutable snapshot*.
-Links in distinct metadata parents may be reconstructed by bounded candidate
-scans when replacing one pointer in each parent restores its original checksum
+Links in damaged metadata parents may be reconstructed by bounded candidate
+scans when replacing up to two pointers in each parent restores its original checksum
 and each unique checked child has the expected owner and row offset. It
 checks the EAHD, EAIB, EASB, EADB, and initialized data-block page checksums
 and their parent/back pointers before attributing bytes to a coordinate.
@@ -22,7 +22,7 @@ from itertools import product
 from math import prod
 
 from .format import FormatError, UnsupportedFormat
-from .modern_link_repair import candidate_addresses
+from .modern_link_repair import candidate_addresses, restore_parent_links
 from .modern_indexes import (
     MAX_CHUNK_BYTES, MAX_CHUNKS, MAX_READ_BYTES, ModernChunk,
     ModernH5File, ModernIndex, lookup3,
@@ -150,14 +150,14 @@ def _reconstruct_index_child_link(
     filtered: bool, entry_size: int, max_bits: int, page_bits: int,
     rows: list[_SuperblockRow], first_indirect: int,
     direct_start: int, indirect_start: int,
-) -> tuple[bytes, int, int, str]:
-    """Restore one checked EAIB child link to an owned, checked EADB/EASB."""
+) -> tuple[bytes, tuple[tuple[int, int, str], ...]]:
+    """Restore up to two checked EAIB child links to owned EADB/EASB blocks."""
     sb = reader.superblock
     offsize = sb.offset_size
     block_prefix = 6 + offsize + (max_bits + 7) // 8
     page_elems = 1 << page_bits
-    wanted = _uint(index[-4:])
-    matches: list[tuple[bytes, int, int, str]] = []
+    options: dict[int, set[int]] = {}
+    kinds: dict[tuple[int, int], str] = {}
     candidates_seen = 0
     for signature, candidate_kind in ((b"EADB", "extensible-array data block"),
                                       (b"EASB", "extensible-array secondary block")):
@@ -200,23 +200,21 @@ def _reconstruct_index_child_link(
                 for position, expected_offset in choices:
                     if observed_offset != expected_offset or _uint(index[position:position+offsize]) == address:
                         continue
-                    repaired = bytearray(index)
-                    repaired[position:position+offsize] = address.to_bytes(offsize, "little")
-                    if lookup3(repaired[:-4]) == wanted:
-                        matches.append((bytes(repaired), position, address, candidate_kind))
-                        if len(matches) > 1:
-                            raise FormatError("extensible-array child-link reconstruction is ambiguous")
-    if not matches:
-        raise FormatError("extensible-array index checksum mismatch; no checked child restores one pointer")
-    return matches[0]
+                    options.setdefault(position, set()).add(address)
+                    kinds[position, address] = candidate_kind
+    repaired, patches = restore_parent_links(
+        index, checksum_at=len(index) - 4, offset_size=offsize,
+        options=options, label="extensible-array index")
+    return repaired, tuple((position, address, kinds[position, address])
+                           for position, address in patches)
 
 
 def _reconstruct_secondary_data_link(
     reader: ModernH5File, sblock: bytes, *,
     root: int, filtered: bool, row: _SuperblockRow,
     pointer_start: int, entry_size: int, max_bits: int, page_bits: int,
-) -> tuple[bytes, int, int]:
-    """Restore one EASB address using its original checksum and EADB owner/row."""
+) -> tuple[bytes, tuple[tuple[int, int], ...]]:
+    """Restore up to two EASB addresses using checksum and EADB owner/row."""
     sb = reader.superblock
     offsize = sb.offset_size
     page_elems = 1 << page_bits
@@ -225,8 +223,7 @@ def _reconstruct_secondary_data_link(
     data_size = block_prefix + (0 if paged else row.elements_per_block * entry_size) + 4
     if data_size > MAX_READ_BYTES:
         raise UnsupportedFormat("extensible-array data block exceeds bounded repair read")
-    wanted = _uint(sblock[-4:])
-    matches: list[tuple[bytes, int, int]] = []
+    options: dict[int, set[int]] = {}
     candidates_seen = 0
     for candidate in candidate_addresses(reader, b"EADB"):
         candidates_seen += 1
@@ -250,15 +247,10 @@ def _reconstruct_secondary_data_link(
             if (offset != row.start + db * row.elements_per_block
                     or _uint(sblock[position:position+offsize]) == candidate):
                 continue
-            repaired = bytearray(sblock)
-            repaired[position:position+offsize] = candidate.to_bytes(offsize, "little")
-            if lookup3(repaired[:-4]) == wanted:
-                matches.append((bytes(repaired), position, candidate))
-                if len(matches) > 1:
-                    raise FormatError("extensible-array secondary data-link repair is ambiguous")
-    if not matches:
-        raise FormatError("extensible-array secondary checksum mismatch; no checked data block restores pointer")
-    return matches[0]
+            options.setdefault(position, set()).add(candidate)
+    return restore_parent_links(
+        sblock, checksum_at=len(sblock) - 4, offset_size=offsize,
+        options=options, label="extensible-array secondary")
 
 
 def read_extensible_array(
@@ -404,22 +396,23 @@ def read_extensible_array(
     direct_start = 6 + offsize + index_elems * entry_size
     indirect_start = direct_start + n_direct * offsize
     if lookup3(index_raw[:-4]) != _uint(index_raw[-4:]):
-        repaired, pointer_pos, candidate, child_kind = _reconstruct_index_child_link(
+        repaired, patches = _reconstruct_index_child_link(
             reader, index_raw, root=root,
             filtered=filtered, entry_size=entry_size, max_bits=max_bits,
             page_bits=page_bits, rows=rows, first_indirect=first_indirect,
             direct_start=direct_start, indirect_start=indirect_start)
         # The state reader stores the original EAIB's physical range while
-        # returning its single checksum-restoring hypothetical pointer view.
+        # returning its checksum-restoring hypothetical pointer view.
         state.repairs[index_address] = repaired
-        reconstructed_links.append({
-            "kind": "eaib_to_child", "source_address": index_address,
-            "target_address": candidate,
-            "pointer_offset": reader.absolute(index_address) + pointer_pos,
-            "parent_checksum_offset": reader.absolute(index_address) + index_size - 4,
-            "parent_kind": "extensible-array index block", "child_kind": child_kind,
-            "resolution": "original EAIB checksum restored by one pointer; unique checked child owner and row offset",
-        })
+        for pointer_pos, candidate, child_kind in patches:
+            reconstructed_links.append({
+                "kind": "eaib_to_child", "source_address": index_address,
+                "target_address": candidate,
+                "pointer_offset": reader.absolute(index_address) + pointer_pos,
+                "parent_checksum_offset": reader.absolute(index_address) + index_size - 4,
+                "parent_kind": "extensible-array index block", "child_kind": child_kind,
+                "resolution": "original EAIB checksum restored by unique checked child link set and row offsets",
+            })
     index = state.meta(index_address, index_size, b"EAIB", "extensible-array index block")
     page_elems = 1 << page_bits
 
@@ -490,21 +483,22 @@ def read_extensible_array(
                             or _uint(sblock_raw[6+offsize:6+offsize+(max_bits+7)//8]) != row.start):
                         raise FormatError("extensible-array secondary block owner or row offset disagrees")
                     if lookup3(sblock_raw[:-4]) != _uint(sblock_raw[-4:]):
-                        repaired, repair_position, candidate = _reconstruct_secondary_data_link(
+                        repaired, patches = _reconstruct_secondary_data_link(
                             reader, sblock_raw,
                             root=root, filtered=filtered, row=row,
                             pointer_start=sblock_prefix+bitmap_length,
                             entry_size=entry_size, max_bits=max_bits, page_bits=page_bits)
                         state.repairs[sblock_address] = repaired
-                        reconstructed_links.append({
-                            "kind": "easb_to_eadb", "source_address": sblock_address,
-                            "target_address": candidate,
-                            "pointer_offset": reader.absolute(sblock_address)+repair_position,
-                            "parent_checksum_offset": reader.absolute(sblock_address)+sblock_size-4,
-                            "parent_kind": "extensible-array secondary block",
-                            "child_kind": "extensible-array data block",
-                            "resolution": "original EASB checksum restored by one pointer; unique checked EADB owner and row offset",
-                        })
+                        for repair_position, candidate in patches:
+                            reconstructed_links.append({
+                                "kind": "easb_to_eadb", "source_address": sblock_address,
+                                "target_address": candidate,
+                                "pointer_offset": reader.absolute(sblock_address)+repair_position,
+                                "parent_checksum_offset": reader.absolute(sblock_address)+sblock_size-4,
+                                "parent_kind": "extensible-array secondary block",
+                                "child_kind": "extensible-array data block",
+                                "resolution": "original EASB checksum restored by unique checked data-block link set and row offsets",
+                            })
                 sblock = state.meta(sblock_address, sblock_size, b"EASB", "extensible-array secondary block")
                 if (sblock[5] != int(filtered) or _uint(sblock[6:6+offsize]) != root
                         or _uint(sblock[6+offsize:6+offsize+(max_bits+7)//8]) != row.start):

@@ -4,7 +4,7 @@ This route needs a native lookup of the selected local dataset from the same
 private snapshot. The raw parser independently checks the selected object's
 checksum and layout. Direct rules or a validated index must attribute every
 accepted coordinate to a bounded physical byte range. Bounded candidate
-scans can bridge links in distinct FAHD, EAHD, EAIB, EASB, BTHD, or BTIN
+scans can bridge links in FAHD, EAHD, EAIB, EASB, BTHD, or BTIN
 parents when each original parent checksum restores, the children check
 independently, and the complete resulting index agrees.
 """
@@ -71,8 +71,8 @@ def analyze_modern_snapshot(
                 "pointer_offset": index.data_block_pointer_offset,
                 "resolution": "unique checksum-restoring candidate with FADB checksum and FAHD back-pointer",
             })
-        if len({item["source_address"] for item in repairs}) != len(repairs):
-            raise FormatError("multiple index repairs must have distinct metadata parents")
+        if len({item["pointer_offset"] for item in repairs}) != len(repairs):
+            raise FormatError("reconstructed index repairs reuse a pointer slot")
         def uses_reconstructed_link(chunk) -> bool:
             if index.reconstructed_data_block_pointer:
                 return True
@@ -226,7 +226,7 @@ def analyze_modern_snapshot(
              if repairs else "index is intact; no broken modern index pointers were inferred"),
         ],
         "coverage_note": (
-            ("Modern index pointers in distinct parents were reconstructed; reported chunks "
+            ("Checked modern index pointers were reconstructed; reported chunks "
              "follow a checked index and remain subject to payload integrity limits."
              if repairs else
              "This route exports allocated chunks whose modern index is intact. "

@@ -67,7 +67,7 @@ def recover_large_structural(source: str | Path, dataset_path: str, output: str 
 
     Supports checked chunk indexes, filtered or unfiltered chunks, partial
     edges, and grids constrained by caller quotas and worker memory. Each
-    damaged metadata parent may contribute one uniquely checked index link.
+    damaged metadata parent may contribute up to two uniquely checked index links.
     No native read of the damaged dataset's measurements is used.
     """
     source, output, report_path = Path(source), Path(output), Path(report_path)
@@ -111,8 +111,8 @@ def recover_large_structural(source: str | Path, dataset_path: str, output: str 
                 raise UnsupportedCase("large structural route requires one damaged checked FAHD pointer")
             if not repairs:
                 raise UnsupportedCase("large structural route requires a uniquely checked damaged index link")
-            if len({repair["source_address"] for repair in repairs}) != len(repairs):
-                raise FormatError("multiple index repairs must have distinct metadata parents")
+            if len({repair["pointer_offset"] for repair in repairs}) != len(repairs):
+                raise FormatError("reconstructed index repairs reuse a pointer slot")
             if not index.chunks or len(index.chunks) > budget.max_chunks:
                 raise UnsupportedCase("allocated chunks are absent or exceed the configured budget")
             coordinates, ranges = set(), []
@@ -241,7 +241,7 @@ def recover_large_structural(source: str | Path, dataset_path: str, output: str 
                             "fahd_address": index.base_address if index.index_type == "fixed_array" else None,
                             "fadb_address": index.data_block_address,
                             "damaged_pointer_absolute_offset": repairs[0].get("pointer_offset") if len(repairs) == 1 else None,
-                            "justification": "one uniquely restoring link in each distinct metadata parent, independently checked children/index and rooted schema"},
+                            "justification": "unique original-checksum-restoring link sets in damaged metadata parents, independently checked children/index and rooted schema"},
                         "allocated_chunks_checked": len(records), "chunk_grid_count": grid_count,
                         "accepted_elements": accepted, "unknown_elements": total - accepted,
                         "counts": counts, "validity_codes": STATUS_CODES,
@@ -255,7 +255,7 @@ def recover_large_structural(source: str | Path, dataset_path: str, output: str 
                         "output_values_sha256": value_hash.hexdigest(),
                         "output_values_sha256_scope": "accepted chunks in lexicographic coordinate order, cropped to dataset edges",
                         "output_path": str(published_output or output),
-                        "limits": "One uniquely checked pointer per damaged metadata parent; bounded chunk grid and scan. Missing or undecodable chunks remain nonaccepted. Current bytes do not establish historical authenticity."}
+                        "limits": "At most two uniquely checked pointers per damaged metadata parent; bounded chunk grid and scan. Missing or undecodable chunks remain nonaccepted. Current bytes do not establish historical authenticity."}
                     serialized = json.dumps(report, indent=2, sort_keys=True) + "\n"
                     if len(serialized.encode()) > MAX_LARGE_REPORT_BYTES:
                         raise UnsupportedCase("large structural report exceeds the size quota")

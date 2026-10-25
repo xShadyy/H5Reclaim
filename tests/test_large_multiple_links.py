@@ -139,7 +139,7 @@ class MultipleLinkTests(unittest.TestCase):
         self.assertEqual(self.source.read_bytes(), original)
         self.assertFalse((self.folder / "out.h5").exists())
 
-    def test_two_faults_inside_one_parent_still_refuse(self):
+    def test_two_eaib_links_in_one_parent_recover_with_both_dependencies(self):
         with h5py.File(self.source, "w", libver="latest") as file:
             ds = file.create_dataset("data", shape=(0,), maxshape=(None,),
                                      chunks=(10,), dtype="<u4")
@@ -149,11 +149,53 @@ class MultipleLinkTests(unittest.TestCase):
         slots = list(dict.fromkeys(step["pointer_offset"] for chunk in index.chunks
                    for step in chunk.evidence["index_chain"] if step["kind"] == "eaib_to_eadb"))
         self.assertGreaterEqual(len(slots), 2)
-        self._damage(slots[:2])
-        with self.assertRaises(FormatError):
-            recover_large_structural(self.source, "/data", self.folder / "out.h5",
-                                     self.folder / "out.json")
-        self.assertFalse((self.folder / "out.h5").exists())
+        damaged = self._damage(slots[:2])
+        report = recover_large_structural(self.source, "/data", self.folder / "out.h5",
+                                          self.folder / "out.json")
+        self.assertEqual([r["source_address"] for r in report["index"]["repairs"]],
+                         [index.data_block_address] * 2)
+        self.assertEqual({r["pointer_offset"] for r in report["index"]["repairs"]},
+                         set(slots[:2]))
+        self.assertEqual(report["accepted_elements"], 400)
+        self.assertEqual(self.source.read_bytes(), damaged)
+        with h5py.File(self.folder / "out.h5") as result:
+            np.testing.assert_array_equal(result["data"][:], np.arange(400, dtype="<u4"))
+        cli_output, cli_report = self.folder / "same-parent-cli.h5", self.folder / "same-parent-cli.json"
+        completed = subprocess.run([sys.executable, "-m", "h5reclaim", "rescue",
+                                    str(self.source), "--dataset", "/data",
+                                    "--output", str(cli_output), "--report", str(cli_report)],
+                                   capture_output=True, text=True, timeout=45)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(len(json.loads(cli_report.read_text())["unresolved_links"]), 2)
+        with h5py.File(cli_output) as result:
+            np.testing.assert_array_equal(result["data"][:], np.arange(400, dtype="<u4"))
+
+    def test_two_easb_links_in_one_parent_recover_filtered_values(self):
+        truth = np.arange(64, dtype="<u4").reshape((8, 8))
+        with h5py.File(self.source, "w", libver="latest") as file:
+            ds = file.create_dataset("data", shape=(1_000_000, 0),
+                                     maxshape=(1_000_000, None), chunks=(1, 1),
+                                     dtype="<u4", compression="gzip", shuffle=True,
+                                     fletcher32=True)
+            ds.resize((8, 8))
+            ds[...] = truth
+        index = self._index((8, 8), (1, 1), (1_000_000, None), filtered=True)
+        parents: dict[int, set[int]] = {}
+        for chunk in index.chunks:
+            for step in chunk.evidence["index_chain"]:
+                if step["kind"] == "easb_to_eadb":
+                    parents.setdefault(step["parent_address"], set()).add(step["pointer_offset"])
+        parent, slots = next((address, sorted(offsets))
+                             for address, offsets in parents.items() if len(offsets) >= 2)
+        damaged = self._damage(slots[:2])
+        output, report_path = self.folder / "secondary-result.h5", self.folder / "secondary-report.json"
+        report = recover_large_structural(self.source, "/data", output, report_path)
+        repairs = [r for r in report["index"]["repairs"] if r["source_address"] == parent]
+        self.assertEqual({r["pointer_offset"] for r in repairs}, set(slots[:2]))
+        self.assertEqual(report["accepted_elements"], truth.size)
+        self.assertEqual(self.source.read_bytes(), damaged)
+        with h5py.File(output) as saved:
+            np.testing.assert_array_equal(saved["data"][:], truth)
 
     def test_nested_damaged_parent_and_child_refuse_without_checked_child(self):
         with h5py.File(self.source, "w", libver="latest") as file:

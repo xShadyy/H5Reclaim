@@ -121,7 +121,7 @@ def _build(
     )
     source = SourceRecord(source_id, reader.size, source_sha256)
     repair_by_offset: dict[int, dict[str, object]] = {}
-    repaired_parents: set[int] = set()
+    repairs_by_parent: dict[int, list[dict[str, object]]] = {}
     for repair in index.reconstructed_links:
         parent_address = repair.get("source_address")
         child_address = repair.get("target_address")
@@ -132,7 +132,7 @@ def _build(
         if (not all(isinstance(v, int) for v in
                     (parent_address, child_address, offset, checksum_offset))
                 or not isinstance(parent_kind, str) or not isinstance(child_kind, str)
-                or offset in repair_by_offset or parent_address in repaired_parents):
+                or offset in repair_by_offset):
             raise ModernEvidenceError("invalid reconstructed index link evidence")
         parent_start = reader.absolute(parent_address)
         child_start = reader.absolute(child_address)
@@ -143,16 +143,32 @@ def _build(
                            for start, end, kind in reader.metadata_ranges
                            if kind == child_kind)):
             raise ModernEvidenceError("reconstructed link lacks parsed parent and child")
+        if int.from_bytes(reader._read_absolute(offset, width), "little") == child_address:
+            raise ModernEvidenceError("reconstructed link equals the observed parent pointer")
+        repair_by_offset[offset] = repair
+        repairs_by_parent.setdefault(parent_address, []).append(repair)
+    for parent_address, group in repairs_by_parent.items():
+        if len(group) > 2 or len({item["target_address"] for item in group}) != len(group):
+            raise ModernEvidenceError("repaired parent has too many or aliased child links")
+        checksum_offsets = {item["parent_checksum_offset"] for item in group}
+        if len(checksum_offsets) != 1:
+            raise ModernEvidenceError("repaired parent disagrees about original checksum location")
+        parent_start = reader.absolute(parent_address)
+        checksum_offset, = checksum_offsets
         original = reader._read_absolute(parent_start, checksum_offset + 4 - parent_start)
         patched = bytearray(original)
-        patched[offset-parent_start:offset-parent_start+width] = child_address.to_bytes(width, "little")
+        seen_ranges: set[int] = set()
+        for item in group:
+            pointer = item["pointer_offset"]
+            for position in range(pointer, pointer + width):
+                if position in seen_ranges:
+                    raise ModernEvidenceError("repaired parent pointer slots overlap")
+                seen_ranges.add(position)
+            patched[pointer-parent_start:pointer-parent_start+width] = (
+                item["target_address"].to_bytes(width, "little"))
         wanted = int.from_bytes(original[-4:], "little")
-        if (int.from_bytes(reader._read_absolute(offset, width), "little") == child_address
-                or lookup3(original[:-4]) == wanted
-                or lookup3(patched[:-4]) != wanted):
-            raise ModernEvidenceError("one index link does not restore original parent checksum")
-        repair_by_offset[offset] = repair
-        repaired_parents.add(parent_address)
+        if lookup3(original[:-4]) == wanted or lookup3(patched[:-4]) != wanted:
+            raise ModernEvidenceError("repaired links do not restore original parent checksum")
 
     def checked_repair(offset: int, target: int, parent: int) -> bool:
         repair = repair_by_offset.get(offset)

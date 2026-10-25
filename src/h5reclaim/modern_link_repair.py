@@ -11,9 +11,10 @@ import errno
 import os
 import time
 from collections.abc import Iterator
+from itertools import combinations, product
 
-from .format import UnsupportedFormat
-from .modern_indexes import ModernH5File
+from .format import FormatError, UnsupportedFormat
+from .modern_indexes import ModernH5File, lookup3
 
 
 MAX_REPAIR_SCAN_BYTES = 512 << 20
@@ -22,6 +23,50 @@ MAX_LARGE_SCAN_SOURCE_BYTES = 64 << 30
 MAX_DENSE_FALLBACK_BYTES = 8 << 30
 MAX_LARGE_SCAN_SECONDS = 180
 MAX_LARGE_SIGNATURE_CANDIDATES = 8192
+MAX_PARENT_LINK_CHANGES = 2
+MAX_PARENT_LINK_TRIALS = 200_000
+
+
+def restore_parent_links(raw: bytes, *, checksum_at: int, offset_size: int,
+                         options: dict[int, set[int]], label: str
+                         ) -> tuple[bytes, tuple[tuple[int, int], ...]]:
+    """Find one unique, checksum-restoring assignment of checked child links.
+
+    The caller must independently validate every candidate's complete child
+    structure, ownership, and slot geometry. This bounded search proves only
+    the original parent checksum, and changes no nonpointer bytes.
+    """
+    if checksum_at + 4 > len(raw) or checksum_at < 0:
+        raise FormatError(f"{label} checksum lies outside parent")
+    wanted = int.from_bytes(raw[checksum_at:checksum_at + 4], "little")
+    if lookup3(raw[:checksum_at]) == wanted:
+        raise FormatError(f"{label} repair requires an invalid original parent checksum")
+    slots = sorted((position, sorted(addresses)) for position, addresses in options.items()
+                   if addresses)
+    solutions: list[tuple[bytes, tuple[tuple[int, int], ...]]] = []
+    tried = 0
+    for changes in range(1, min(MAX_PARENT_LINK_CHANGES, len(slots)) + 1):
+        for selected in combinations(slots, changes):
+            for addresses in product(*(values for _, values in selected)):
+                tried += 1
+                if tried > MAX_PARENT_LINK_TRIALS:
+                    raise UnsupportedFormat(f"{label} multi-link search exceeds bounded trial budget")
+                if len(set(addresses)) != len(addresses):
+                    continue
+                patches = tuple((position, address) for (position, _), address
+                                in zip(selected, addresses))
+                candidate = bytearray(raw)
+                for position, address in patches:
+                    if not 0 <= position <= checksum_at - offset_size:
+                        raise FormatError(f"{label} child pointer lies outside checksummed bytes")
+                    candidate[position:position + offset_size] = address.to_bytes(offset_size, "little")
+                if lookup3(candidate[:checksum_at]) == wanted:
+                    solutions.append((bytes(candidate), patches))
+                    if len(solutions) > 1:
+                        raise FormatError(f"{label} child-link reconstruction is ambiguous")
+    if not solutions:
+        raise FormatError(f"{label} checksum mismatch; no checked child links restore parent")
+    return solutions[0]
 
 
 def _scan_extents(reader: ModernH5File) -> Iterator[tuple[int, int]]:
