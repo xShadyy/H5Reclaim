@@ -110,6 +110,16 @@ class MultipleLinkTests(unittest.TestCase):
                   for item in repaired.chunks]
         self.assertTrue(any(len(dependencies) == 1 for dependencies in counts))
         self.assertTrue(any(len(dependencies) == 0 for dependencies in counts))
+        saved_path = self.folder / "btree-result.h5"
+        report = recover_large_structural(self.source, "/data", saved_path,
+                                          self.folder / "btree-report.json")
+        self.assertEqual(len(report["index"]["repairs"]), 2)
+        self.assertEqual(report["accepted_elements"], truth.size)
+        with h5py.File(saved_path) as saved:
+            np.testing.assert_array_equal(saved["data"][:], truth)
+            ledger = saved["/_h5reclaim/physical_evidence"][:]
+            self.assertTrue(np.any(ledger["repair_link_count"] == 0))
+            self.assertTrue(np.any(ledger["repair_link_count"] == 1))
 
     def test_multiple_repairs_share_one_physical_scan_quota(self):
         with h5py.File(self.source, "w", libver="latest") as file:
