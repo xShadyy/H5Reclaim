@@ -51,7 +51,7 @@ h5reclaim rescue damaged.h5 --dataset /experiment/measurements --large-structura
 | --- | --- |
 | Index families | Fixed array, extensible array, v2 B-tree |
 | Rank | 1 through 32 when the observed index family and HDF5 layout permit |
-| Records | Bounded fixed-width records, including nested compounds, arrays, enums, opaque and fixed strings; no heap pointers or object references in this route |
+| Records | Bounded fixed-width records, including nested compounds, arrays, enums, opaque and fixed strings; a separate checked native relocation route handles supported pointer-bearing records |
 | Filters | gzip, shuffle, Fletcher32, LZF, N-bit, scale-offset, SZIP when the native decoder is available, and supported installed hdf5plugin codecs |
 | Damage | Up to two independently checked broken links per EA or B-tree metadata parent, with a unique assignment restoring its original checksum; nested damage that prevents independent child validation is refused |
 | Chunk grid | The configured chunk and grid quotas, with an additional memory reserve that depends on the observed index family |
@@ -65,6 +65,16 @@ are checked before values are accepted. The output stores decoded chunks
 without source compression and records physical ranges and payload digests.
 Scale-offset may have discarded precision when the source was written;
 recovery reproduces the file's stored decoded values.
+
+For an independently repaired modern index holding variable-length strings,
+ragged numeric arrays, nested pointer-bearing compounds, or object and region
+references, the native relocation route restores checked index pointers in a
+private source view. Native HDF5 decodes the values and remaps their file-bound
+heap allocations and references into the new output. Selected-dataset exports
+defer references to other objects; whole-file rescue can resolve them when
+those target objects are independently exported. Readback verifies current
+logical values, not unknown historical values. Index ambiguity, unavailable
+targets and invalid heap allocations are not turned into accepted data.
 
 Default streaming quotas include a 64 GiB source, 8 GiB of physically copied
 source data, 16 GiB of logical selected data, 18 GiB output, and an 8 GiB
@@ -140,6 +150,9 @@ signatures/root pointers, selected object layout pointers and dimensions,
 checked FA/EA/B-tree child links, supported rooted file-space manager metadata,
 stale consistency flags, and a validated legacy signature restoration. The
 plan lists exact before/after bytes.
+Separate legacy v1 tree leaf gaps can also be bridged where intact rooted
+siblings reciprocally identify each missing subtree; adjacent unanchored gaps
+and ambiguous subtrees remain unresolved.
 Application hashes the input again and regenerates the entire plan. An
 edited or stale plan is refused. The repaired copy must pass the independent
 covered-metadata preflight before it and its audit log are published.
@@ -169,7 +182,9 @@ checked surviving structure. Missing historical free-space sections cannot
 be inferred from an absent section list. Fixed signature, version, client and
 reciprocal-owner fields may be restored together only when their canonical
 values reproduce the stored checksum; unknown damaged counts or sizes remain
-unassigned.
+unassigned. The historical version-0 declaration with message type `0x18`
+has synthetic structural coverage; live generated fixtures cover modern
+layouts, including paged managers.
 
 ## Restore captured metadata after later damage
 
