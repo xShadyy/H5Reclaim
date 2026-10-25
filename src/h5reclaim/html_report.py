@@ -16,6 +16,13 @@ def _summary(report):
     accepted, unknown = report.get("accepted_elements"), report.get("unknown_elements")
     if isinstance(accepted, int) and isinstance(unknown, int):
         return accepted, unknown, "elements"
+    descriptor, mappings = report.get("dataset") or {}, report.get("mappings")
+    shape, chunks = descriptor.get("shape"), descriptor.get("chunks")
+    if isinstance(shape, list) and chunks and isinstance(mappings, list):
+        coordinates = {tuple(row["coordinate"]) for row in mappings}
+        accepted = sum(prod(min(width, size - start) for start, width, size in zip(at, chunks, shape))
+                       for at in coordinates)
+        return accepted, prod(shape) - accepted, "elements"
     counts = report.get("counts") or {}
     return counts.get("recovered", 0), sum(v for k, v in counts.items() if k != "recovered" and isinstance(v, int)), "chunks"
 

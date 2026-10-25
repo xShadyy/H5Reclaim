@@ -94,6 +94,28 @@ class LargeCompressedRecoveryTests(unittest.TestCase):
                 budget=LargeBudget(max_logical_bytes=1 << 20))
         self.assertFalse(self.output.exists())
 
+    def test_extensible_and_btree_recovery_above_the_old_8192_chunk_limit(self):
+        for kind in ("extensible_array", "v2_btree"):
+            with self.subTest(kind=kind):
+                values, _ = self.fixture(kind, (100, 100), (1, 1), dtype="u1")
+                result = recover_large_structural(self.source, "/science", self.output, self.report)
+                self.assertEqual(result["allocated_chunks_checked"], 10000)
+                self.assertEqual(result["accepted_elements"], 10000)
+                with h5py.File(self.output, "r") as handle:
+                    np.testing.assert_array_equal(handle["science"][:], values)
+                self.output.unlink()
+                self.report.unlink()
+
+    def test_saved_large_payload_digests_are_verified_after_publication(self):
+        from h5reclaim.result_verification import verify_result, ResultMismatch
+        self.fixture("fixed_array", (45, 33), (8, 8))
+        recover_large_structural(self.source, "/science", self.output, self.report)
+        self.assertTrue(verify_result(self.output, self.report, check_values=True)["values_checked"])
+        with h5py.File(self.output, "r+") as handle:
+            handle["science"][2, 3] = -99
+        with self.assertRaises(ResultMismatch):
+            verify_result(self.output, self.report, check_values=True)
+
 
 if __name__ == "__main__":
     unittest.main()

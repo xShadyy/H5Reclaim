@@ -50,6 +50,17 @@ class ExternalToolTests(unittest.TestCase):
                 np.testing.assert_array_equal(handle["data"][:], np.arange(1000))
                 self.assertEqual(handle["data"].compression, "gzip")
 
+    @unittest.skipUnless(shutil.which("h5copy"), "official h5copy tool is not installed")
+    def test_official_copy_renames_a_selected_dataset(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, output, report = (root / n for n in ("source.h5", "output.h5", "report.json"))
+            with h5py.File(source, "w", libver=("earliest", "v108")) as handle:
+                handle.create_dataset("data", data=np.arange(100))
+            export_with_tool(source, output, report, operation="copy", dataset="/data", destination_path="/renamed/data")
+            with h5py.File(output, "r") as handle:
+                np.testing.assert_array_equal(handle["renamed/data"][:], np.arange(100))
+
 
 if __name__ == "__main__":
     unittest.main()

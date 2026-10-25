@@ -268,7 +268,10 @@ def scan_markers(source, *, budget=None):
         candidates, seen, consumed = [], set(), 0
         with image.open("rb", buffering=0) as stream:
             try:
-                extents = list(sparse_extents(stream.fileno(), size))
+                from itertools import islice
+                extents = list(islice(sparse_extents(stream.fileno(), size), budget.max_objects + 1))
+                if len(extents) > budget.max_objects:
+                    raise UnsupportedFormat("marker extent count exceeds its metadata budget")
             except OSError:
                 extents = [(0, size)]
             for start, end in extents:
