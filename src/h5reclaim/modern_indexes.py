@@ -125,19 +125,19 @@ class RowMajorCoordinates(Sequence[tuple[int, ...]]):
 
     def __init__(self, grid: tuple[int, ...], chunks: tuple[int, ...]):
         self.grid, self.chunks = grid, chunks
-        self.count = prod(grid)
+        self.slot_count = prod(grid)
 
     def __len__(self) -> int:
-        return self.count
+        return self.slot_count
 
     def __getitem__(self, index: int | slice) -> tuple[int, ...] | list[tuple[int, ...]]:
         if isinstance(index, slice):
-            return [self[item] for item in range(*index.indices(self.count))]
+            return [self[item] for item in range(*index.indices(self.slot_count))]
         if not isinstance(index, int):
             raise TypeError("chunk slot index must be an integer")
         if index < 0:
-            index += self.count
-        if index < 0 or index >= self.count:
+            index += self.slot_count
+        if index < 0 or index >= self.slot_count:
             raise IndexError("chunk slot is outside the selected grid")
         origin = [0] * len(self.grid)
         for axis in range(len(self.grid) - 1, -1, -1):
