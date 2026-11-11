@@ -5,7 +5,7 @@
 <p align="center">
   <a href="../pyproject.toml"><img alt="Python 3.10+" src="https://img.shields.io/badge/Python-3.10%2B-3559F0?style=flat-square&amp;logo=python&amp;logoColor=white"></a>
   <a href="../LICENSE"><img alt="Lizenz: Apache 2.0" src="https://img.shields.io/badge/License-Apache%202.0-263557?style=flat-square"></a>
-  <a href="https://github.com/xShadyy/H5Reclaim/blob/main/benchmarks/results/v130-release-coverage.json"><img alt="Kontrollierter Test: 95.4% nützliche Wiederherstellungen" src="https://img.shields.io/badge/Controlled%20benchmark-95.4%25-3559F0?style=flat-square"></a>
+  <a href="https://github.com/xShadyy/H5Reclaim/blob/main/benchmarks/results/v140-release-coverage.json"><img alt="Kontrollierter Test: 95.4% nützliche Wiederherstellungen" src="https://img.shields.io/badge/Controlled%20benchmark-95.4%25-3559F0?style=flat-square"></a>
 </p>
 
 <p align="center">
@@ -18,9 +18,9 @@ H5Reclaim stellt wissenschaftliche Daten aus beschädigten HDF5-Dateien wieder h
 
 **Ein einziger Befehl findet die Datensätze, wählt Wiederherstellungsverfahren und erstellt eine neue HDF5-Datei mit einem übersichtlichen JSON-Bericht.** Das Original bleibt unverändert. H5Reclaim übernimmt lesbare Messwerte aus teilweise beschädigten Datensätzen und setzt die Wiederherstellung für den Rest der Datei fort.
 
-In 109 kontrollierten Versuchen mit beschädigten Dateien lieferte Version 1.3.0 104 brauchbare Ergebnisse: 77 vollständig exakte und 27 teilweise Wiederherstellungen. Fünf Fälle wurden abgelehnt; kein falscher Wert wurde akzeptiert. Das entspricht dem Ergebnis des früheren Tests für Version 1.0.0. [Ergebnisse für 1.3.0](../benchmarks/results/v130-release-coverage.json).
+In 109 kontrollierten Versuchen mit beschädigten Dateien lieferte Version 1.4.0 104 brauchbare Ergebnisse: 77 vollständig exakte und 27 teilweise Wiederherstellungen. Fünf Fälle wurden abgelehnt; kein falscher Wert wurde akzeptiert. Das entspricht dem Ergebnis des früheren Tests für Version 1.0.0. [Ergebnisse für 1.4.0](../benchmarks/results/v140-release-coverage.json).
 
-Version 1.3.0 repariert zwei beschädigte Verbindungen im selben geprüften Indexknoten, überträgt ausgewählte Daten variabler Länge und Referenzen, deckt weitere Freispeicherstrukturen ab und erhält geprüfte Aliasse abgetrennter Gruppen. Im [separaten Test mit zehn komprimierten Fällen](../benchmarks/results/v130-streaming-recovery.json), darunter Schäden in einem gemeinsamen Knoten, wurden keine falschen Werte akzeptiert.
+Version 1.4.0 ergänzt die automatische Wiederherstellung von Zählern älterer Metadaten, geprüfte N-bit- und Scale-offset-Parameter sowie das Wiederherstellen und Entfernen von Metadaten-Cache-Abbildern in einer separaten Kopie. Die [sechzehn Metadatenfälle](../benchmarks/results/v140-metadata-repair.json) und [zehn Fälle komprimierter Daten](../benchmarks/results/v140-streaming-recovery.json) werden anhand unabhängig aufbewahrter Originalwerte bewertet.
 
 Der [Benutzerleitfaden](../USAGE.md) beschreibt die Inspektions- und Reparaturwerkzeuge, unterstützte Formate, die Überprüfung und die Stapelverarbeitung.
 

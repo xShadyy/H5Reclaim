@@ -302,6 +302,8 @@ def _safe_export_attributes(dataset: h5py.Dataset) -> tuple[tuple[tuple[str, Any
 
 def _check_storage(dataset: h5py.Dataset, snapshot_size: int,
                    file_itemsize: int | None = None) -> StorageInspection:
+    from .filter_metadata import validate_native_buffers
+    validate_native_buffers(dataset)
     creation = dataset.id.get_create_plist()
     itemsize = file_itemsize or dataset.dtype.itemsize
     if creation.get_external_count() or dataset.is_virtual:

@@ -151,6 +151,11 @@ signatures/root pointers, selected object layout pointers and dimensions,
 checked FA/EA/B-tree child links, supported rooted file-space manager metadata,
 stale consistency flags, and a validated legacy signature restoration. The
 plan lists exact before/after bytes.
+It also restores legacy message counts across continuation blocks and symbol
+counts with complete rooted entries. Atomic N-bit and scale-offset element
+counts and widths can be corrected from the independent schema. These filter
+corrections are automatic only when they restore the original header checksum;
+other corrections require `--allow-reseal`.
 Separate legacy v1 tree leaf gaps can also be bridged where intact rooted
 siblings reciprocally identify each missing subtree; adjacent unanchored gaps
 and ambiguous subtrees remain unresolved.
@@ -172,6 +177,20 @@ match their historical values. Unresolved plans are saved for inspection
 with `executable: false`; they cannot be applied. Arbitrary missing metadata,
 unrecognized free-space encodings and unconstrained checksum rewriting are outside
 the implemented catalog. Use `capabilities` for the exact list.
+
+To detach a stale or damaged metadata cache image on a separate copy:
+
+```sh
+h5reclaim plan-repair damaged.h5 --discard-cache-image --output repair.plan.json
+h5reclaim apply-repair damaged.h5 repair.plan.json --output repaired-copy.h5 --audit repair.audit.jsonl
+```
+
+A valid cache may contain metadata that was never flushed elsewhere. The plan
+replays those bytes only when the complete cache checksum and the resulting
+reachable metadata both check. Every replayed byte must fall within checked
+metadata. A corrupt cache supplies no replacement bytes; detachment then needs
+the ordinary on-disk metadata to survive. The image bytes and file extent are
+retained, and the source remains unchanged.
 
 The file-space repair cases cover rooted version-0 and version-1 declarations,
 nonpersistent layouts, and version-0 file-client FSHD/FSSE managers including

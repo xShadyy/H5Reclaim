@@ -296,6 +296,8 @@ def export_large_readable(source: str | Path, dataset_path: str, output: str | P
     with sparse_snapshot(source, budget=budget) as (image, digest, identity, size, copied):
         with h5py.File(image, "r") as opened:
             selected = _selected_dataset(opened, dataset_path)
+            from .filter_metadata import validate_native_buffers
+            validate_native_buffers(selected)
             dtype = selected.dtype
             _safe_fixed_type(selected.id.get_type(), dtype)
             shape = tuple(int(value) for value in selected.shape)

@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.4.0
+
+- Restore rooted legacy object-header message counts across continuations and
+  symbol-node counts backed by complete ordered entries and parent keys.
+  Automatic selected and whole-file rescue use a checked disposable view.
+- Check and repair redundant atomic N-bit and scale-offset buffer parameters.
+  Automatic correction must restore the original header checksum; other
+  schema-derived corrections require an explicit resealing plan. Accept valid
+  twenty-parameter scale-offset descriptors and reject inconsistent native
+  decode-buffer sizes before reading measurements.
+- Add `plan-repair --discard-cache-image`. Replay checksum-valid cached
+  metadata only when every changed byte passes independent metadata coverage,
+  then detach the image on a separate copy. A damaged cache can be detached
+  only when the ordinary metadata independently survives.
+- Add independent CLI scoring for sixteen count, filter and cache-image cases,
+  regression coverage, static error checks and pinned CI action revisions.
+- Remove obsolete internal validation notes from public source.
+
 ## 1.3.1
 
 - Remove HTML report generation from the CLI, batch command and Python API.

@@ -137,6 +137,12 @@ def inspect_metadata_local(path, *, budget=None, profile="forensic"):
                     pipeline = (_old_filters if version < 2 else _filters)(
                         pipeline_message.data if pipeline_message else None, width)
                     descriptor["filters"] = [p.id for p in pipeline]
+                    from .filter_metadata import redundant_fields
+                    for correction in redundant_fields(messages, shape, reader.superblock.offset_size):
+                        finding("FILTER_PARAMETER_MISMATCH",
+                            f"filter {correction['filter']} redundant field is {correction['before']}; "
+                            f"independent schema requires {correction['after']}",
+                            object_path=selected_path, address=correction["offset"])
                     if _unique(messages, 7) is not None or layout_class == 3:
                         external += 1
                         finding("DEPENDENT_STORAGE", "external or virtual storage is declared; dependencies were not opened",
@@ -232,6 +238,7 @@ def inspect_metadata_local(path, *, budget=None, profile="forensic"):
                 finding("PAYLOAD_METADATA_OVERLAP", "chunk allocation overlaps checked metadata", object_path=selected_path)
         ranges = sorted(set(reader.metadata_ranges))
     file_space = {"version": "legacy_not_covered", "managers": [], "metadata_ranges": []}
+    cache_image = {"present": False, "metadata_ranges": []}
     if version >= 2:
         try:
             file_space = inspect_file_space(path, budget=budget)
@@ -246,12 +253,27 @@ def inspect_metadata_local(path, *, budget=None, profile="forensic"):
         except (FormatError, OSError, ValueError, IndexError) as exc:
             complete = False
             finding("CORRUPT_FILE_SPACE", exc)
+        try:
+            from .cache_image import inspect_cache_image
+            cache_image = inspect_cache_image(path, budget=budget)
+            for start, end, _ in cache_image["metadata_ranges"]:
+                if (any(start < stop and begin < end for begin, stop, _ in payloads)
+                        or any(start < stop and begin < end for begin, stop, _ in ranges)):
+                    raise FormatError("metadata cache image overlaps live payload or metadata")
+            ranges = sorted(set((*ranges, *(tuple(item) for item in cache_image["metadata_ranges"]))))
+        except UnsupportedFormat as exc:
+            complete = False
+            finding("UNSUPPORTED_CACHE_IMAGE", exc, severity="unsupported")
+        except (FormatError, OSError, ValueError, IndexError) as exc:
+            complete = False
+            finding("CORRUPT_CACHE_IMAGE", exc)
     errors = any(f["severity"] == "error" for f in findings)
     decision = ("reject_corrupt" if errors else "reject_dependencies" if profile == "strict" and external else
                 "incomplete" if not complete else "accept_with_warnings" if findings else "accept")
     return {"schema_version": 1, "tool": "h5reclaim", "operation": "metadata_preflight", "profile": profile,
         "decision": decision, "analysis": {"complete": complete, "objects_checked": len(seen), "links_seen": links_seen},
         "objects": objects, "findings": findings, "index_repairs": repairs,
+        "cache_image": cache_image,
         "metadata_ranges": [list(r) for r in ranges], "declared_dependencies": external,
         "file_space": {"version": file_space["version"], "manager_count": len(file_space["managers"]),
                        "metadata_ranges": file_space["metadata_ranges"]},

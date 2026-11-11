@@ -143,6 +143,12 @@ def _auto_image(source, dataset, output, report, *, budget, strict_history,
             routes = ["truncated_chunks", "nonchunked"]
         else:
             routes = (["native_stream"] if dataset.split('/')[1] == '_h5reclaim' or resume_dir is not None or root_trial else []) + ["structural", "large_structural", "relocated_native", "nonchunked"] + ([] if prefer_streaming else ["readable"]) + ["native_stream"]
+            try:
+                from .checked_view import metadata_corrections
+                if metadata_corrections(source, budget):
+                    routes = ["native_stream", *[route for route in routes if route != "native_stream"]]
+            except (FormatError, UnsupportedCase):
+                pass
         chosen = None
         for route in routes:
             try:

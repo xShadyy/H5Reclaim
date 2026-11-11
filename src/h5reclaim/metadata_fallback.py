@@ -99,12 +99,12 @@ class _OldHeap:
         return name
 
 
-def _old_messages(reader: H5File, address: int) -> tuple[HeaderMessage, ...]:
+def _old_messages(reader: H5File, address: int, *, check_count: bool = True) -> tuple[HeaderMessage, ...]:
     prefix = reader.read_at(address, 16)
     if prefix[0] != 1 or prefix[1] or prefix[12:16] != b"\x00" * 4:
         raise FormatError("rooted older object header prefix is invalid")
     count, size = _uint(prefix[2:4]), _uint(prefix[8:12])
-    if not 1 <= count <= MAX_MESSAGES or not 8 <= size <= MAX_HEADER_BYTES:
+    if (check_count and not 1 <= count <= MAX_MESSAGES) or not 8 <= size <= MAX_HEADER_BYTES:
         raise UnsupportedFormat("older object-header count or size exceeds limits")
     initial = reader.absolute(address)
     ranges = [(initial, initial + 16 + size, "rooted older object header")]
@@ -128,7 +128,9 @@ def _old_messages(reader: H5File, address: int) -> tuple[HeaderMessage, ...]:
             start = pos + 8
             messages.append(HeaderMessage(kind, flags, content[start:start + size],
                                           reader.absolute(block_address) + start))
-            if len(messages) > count:
+            if len(messages) > MAX_MESSAGES:
+                raise UnsupportedFormat("older object header exceeds the message budget")
+            if check_count and len(messages) > count:
                 raise FormatError("older object header contains extra messages")
             pos = start + size
             if kind == 0x10:
@@ -138,7 +140,8 @@ def _old_messages(reader: H5File, address: int) -> tuple[HeaderMessage, ...]:
                 if size != osize + lsize or len(seen) > MAX_CONTINUATIONS:
                     raise UnsupportedFormat("unsupported older continuation structure")
                 target = _uint(messages[-1].data[:osize]); target_size = _uint(messages[-1].data[osize:])
-                if target in seen or not 8 <= target_size <= MAX_HEADER_BYTES or target_size % 8:
+                if (target in seen or not 8 <= target_size <= MAX_HEADER_BYTES or target_size % 8
+                        or sum(end - start for start, end, _ in ranges) + target_size > MAX_HEADER_BYTES):
                     raise FormatError("invalid or repeated older continuation")
                 seen.add(target)
                 absolute = reader.absolute(target)
@@ -146,7 +149,7 @@ def _old_messages(reader: H5File, address: int) -> tuple[HeaderMessage, ...]:
                     raise FormatError("overlapping older continuation")
                 ranges.append((absolute, absolute + target_size, "rooted older continuation"))
                 queue.append((target, target_size))
-    if len(messages) != count:
+    if check_count and len(messages) != count:
         raise FormatError("older object-header message count mismatch")
     reader.metadata_ranges.extend(ranges)
     return tuple(messages)
@@ -211,8 +214,9 @@ def _old_heap(reader: H5File, address: int) -> _OldHeap:
     return _OldHeap(segment, tuple(free))
 
 
-def _old_group(reader: H5File, address: int, cached: tuple[int, int] | None) -> dict[str, LinkStep | None]:
-    messages = _old_messages(reader, address)
+def _old_group(reader: H5File, address: int, cached: tuple[int, int] | None, *,
+               check_message_count: bool = True, symbol_count_resolver=None) -> dict[str, LinkStep | None]:
+    messages = _old_messages(reader, address, check_count=check_message_count)
     stab = _unique(messages, 0x11)
     if stab is None:
         raise UnsupportedFormat("rooted older object is not a symbol-table group")
@@ -285,6 +289,8 @@ def _old_group(reader: H5File, address: int, cached: tuple[int, int] | None) -> 
             if first[:4] != b"SNOD" or first[4] != 1 or first[5] != 0:
                 raise FormatError("older symbol-node signature or version invalid")
             count = _uint(first[6:8])
+            if symbol_count_resolver is not None:
+                count = symbol_count_resolver(reader, child, heap, keys[i], keys[i+1], 2*leaf_k)
             if not 1 <= count <= 2*leaf_k:
                 raise FormatError("older symbol-node count invalid")
             entry_size = lsize + osize + 24
@@ -322,6 +328,8 @@ def _old_group(reader: H5File, address: int, cached: tuple[int, int] | None) -> 
                     links[name] = LinkStep(address, name, target,
                                            reader.absolute(child)+8+j*entry_size,
                                            cached_child)
+            if previous != keys[i+1]:
+                raise FormatError("older symbol-node count does not reach its parent upper key")
     counts = Counter(step.object_address for step in links.values() if step is not None)
     for target, count in counts.items():
         if count < 2:
@@ -536,7 +544,10 @@ def _messages(reader: ModernH5File, address: int) -> tuple[HeaderMessage, ...]:
             msg_flags = content[pos + 3]
             if length > len(content) - pos - prefix_size:
                 raise FormatError("object-header message crosses block boundary")
-            if msg_flags & 0xA0:
+            known_cache_image = (kind == 0x18 and msg_flags in (0x80, 0x84)
+                                 and length == 1 + reader.superblock.offset_size + reader.superblock.length_size
+                                 and content[pos + prefix_size:pos + prefix_size + 1] == b"\0")
+            if msg_flags & 0xA0 and not known_cache_image:
                 raise UnsupportedFormat("message marked unknown or mandatory-unknown")
             start = pos + prefix_size
             data = content[start:start + length]
@@ -824,87 +835,12 @@ def _file_dtype(raw: bytes, *, older_padding: bool = False) -> tuple[str | np.dt
 
 
 def _filters(raw: bytes | None, element_size: int) -> tuple[FilterDescriptor, ...]:
-    if raw is None:
-        return ()
-    if len(raw) < 2 or raw[0] != 2 or not 1 <= raw[1] <= MAX_FILTERS:
-        raise UnsupportedFormat("fallback supports only bounded filter-pipeline version two")
-    count = raw[1]
-    pos = 2
-    result: list[FilterDescriptor] = []
-    for _ in range(count):
-        if len(raw) - pos < 6:
-            raise FormatError("truncated filter entry")
-        identifier = _uint(raw[pos:pos + 2]); pos += 2
-        if identifier >= 256:
-            if len(raw)-pos < 2:
-                raise FormatError("truncated custom-filter name length")
-            name_length = _uint(raw[pos:pos+2]); pos += 2
-            if name_length > 128:
-                raise UnsupportedFormat("custom-filter name exceeds limit")
-            if len(raw)-pos < 4:
-                raise FormatError("truncated custom-filter flags or values")
-        else:
-            name_length = 0
-        flags, values = _uint(raw[pos:pos + 2]), _uint(raw[pos + 2:pos + 4]); pos += 4
-        if flags & ~1 or values > 16 or len(raw) - pos < name_length + 4 * values:
-            raise FormatError("invalid filter flags or client data length")
-        name = raw[pos:pos+name_length]; pos += name_length
-        if name and (b"\x00" not in name or any(name[name.index(0):])):
-            raise FormatError("custom-filter name is not terminated")
-        params = tuple(_uint(raw[pos + 4*i:pos + 4*(i+1)]) for i in range(values))
-        pos += 4 * values
-        if identifier == 3 and (flags, params) != (0, ()):
-            raise UnsupportedFormat("unsupported Fletcher32 settings")
-        if identifier == 1 and not (len(params) == 1 and 0 <= params[0] <= 9):
-            raise UnsupportedFormat("unsupported DEFLATE settings")
-        if identifier == 2 and params != (element_size,):
-            raise UnsupportedFormat("shuffle element size contradicts datatype")
-        if any(item.id == identifier for item in result):
-            raise FormatError("duplicate filter in selected pipeline")
-        result.append(FilterDescriptor(identifier, flags, params))
-    if pos != len(raw):
-        raise FormatError("filter-pipeline trailing bytes")
-    return tuple(result)
+    from .filter_metadata import pipeline_fields
+    return tuple(descriptor for descriptor, _ in pipeline_fields(raw, element_size))
 
 
 def _old_filters(raw: bytes | None, element_size: int) -> tuple[FilterDescriptor, ...]:
-    if raw is None:
-        return ()
-    if len(raw) < 8 or raw[0] != 1 or not 1 <= raw[1] <= MAX_FILTERS or any(raw[2:8]):
-        raise UnsupportedFormat("invalid older filter-pipeline prefix")
-    pos = 8
-    filters: list[FilterDescriptor] = []
-    for _ in range(raw[1]):
-        if len(raw) - pos < 8:
-            raise FormatError("truncated older filter entry")
-        identifier, name_length = _uint(raw[pos:pos+2]), _uint(raw[pos+2:pos+4])
-        flags, count = _uint(raw[pos+4:pos+6]), _uint(raw[pos+6:pos+8])
-        pos += 8
-        if identifier not in (1, 2, 3, 32000) or name_length > 128 or name_length % 8 or count > 16:
-            raise UnsupportedFormat("unsupported older filter metadata")
-        if flags & ~1 or len(raw) - pos < name_length + 4*count:
-            raise FormatError("invalid older filter flags, name, or values")
-        name = raw[pos:pos+name_length]; pos += name_length
-        if name_length and (b"\x00" not in name or any(name[name.index(0):])):
-            raise FormatError("invalid older filter name")
-        values = tuple(_uint(raw[pos+4*i:pos+4*(i+1)]) for i in range(count))
-        pos += 4*count
-        if count % 2:
-            if len(raw)-pos < 4 or any(raw[pos:pos+4]):
-                raise FormatError("invalid older filter client-data padding")
-            pos += 4
-        if identifier == 3 and (flags, values) != (0, ()):
-            raise UnsupportedFormat("unsupported older Fletcher32 parameters")
-        if identifier == 1 and not (flags == 1 and len(values) == 1 and 0 <= values[0] <= 9):
-            raise UnsupportedFormat("unsupported older DEFLATE parameters")
-        if identifier == 2 and not (flags == 1 and values == (element_size,)):
-            raise UnsupportedFormat("older shuffle width contradicts selected datatype")
-        if any(item.id == identifier for item in filters):
-            raise FormatError("duplicate filter in selected older pipeline")
-        filters.append(FilterDescriptor(identifier, flags, values))
-    if any(raw[pos:]):
-        raise FormatError("older filter-pipeline trailing bytes")
-    return tuple(filters)
+    return _filters(raw, element_size)
 
 
 def _chunk_shape(raw: bytes, shape: tuple[int, ...], itemsize: int) -> tuple[int, ...]:

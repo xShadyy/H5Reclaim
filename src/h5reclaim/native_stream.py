@@ -34,6 +34,8 @@ def inspect_storage(selected, size, budget, deadline, *, require_codecs=True):
     """Validate physical placement independently of successful native reads."""
     shape = selected.shape
     typ, creation = selected.id.get_type(), selected.id.get_create_plist()
+    from .filter_metadata import validate_native_buffers
+    validate_native_buffers(selected)
     if creation.get_external_count() or selected.is_virtual:
         raise UnsupportedCase("external and virtual storage require a supplied related-file manifest")
     if creation.get_nfilters() > 32:

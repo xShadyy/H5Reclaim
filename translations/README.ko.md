@@ -5,7 +5,7 @@
 <p align="center">
   <a href="../pyproject.toml"><img alt="Python 3.10+" src="https://img.shields.io/badge/Python-3.10%2B-3559F0?style=flat-square&amp;logo=python&amp;logoColor=white"></a>
   <a href="../LICENSE"><img alt="라이선스: Apache 2.0" src="https://img.shields.io/badge/License-Apache%202.0-263557?style=flat-square"></a>
-  <a href="https://github.com/xShadyy/H5Reclaim/blob/main/benchmarks/results/v130-release-coverage.json"><img alt="통제된 벤치마크: 95.4% 유용한 복구" src="https://img.shields.io/badge/Controlled%20benchmark-95.4%25-3559F0?style=flat-square"></a>
+  <a href="https://github.com/xShadyy/H5Reclaim/blob/main/benchmarks/results/v140-release-coverage.json"><img alt="통제된 벤치마크: 95.4% 유용한 복구" src="https://img.shields.io/badge/Controlled%20benchmark-95.4%25-3559F0?style=flat-square"></a>
 </p>
 
 <p align="center">
@@ -18,9 +18,9 @@ H5Reclaim은 손상된 HDF5 파일에서 과학 데이터를 복구합니다. �
 
 **명령 하나로 데이터셋을 찾아 복구 방법을 선택하고, 명확한 JSON 보고서와 함께 새 HDF5 파일을 생성합니다.** 원본은 그대로 유지됩니다. H5Reclaim은 일부가 손상된 데이터셋에서 읽을 수 있는 측정값을 보존하고 파일의 나머지 부분도 계속 복구합니다.
 
-통제된 손상 파일 실험 109건에서 1.3.0 버전은 유용한 결과 104건을 얻었습니다. 완전히 정확한 복구는 77건, 부분 복구는 27건이며, 5건은 복구를 거부했고 잘못된 값은 받아들이지 않았습니다. 이는 이전 1.0.0 버전의 같은 실험 결과와 같습니다. [1.3.0 결과](../benchmarks/results/v130-release-coverage.json).
+통제된 손상 파일 실험 109건에서 1.4.0 버전은 유용한 결과 104건을 얻었습니다. 완전히 정확한 복구는 77건, 부분 복구는 27건이며, 5건은 복구를 거부했고 잘못된 값은 받아들이지 않았습니다. 이는 이전 1.0.0 버전의 같은 실험 결과와 같습니다. [1.4.0 결과](../benchmarks/results/v140-release-coverage.json).
 
-1.3.0 버전은 검증된 같은 인덱스 노드의 손상된 링크 두 개를 복구하고, 일부 가변 길이 값과 참조를 HDF5를 통해 옮기며, 더 많은 여유 공간 구조와 검증된 분리 그룹의 별칭을 처리합니다. 같은 노드의 결함을 포함한 [별도의 압축 데이터 실험 10건](../benchmarks/results/v130-streaming-recovery.json)에서 잘못된 값은 받아들이지 않았습니다.
+버전 1.4.0은 이전 형식 메타데이터 개수의 자동 복구, 검증된 N-bit 및 scale-offset 매개변수 복구, 별도 복사본에서 메타데이터 캐시 이미지의 명시적 복원과 분리를 추가합니다. [16개 메타데이터 사례](../benchmarks/results/v140-metadata-repair.json)와 [10개 압축 데이터 사례](../benchmarks/results/v140-streaming-recovery.json)는 독립적으로 보관한 원래 값과 비교하여 평가합니다.
 
 검사 및 복구 도구, 지원 형식, 검증과 일괄 처리에 관한 내용은 [사용 안내서](../USAGE.md)를 참고하세요.
 

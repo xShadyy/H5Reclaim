@@ -385,6 +385,8 @@ def main(argv: list[str] | None = None) -> int:
     plan_cmd.add_argument("--output", required=True, type=Path)
     plan_cmd.add_argument("--allow-reseal", action="store_true",
                           help="also consider structurally validated checksum resealing; historical bytes remain unknown")
+    plan_cmd.add_argument("--discard-cache-image", action="store_true",
+                          help="detach the optional metadata cache image on a new copy after checking ordinary metadata")
     plan_cmd.add_argument("--streaming-budget", type=Path)
     apply_cmd = commands.add_parser("apply-repair", help="regenerate a saved repair plan and apply it to a new verified copy")
     apply_cmd.add_argument("source", type=Path)
@@ -692,7 +694,8 @@ def main(argv: list[str] | None = None) -> int:
             from .large_streaming import LargeBudget
             if args.command == "plan-repair":
                 options = json.loads(args.streaming_budget.read_text()) if args.streaming_budget else {}
-                result = plan_repair(args.source, args.output, budget=LargeBudget(**options), allow_reseal=args.allow_reseal)
+                result = plan_repair(args.source, args.output, budget=LargeBudget(**options),
+                                     allow_reseal=args.allow_reseal, discard_cache_image=args.discard_cache_image)
                 print(json.dumps(result, indent=2, sort_keys=True))
                 return 0 if result["executable"] else 1
             if args.command == "apply-repair":

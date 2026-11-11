@@ -20,13 +20,13 @@ from .metadata_correction import _unique_one_byte, _selected_layout_pointer
 from .header_dimension_trial import _selected_dimension_field
 from .modern_indexes import ModernH5File, lookup3
 from .metadata_fallback import _messages, _unique, _compact_links
-from .preflight import inspect_metadata_local
+from .preflight import inspect_metadata_local, _version, _space
 from .file_space_repair import _information_addresses, inspect_file_space, repair_file_space
 from .recovery import VERSION, RecoveryError, _validate_paths, _verify_source, sha256_file
 
 
 MAX_PLAN_BYTES = 4 << 20
-CATALOG_VERSION = 1
+CATALOG_VERSION = 2
 
 
 def _canonical(value):
@@ -270,6 +270,60 @@ def _restore_detached_root_link(path, reader, address, start, raw, budget, touch
     return True
 
 
+def _filter_proposal(reader, start, raw, allow_reseal=False):
+    """Restore only schema-derived redundant fields, as one checked header."""
+    from .metadata_fallback import HeaderMessage
+    from .filter_metadata import redundant_fields
+    flags = raw[5]
+    head = 6 + (16 if flags & 32 else 0) + (4 if flags & 16 else 0) + (1 << (flags & 3))
+    data, prefix = raw[head:-4], 6 if flags & 4 else 4
+    messages, cursor = [], 0
+    while len(data) - cursor >= prefix:
+        kind = data[cursor]
+        length = int.from_bytes(data[cursor + 1:cursor + 3], "little")
+        message_flags = data[cursor + 3]
+        at = cursor + prefix
+        if message_flags & 0xA0 or at + length > len(data):
+            raise FormatError("filter repair requires complete object-message framing")
+        messages.append(HeaderMessage(kind, message_flags, data[at:at + length], start + head + at))
+        cursor = at + length
+    if any(data[cursor:]):
+        raise FormatError("filter repair has a nonzero object-header gap")
+    space = _unique(messages, 1)
+    if space is None:
+        return None
+    shape, _ = _space(space.data, reader.superblock.length_size)
+    changes = redundant_fields(messages, shape, reader.superblock.offset_size)
+    if not changes:
+        return None
+    proposal = bytearray(raw)
+    for item in changes:
+        offset = item["offset"] - start
+        if not head <= offset <= len(raw) - 8:
+            raise FormatError("filter repair field is outside the owned header")
+        proposal[offset:offset + 4] = item["after"].to_bytes(4, "little")
+    original = int.from_bytes(raw[-4:], "little")
+    restored = lookup3(proposal[:-4]) == original
+    if not restored and not allow_reseal:
+        return None
+    if not restored:
+        proposal[-4:] = lookup3(proposal[:-4]).to_bytes(4, "little")
+    basis = ("independent datatype and chunk dimensions; original header checksum restored" if restored else
+             "independent datatype and chunk dimensions; current structural coherence; checksum recomputed")
+    return bytes(proposal), changes, basis
+
+
+def _filter_repairs(path, reader, start, raw, allow_reseal, touches):
+    proposed = _filter_proposal(reader, start, raw, allow_reseal)
+    if proposed is None:
+        return False
+    proposal, changes, basis = proposed
+    _write(path, start, proposal)
+    for item in changes:
+        touches.append((start, start + len(raw), item["kind"], basis))
+    return True
+
+
 def _object_repairs(path, inspection, allow_reseal, touches, budget):
     changed_any = False
     if not inspection.get("objects"):
@@ -281,6 +335,12 @@ def _object_repairs(path, inspection, allow_reseal, touches, budget):
                 start, raw = _object_header(reader, address)
             except (FormatError, UnsupportedCase):
                 continue
+            try:
+                if _filter_repairs(path, reader, start, raw, allow_reseal, touches):
+                    changed_any = True
+                    continue
+            except (FormatError, UnsupportedCase):
+                pass
             expected = int.from_bytes(raw[-4:], "little")
             if lookup3(raw[:-4]) != expected:
                 restored = None
@@ -374,13 +434,21 @@ def _object_repairs(path, inspection, allow_reseal, touches, budget):
     return changed_any
 
 
-def _build_plan(original, working, digest, budget, allow_reseal):
+def _build_plan(original, working, digest, budget, allow_reseal, discard_cache=False):
     touches, unresolved = [], []
     deadline = time.monotonic() + budget.max_seconds
     try:
         _superblock(working, allow_reseal, touches)
-        _restore_file_space_info_message(working, budget, allow_reseal, touches)
-        repair_file_space(working, touches, budget=budget, allow_reseal=allow_reseal)
+        legacy = _version(working) < 2
+        if legacy:
+            from .legacy_counts import repair_counts
+            repair_counts(working, touches, budget=budget)
+        else:
+            if discard_cache:
+                from .cache_image import discard_cache_image
+                discard_cache_image(working, touches, budget=budget)
+            _restore_file_space_info_message(working, budget, allow_reseal, touches)
+            repair_file_space(working, touches, budget=budget, allow_reseal=allow_reseal)
         for _ in range(16):
             _deadline(deadline)
             inspection = inspect_metadata_local(working, budget=budget)
@@ -395,7 +463,7 @@ def _build_plan(original, working, digest, budget, allow_reseal):
             if inspection["decision"] in ("accept", "accept_with_warnings") and inspection["analysis"]["complete"]:
                 break
             try:
-                if _object_repairs(working, inspection, allow_reseal, touches, budget):
+                if not legacy and _object_repairs(working, inspection, allow_reseal, touches, budget):
                     continue
             except (FormatError, UnsupportedCase):
                 pass
@@ -403,7 +471,11 @@ def _build_plan(original, working, digest, budget, allow_reseal):
         inspection = inspect_metadata_local(working, budget=budget)
         # Check a repaired free-space manager independently of the namespace
         # walk, including the reciprocal section-list owner and all records.
-        inspect_file_space(working, budget=budget)
+        if not legacy:
+            inspect_file_space(working, budget=budget)
+        if discard_cache:
+            from .cache_image import require_covered_updates
+            require_covered_updates(touches, inspection["metadata_ranges"])
         executable = inspection["decision"] in ("accept", "accept_with_warnings") and inspection["analysis"]["complete"]
         unresolved = inspection["findings"] if not executable else []
         validation = {"decision": inspection["decision"], "analysis": inspection["analysis"]}
@@ -428,20 +500,20 @@ def _build_plan(original, working, digest, budget, allow_reseal):
     result = {"schema_version": 1, "tool": "h5reclaim", "tool_version": VERSION,
         "kind": "metadata_repair_plan", "catalog_version": CATALOG_VERSION,
         "source": {"sha256": digest, "size_bytes": original.stat().st_size},
-        "options": {"allow_reseal": allow_reseal, "budget": asdict(budget)},
+        "options": {"allow_reseal": allow_reseal, "discard_cache_image": discard_cache, "budget": asdict(budget)},
         "actions": actions, "executable": executable, "postcheck": validation, "unresolved": unresolved,
         "scope": "metadata repair on a separate copy; recomputed checksums establish structural coherence only; raw data and historical measurement correctness are not restored or authenticated"}
     result["plan_sha256"] = hashlib.sha256(_canonical(result)).hexdigest()
     return result
 
 
-def plan_repair(source, destination=None, *, budget=None, allow_reseal=False):
+def plan_repair(source, destination=None, *, budget=None, allow_reseal=False, discard_cache_image=False):
     source, budget = Path(source), budget or LargeBudget()
     with sparse_snapshot(source, budget=budget) as (image, digest, identity, size, copied), \
             tempfile.TemporaryDirectory(prefix="h5reclaim-repair-plan-") as directory:
         working = Path(directory) / "working.h5"
         _copy(image, working, budget)
-        plan = _build_plan(image, working, digest, budget, allow_reseal)
+        plan = _build_plan(image, working, digest, budget, allow_reseal, discard_cache_image)
         _verify_source(source, identity, digest)
     if destination is not None:
         destination = Path(destination)
@@ -483,7 +555,8 @@ def apply_repair(source, plan_path, output, audit):
              tempfile.TemporaryDirectory(prefix=".h5reclaim-repair-", dir=audit.parent) as logdir:
             working = Path(outdir) / "repaired.h5"
             _copy(image, working, budget)
-            regenerated = _build_plan(image, working, digest, budget, plan["options"]["allow_reseal"])
+            regenerated = _build_plan(image, working, digest, budget, plan["options"]["allow_reseal"],
+                                      plan["options"].get("discard_cache_image", False))
             if regenerated != plan:
                 raise RecoveryError("regenerated repair plan differs from the supplied plan")
             # The regenerated private copy already contains exactly these writes.
