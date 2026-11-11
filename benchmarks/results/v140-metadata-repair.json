@@ -1,0 +1,168 @@
+{
+  "cases": [
+    {
+      "accepted_values": 120,
+      "case": "legacy_root_count",
+      "decision": "output",
+      "output_sha256": "0d01541e0545e00f4c1f3f39ba7ee5b1b94d3dc66273b22520f32020aad56635",
+      "passed": true,
+      "schema_exact": true,
+      "source_unchanged": true,
+      "wrong_values": 0
+    },
+    {
+      "accepted_values": 120,
+      "case": "legacy_dataset_count",
+      "decision": "output",
+      "output_sha256": "d105f484b123427aa9886c0049866522fd0c97d367137dbfdc72205afc857042",
+      "passed": true,
+      "schema_exact": true,
+      "source_unchanged": true,
+      "wrong_values": 0
+    },
+    {
+      "accepted_values": 120,
+      "case": "legacy_continuation_count",
+      "decision": "output",
+      "output_sha256": "a8e526b4e552ef59c3a0e8e24074cfb352a16f36b6587e229af1ddc2c6f53287",
+      "passed": true,
+      "schema_exact": true,
+      "source_unchanged": true,
+      "wrong_values": 0
+    },
+    {
+      "accepted_values": 120,
+      "case": "legacy_symbol_understatement",
+      "decision": "output",
+      "output_sha256": "967f95d58670f3dfc453b2eb30d4977d799022e7ad44d684f6795be670dfe87e",
+      "passed": true,
+      "schema_exact": true,
+      "source_unchanged": true,
+      "wrong_values": 0
+    },
+    {
+      "accepted_values": 120,
+      "case": "legacy_symbol_overflow_userblock",
+      "decision": "output",
+      "output_sha256": "5453aed283265560a0783c4707b33da9b6ba0ef8571154b5a19fb6a4e0191a8b",
+      "passed": true,
+      "schema_exact": true,
+      "source_unchanged": true,
+      "wrong_values": 0
+    },
+    {
+      "accepted_values": 120,
+      "case": "nbit_count",
+      "decision": "output",
+      "output_sha256": "187c6f5ac0cb2d67c82ef3d3990f9ae79af888a5db97aa1b7316a10887c2608b",
+      "passed": true,
+      "schema_exact": true,
+      "source_unchanged": true,
+      "wrong_values": 0
+    },
+    {
+      "accepted_values": 120,
+      "case": "nbit_width",
+      "decision": "output",
+      "output_sha256": "d03148c229f30cbb087406325c75492c726e3a584ced411c78cae4d49a62cdeb",
+      "passed": true,
+      "schema_exact": true,
+      "source_unchanged": true,
+      "wrong_values": 0
+    },
+    {
+      "accepted_values": 120,
+      "case": "nbit_pair_userblock",
+      "decision": "output",
+      "output_sha256": "4f50ac4cd705a4ced5a9ac606cbd421daab76b669925d345893bfe19bba03346",
+      "passed": true,
+      "schema_exact": true,
+      "source_unchanged": true,
+      "wrong_values": 0
+    },
+    {
+      "accepted_values": 120,
+      "case": "nbit_resealed_pair",
+      "decision": "output",
+      "output_sha256": "780b51465af422b891f9841bea5c391be694d1b1c885dd14ed2ad5237b74d09d",
+      "passed": true,
+      "schema_exact": true,
+      "source_unchanged": true,
+      "wrong_values": 0
+    },
+    {
+      "accepted_values": 120,
+      "case": "scaleoffset_count",
+      "decision": "output",
+      "output_sha256": "82b745f640343adb58ad24a0f756820e00da335ca19d090a6697e25ebc36cec8",
+      "passed": true,
+      "schema_exact": true,
+      "source_unchanged": true,
+      "wrong_values": 0
+    },
+    {
+      "accepted_values": 120,
+      "case": "scaleoffset_width",
+      "decision": "output",
+      "output_sha256": "f1806412786c1721aaaaf4933f0d6cc4575ccfe4160ace60b49b4e2bc9390c06",
+      "passed": true,
+      "schema_exact": true,
+      "source_unchanged": true,
+      "wrong_values": 0
+    },
+    {
+      "accepted_values": 120,
+      "case": "scaleoffset_pair_userblock",
+      "decision": "output",
+      "output_sha256": "e05c4e4992d627545b80206aac57ecabda08ef5973eb210efd6ce880eba2677f",
+      "passed": true,
+      "schema_exact": true,
+      "source_unchanged": true,
+      "wrong_values": 0
+    },
+    {
+      "accepted_values": 120,
+      "case": "scaleoffset_resealed_pair",
+      "decision": "output",
+      "output_sha256": "94aed9001db3f5770dda612453a1f38c49b0e64c591d88a8b1de58dd708a7ccd",
+      "passed": true,
+      "schema_exact": true,
+      "source_unchanged": true,
+      "wrong_values": 0
+    },
+    {
+      "accepted_values": 120,
+      "case": "cache_pending_metadata",
+      "decision": "output",
+      "output_sha256": "6dab84f70f7f14ce266b94272148846b59fe973ac4923eb20bb75c543d1d1ef8",
+      "passed": true,
+      "schema_exact": true,
+      "source_unchanged": true,
+      "wrong_values": 0
+    },
+    {
+      "accepted_values": 120,
+      "case": "cache_corrupt_flushed",
+      "decision": "output",
+      "output_sha256": "0d2b1941adaae552877fbe4c9b62d1cc7c6483b05f4c7df34ff0b5bf3186efa9",
+      "passed": true,
+      "schema_exact": true,
+      "source_unchanged": true,
+      "wrong_values": 0
+    },
+    {
+      "accepted_values": 0,
+      "case": "cache_corrupt_pending_refused",
+      "decision": "refused",
+      "passed": true,
+      "source_unchanged": true,
+      "wrong_values": 0
+    }
+  ],
+  "passed": true,
+  "schema_version": 1,
+  "scope": "generated controlled faults; CLI gets no original values; independently scored after exit",
+  "tested_source_sha256": "a4b1395b611f9c879a38a64547d37550e37b1457ad1706ceeb396108415c0d14",
+  "tested_source_unchanged": true,
+  "tool_version": "1.4.0"
+}
