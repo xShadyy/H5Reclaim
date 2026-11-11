@@ -114,38 +114,54 @@ jobs:
       - name: Check intact and damaged application files
         run: python benchmarks/run_application_corpus.py
   recovery-workbench:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: '3.12'
-      - name: Install official HDF5 tools
-        timeout-minutes: 8
+      - name: Cache official HDF5 tool binaries
+        id: hdf5-tools-cache
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ${{ runner.temp }}/h5reclaim-hdf5-tools
+          key: hdf5-tools-ubuntu24-${{ runner.arch }}-49df1b4e5ca4108d56e80f06321a749da1535268-cmake33110-static-zlib-v1
+      - name: Fetch pinned official HDF5 source
+        if: steps.hdf5-tools-cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: HDFGroup/hdf5
+          ref: 49df1b4e5ca4108d56e80f06321a749da1535268 # HDF5 2.2.0
+          path: work/hdf5-source
+          persist-credentials: false
+      - name: Build official HDF5 copy and repack tools
+        if: steps.hdf5-tools-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 20
         shell: bash
         run: |
           set -euo pipefail
-          # Avoid the runner's Azure mirror while retaining Ubuntu's HTTPS fallback.
-          if [[ -f /etc/apt/apt-mirrors.txt ]]; then
-            printf '%s\n' 'https://archive.ubuntu.com/ubuntu/' 'https://security.ubuntu.com/ubuntu/' |
-              sudo tee /etc/apt/apt-mirrors.txt >/dev/null
-          fi
-          apt_options=(-o Acquire::Retries=1 -o Acquire::http::Timeout=15
-                       -o Acquire::https::Timeout=15 -o APT::Update::Error-Mode=any)
-          for attempt in 1 2; do
-            if timeout --kill-after=10s 90s sudo apt-get "${apt_options[@]}" update &&
-               timeout --kill-after=10s 120s sudo apt-get "${apt_options[@]}" install -y --no-install-recommends hdf5-tools; then
-              break
-            fi
-            if (( attempt == 2 )); then
-              echo '::error::Unable to install required HDF5 tools after two attempts.'
-              exit 1
-            fi
-            echo '::warning::HDF5 tool installation failed; retrying in five seconds.'
-            sleep 5
-          done
-          h5copy -V
-          h5repack -V
+          python -m pip install 'cmake==3.31.10'
+          hdf5_build="$RUNNER_TEMP/h5reclaim-hdf5-build"
+          hdf5_prefix="$RUNNER_TEMP/h5reclaim-hdf5-tools"
+          cmake -S work/hdf5-source -B "$hdf5_build" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF -DBUILD_TESTING=OFF \
+            -DHDF5_BUILD_TOOLS=ON -DHDF5_BUILD_STATIC_TOOLS=ON \
+            -DHDF5_BUILD_EXAMPLES=OFF -DHDF5_BUILD_HL_LIB=OFF \
+            -DHDF5_BUILD_CPP_LIB=OFF -DHDF5_BUILD_FORTRAN=OFF \
+            -DHDF5_ENABLE_ZLIB_SUPPORT=ON -DHDF5_ENABLE_SZIP_SUPPORT=OFF
+          cmake --build "$hdf5_build" --target h5copy h5repack --parallel 2
+          install -Dm755 "$hdf5_build/bin/h5copy" "$hdf5_prefix/bin/h5copy"
+          install -Dm755 "$hdf5_build/bin/h5repack" "$hdf5_prefix/bin/h5repack"
+      - name: Verify and enable official HDF5 tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          hdf5_prefix="$RUNNER_TEMP/h5reclaim-hdf5-tools"
+          "$hdf5_prefix/bin/h5copy" -V
+          "$hdf5_prefix/bin/h5repack" -V
+          echo "$hdf5_prefix/bin" >> "$GITHUB_PATH"
       - name: Install optional reader and recovery dependencies
         run: python -m pip install -e ".[filters,readers]"
       - name: Check workbench, alternate reader and actual copy/repack integrations
