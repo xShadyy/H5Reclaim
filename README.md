@@ -19,7 +19,7 @@ H5Reclaim recovers scientific data from damaged HDF5 files. It brings surviving 
 
 Across **109 controlled damaged-file trials**, the 1.4.0 build produced 104 useful outputs: 77 fully exact and 27 partial recoveries, with five refusals and zero wrong accepted values. [Explore the 1.4.0 results](benchmarks/results/v140-release-coverage.json).
 
-Version 1.4.0 adds automatic recovery of rooted legacy metadata counts, checked N-bit and scale-offset parameter repairs, and explicit metadata cache-image replay and detachment on a separate copy. The [sixteen-case metadata panel](benchmarks/results/v140-metadata-repair.json) and [ten-case compressed streaming panel](benchmarks/results/v140-streaming-recovery.json) are scored against independently retained original values.
+Version 1.4.0 repairs incorrect counts in legacy metadata and checks N-bit and scale-offset parameters. It can also restore cached metadata before detaching the cache image on a separate copy. The [sixteen-case metadata panel](benchmarks/results/v140-metadata-repair.json) and [ten-case compressed streaming panel](benchmarks/results/v140-streaming-recovery.json) compare recovered values with original values kept outside the recovery process.
 
 See the [usage guide](USAGE.md) for the recovery workbench, supported formats, verification, and batch workflows.
 

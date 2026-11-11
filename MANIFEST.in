@@ -1,4 +1,4 @@
-include LICENSE README.md CHANGELOG.md SECURITY.md pyproject.toml
+include LICENSE README.md CHANGELOG.md pyproject.toml
 include USAGE.md
 recursive-include translations README.*.md
 prune tests

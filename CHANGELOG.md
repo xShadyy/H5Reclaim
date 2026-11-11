@@ -2,21 +2,24 @@
 
 ## 1.4.0
 
-- Restore rooted legacy object-header message counts across continuations and
-  symbol-node counts backed by complete ordered entries and parent keys.
-  Automatic selected and whole-file rescue use a checked disposable view.
-- Check and repair redundant atomic N-bit and scale-offset buffer parameters.
-  Automatic correction must restore the original header checksum; other
-  schema-derived corrections require an explicit resealing plan. Accept valid
-  twenty-parameter scale-offset descriptors and reject inconsistent native
-  decode-buffer sizes before reading measurements.
-- Add `plan-repair --discard-cache-image`. Replay checksum-valid cached
-  metadata only when every changed byte passes independent metadata coverage,
-  then detach the image on a separate copy. A damaged cache can be detached
-  only when the ordinary metadata independently survives.
-- Add independent CLI scoring for sixteen count, filter and cache-image cases,
-  regression coverage, static error checks and pinned CI action revisions.
-- Remove obsolete internal validation notes from public source.
+- Repair incorrect message counts in legacy object headers, including
+  continuation blocks. Repair symbol-node counts when complete ordered
+  entries and parent keys agree. Selected-dataset and whole-file rescue
+  perform these repairs on a temporary copy that passes metadata checks.
+- Repair redundant atomic N-bit and scale-offset buffer parameters from the
+  dataset schema. Automatic correction must restore the original header
+  checksum; recomputing the checksum requires an explicit repair plan.
+  Accept valid twenty-parameter scale-offset descriptors and reject
+  inconsistent decode-buffer sizes before reading measurements.
+- Add `plan-repair --discard-cache-image`. Restore cached metadata only when
+  its checksum and the resulting metadata pass validation. Every restored
+  byte must belong to metadata covered by the check. Detach the image on a
+  separate copy. If the image is corrupt, detachment requires the ordinary
+  on-disk metadata to survive.
+- Test sixteen count, filter and cache-image cases through the CLI and compare
+  outputs with separately kept original values. Add regression tests, static
+  error checks and pinned CI action revisions.
+- Remove unused Markdown files.
 
 ## 1.3.1
 
@@ -93,8 +96,6 @@
 - Added `verify-result` to check the saved report against the current output
   structure and validity maps in a bounded worker. It does not read recovered
   values or establish historical authenticity.
-- Added a [security reporting policy](SECURITY.md) for sensitive reports and
-  guidance for processing untrusted HDF5 inputs.
 
 The [controlled panel](benchmarks/results/v100rc1-release-coverage.json)
 recorded 104 useful outputs from 109 damaged-file trials (77 fully exact,
